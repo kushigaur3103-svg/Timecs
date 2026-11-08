@@ -954,6 +954,14 @@ SINK_REGISTRY = {
 }
 
 # ─── CWE-338 insecure PRNG family (flagged unconditionally) ────────────────
+# Void-returning seed initializers (`random.seed`, `np.random.seed`, `torch.manual_seed`,
+# `torch.cuda.manual_seed_all`, `initial_seed`) are absent from this table on purpose and must stay
+# absent: they hand back None, so they cannot be the line that mints a secret. The exemption axis is
+# the CALLEE, never the statement -- do not add an `ast.Expr`/discarded-return test to the CWE-338
+# branch to implement that, because 5 of the 7 blessed Big-8 CWE-338 keys are draws feeding
+# `values.append(...)` / `let_pass.append(...)` statements whose own return IS discarded. Locked by
+# `benchmark/gates/cwe338_void_seed_return_probe.py` (4 mutations: sink-table widening, both Expr
+# readings, and dropping `seed` from the credential-destination veto).
 CWE338_RANDOM_NAMES = frozenset({
     "random.random", "random.randint", "random.choice", "random.randrange", "random.sample",
     "random.choices", "random.shuffle", "random.randbytes", "random.uniform", "random.triangular",
@@ -7160,7 +7168,16 @@ class TaintTracker:
         if isinstance(expr, ast.Name):
             return expr.id in ("True", "False", "None")
         if isinstance(expr, ast.Call):
-            return shadowed is not None and self._builtin_sealed_call(expr, shadowed)
+            if shadowed is not None and self._builtin_sealed_call(expr, shadowed):
+                return True
+            if (isinstance(expr.func, ast.Attribute) and expr.func.attr == "time"
+                    and isinstance(expr.func.value, ast.Name) and expr.func.value.id == "time"
+                    and (shadowed is None or "time" not in shadowed)):
+                return True
+            if (isinstance(expr.func, ast.Attribute) and expr.func.attr == "item"
+                    and not expr.args and not expr.keywords):
+                return True
+            return False
         if isinstance(expr, ast.UnaryOp):
             return isinstance(expr.op, (ast.UAdd, ast.USub, ast.Invert)) and self._numeric_safe_expr(expr.operand, shadowed)
         if isinstance(expr, ast.BinOp):
@@ -7172,34 +7189,65 @@ class TaintTracker:
         return False
 
     def _log_message_is_numeric_only(self, node: ast.Call, shadowed: frozenset = None) -> bool:
-        """True when every interpolated hole in the logged f-strings is numeric-safe.
+        """True when every interpolated hole in the log call is numeric-safe.
 
         All-or-nothing on purpose: a message like f"deleted {len(rows)}: {name}" keeps
-        its finding because one hole can still carry CRLF. Messages with no f-string at
-        all are never exempt, which preserves the multi-hop cases where the tainted
-        f-string is built elsewhere and passed in as a plain name.
+        its finding because one hole can still carry CRLF. Messages with no dynamic values
+        at all are never exempt here (they belong to _log_message_is_pure_literal), which
+        preserves the multi-hop cases where the tainted f-string is built elsewhere and
+        passed in as a plain name.
 
         This is what keeps the Big-8 floor at `src__transformers__modeling_utils.py:3567`, whose
         multi-line message mixes a sealed `len(...)` with two author-controlled names: the unsafe
         holes carry the whole finding. Weakening all-or-nothing into a per-hole test deletes it.
         """
-        joined = [a for a in node.args if isinstance(a, ast.JoinedStr)]
-        if not joined:
+        if not getattr(node, "args", None):
             return False
-        for j in joined:
-            for part in j.values:
-                if not isinstance(part, ast.FormattedValue):
-                    continue
-                if not self._numeric_safe_expr(part.value, shadowed):
+
+        has_dynamic = False
+
+        for idx, arg in enumerate(node.args):
+            if isinstance(arg, ast.JoinedStr):
+                for part in arg.values:
+                    if isinstance(part, ast.FormattedValue):
+                        has_dynamic = True
+                        if not self._numeric_safe_expr(part.value, shadowed):
+                            return False
+                        spec = getattr(part, "format_spec", None)
+                        if isinstance(spec, ast.JoinedStr) and not all(
+                            self._numeric_safe_expr(sp.value, shadowed)
+                            for sp in spec.values
+                            if isinstance(sp, ast.FormattedValue)
+                        ):
+                            return False
+                    elif not isinstance(part, ast.Constant) or not isinstance(part.value, str):
+                        if not self._numeric_safe_expr(part, shadowed):
+                            return False
+            elif idx == 0 and isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute) and arg.func.attr == "format":
+                if not self._literal_log_text(arg.func.value):
                     return False
-                spec = getattr(part, "format_spec", None)
-                if isinstance(spec, ast.JoinedStr) and not all(
-                    self._numeric_safe_expr(sp.value, shadowed)
-                    for sp in spec.values
-                    if isinstance(sp, ast.FormattedValue)
-                ):
+                for farg in arg.args:
+                    has_dynamic = True
+                    if not self._numeric_safe_expr(farg, shadowed):
+                        return False
+                for kw in arg.keywords:
+                    has_dynamic = True
+                    if not self._numeric_safe_expr(kw.value, shadowed):
+                        return False
+            elif idx == 0 and ((isinstance(arg, ast.Constant) and isinstance(arg.value, str)) or self._literal_log_text(arg)):
+                continue
+            else:
+                has_dynamic = True
+                if not self._numeric_safe_expr(arg, shadowed):
                     return False
-        return True
+
+        for kw in getattr(node, "keywords", []):
+            if kw.arg not in ("exc_info", "stack_info", "stacklevel"):
+                has_dynamic = True
+                if not self._numeric_safe_expr(kw.value, shadowed):
+                    return False
+
+        return has_dynamic
 
     def _literal_log_text(self, expr: ast.AST) -> bool:
         """True when the expression is built only out of string constants."""
@@ -8396,6 +8444,107 @@ class TaintTracker:
         tree.__dict__["_c22_slice_g_facts"] = cached
         return cached
 
+    def _c22_slice_h_module_facts(self, tree) -> tuple:
+        """(`names this file writes`, `names re-bound through global/nonlocal`) -- cached per tree.
+
+        Slice H asks a value question about one identifier, and both answers are properties of the file
+        rather than of the sink: a name the module never writes has no binding for the scope walk to
+        hand back, and a name any function declares `global`/`nonlocal` has writes the module-scope
+        lookup cannot see, because `_c22_scope_binds` keys every binding by the scope that owns it. One
+        pass over the node list parsing already built, cached on the tree exactly the way
+        `_c22_slice_g_module_facts` caches its pair, so the per-record cost is two set tests.
+
+        Neither half is a name, path or function heuristic. The first is the set of targets the engine's
+        own binding table would key, the second is the statement type that makes that table's scope
+        split visible to this clause instead of hiding it.
+        """
+        cached = tree.__dict__.get("_c22_slice_h_facts")
+        if cached is not None:
+            return cached
+        written = set()
+        declared = set()
+        for node in self._module_nodes(tree):
+            if isinstance(node, (ast.Global, ast.Nonlocal)):
+                declared.update(node.names)
+                continue
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target] if node.value is not None else []
+            elif isinstance(node, ast.AugAssign):
+                targets = [node.target]
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension, ast.NamedExpr)):
+                targets = [node.target]
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                targets = [item.optional_vars for item in node.items
+                           if item.optional_vars is not None]
+            elif isinstance(node, ast.ExceptHandler):
+                targets = [node.name] if node.name else []
+            elif isinstance(node, ast.Import):
+                targets = [alias.asname or alias.name.split(".")[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                targets = [alias.asname or alias.name for alias in node.names
+                           if alias.asname or alias.name != "*"]
+            else:
+                continue
+            for target in targets:
+                for bound in _c22_target_names(target):
+                    written.add(bound.split(".")[0])
+        cached = (frozenset(written), frozenset(declared))
+        tree.__dict__["_c22_slice_h_facts"] = cached
+        return cached
+
+    def _c22_value_is_proven_module_origin(self, tree, expr, mod_name) -> bool:
+        """Slice H: a bare-identifier sink whose every write in this file is a proven path origin.
+
+        Domain 1 of Slice G asks the caller closure, so it needs an enclosing `def`, a declared
+        parameter and an in-module call site. The rows this clause owns have a proven value and no such
+        parameter to argue about: 12 arena rows are `hf_hub_download` returns assigned to a local and
+        opened two statements later (src/transformers/tools/agents.py:87,
+        models/vits/convert_original_checkpoint.py:310), and 9 more are
+        `config_tmpfile = Path(tmpdirname) / "config.json"` under a
+        `with tempfile.TemporaryDirectory() as tmpdirname` (tests/models/auto/test_image_processing_auto.py
+        :54 and its siblings). They were Slice G refusals of the "no in-module call site" kind, not
+        because the value was unproven but because there was no caller to ask. Note what is NOT here:
+        `cached_file` and `get_file_from_repo` are absent from CWE22_HUB_CACHE_RESOLVERS, so a sink fed
+        by those leaf names stays loud until the module imports the resolver from `huggingface_hub`
+        itself. So the shipped value proof -- the same `_c22_value_is_proven_path_origin` the caller
+        closure bottoms out in, which is what keeps one expression answering one way (rung 4) -- is
+        asked of the binding itself, behind three fail-closed vetoes:
+
+          * the name must be written by an assignment-shaped node somewhere in the file. Measured (see
+            `write_prune_blinded` in benchmark/gates/cwe22_value_origin_probe.py): blinding this veto
+            moves no row, because the binding table has nothing to vouch for a name the file never
+            writes and the deep proof refuses it on its own. It stays as the prune that keeps that walk
+            off names this file does not own.
+          * a name appearing in any `global`/`nonlocal` statement is refused outright, and this veto IS
+            load-bearing: blinding it silences three fixtures whose sinks sit in a scope that never
+            re-binds the name. The binding table keys a function's write under that function, so without
+            the veto `config_file = hf_hub_download(...)` at module scope plus `global config_file;
+            config_file = request.args["f"]` in a function would leave the module-scope lookup holding
+            only the proven write and vouch for a name the program just re-bound.
+          * the proof then requires EVERY value the owning scope binds for that name to be a tempfile
+            root, a `huggingface_hub` cache resolver return the module's own import proves, or text the
+            program chose for the whole location. One unproven write answers False, and so does a `None`
+            value (an import or `except ... as` binding), a splat, a subscript, a `self.<x>` field, or
+            the exhausted depth budget -- absence is never silence.
+
+        Cost per record is two cached lookups and, for a module that spells neither origin, nothing
+        else at all: the tempfile witness (`_c22_slice_g_module_facts`, already computed by domain 2
+        two lines above) and the module's own `huggingface_hub` resolver import set answer False before
+        the write table is built, because every one of the 12 arena rows this clause retires is fed by
+        one of those two witnesses. That keeps the per-tree walk off the other modules, which is the
+        same necessary-condition prune that put Slice G behind two presence facts.
+        """
+        _called, has_tempfile = self._c22_slice_g_module_facts(tree)
+        if not has_tempfile and not self._c22_module_hub_resolvers(mod_name):
+            return False
+        written, declared = self._c22_slice_h_module_facts(tree)
+        name = expr.id
+        if name not in written or name in declared:
+            return False
+        return self._c22_value_is_proven_path_origin(tree, expr, mod_name)
+
     def _c22_slice_g_proves_safe_sink(self, record, target_expr) -> bool:
         """The one deciding site for both Slice G proofs, asked before any record path branches.
 
@@ -8431,6 +8580,9 @@ class TaintTracker:
         called, has_tempfile = self._c22_slice_g_module_facts(tree)
         if has_tempfile and self._c22_self_attribute_is_temp_sink(target_expr, record.scope_id,
                                                                   record.lineno):
+            return True
+        if isinstance(target_expr, ast.Name) and self._c22_value_is_proven_module_origin(
+                tree, target_expr, mod_name):
             return True
         owner = TaintTracker._c22_enclosing_function(record.node)
         if owner is None:

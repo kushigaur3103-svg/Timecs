@@ -22,3 +22,8 @@
    - Peak RSS memory MUST remain strictly under 90 MB.
    - Scan latency ratio MUST remain <= 1.0x vs HEAD (zero performance regression).
    - All 36 tracked gates in `scratch/run_all_gates.py` MUST pass (36/36).
+
+5. IMMUTABLE RULEBOOK (SELF-MODIFICATION FORBIDDEN):
+   - Agents are STRICTLY PROHIBITED from editing, staging, or committing `AGENTS.md`.
+   - Dynamic baseline counts and artifacts belong strictly in benchmark gates and `scratch/`.
+   - Modifying this file to alter thresholds, excuse failures, or update run numbers is an instant protocol violation.

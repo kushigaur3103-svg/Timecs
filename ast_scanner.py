@@ -7148,6 +7148,174 @@ class TaintTracker:
             return False
         return receiver is None or receiver not in shadowed
 
+    def _is_intra_numeric_value(self, expr: ast.AST, proven: set[str], shadowed: frozenset = None) -> bool:
+        """True when an assigned value is provably a non-CRLF numeric primitive within intra-procedural scope."""
+        if isinstance(expr, ast.Constant):
+            return isinstance(expr.value, (int, float, complex)) and not isinstance(expr.value, (str, bytes))
+        if isinstance(expr, ast.Num):
+            return True
+        if isinstance(expr, ast.Name):
+            if expr.id in ("True", "False"):
+                return True
+            return expr.id in proven
+        if isinstance(expr, ast.UnaryOp):
+            return isinstance(expr.op, (ast.UAdd, ast.USub, ast.Invert)) and self._is_intra_numeric_value(expr.operand, proven, shadowed)
+        if isinstance(expr, ast.BinOp):
+            return self._is_intra_numeric_value(expr.left, proven, shadowed) and self._is_intra_numeric_value(expr.right, proven, shadowed)
+        if isinstance(expr, ast.BoolOp):
+            return all(self._is_intra_numeric_value(v, proven, shadowed) for v in expr.values)
+        if isinstance(expr, ast.IfExp):
+            return (self._is_intra_numeric_value(expr.body, proven, shadowed) and
+                    self._is_intra_numeric_value(expr.orelse, proven, shadowed))
+        if isinstance(expr, ast.Call):
+            if (isinstance(expr.func, ast.Attribute) and expr.func.attr == "time"
+                    and isinstance(expr.func.value, ast.Name) and expr.func.value.id == "time"
+                    and (shadowed is None or "time" not in shadowed)
+                    and not expr.args and not expr.keywords):
+                return True
+            if (isinstance(expr.func, ast.Attribute) and expr.func.attr == "item"
+                    and not expr.args and not expr.keywords):
+                return True
+            if (isinstance(expr.func, ast.Name) and expr.func.id == "len" and len(expr.args) == 1
+                    and (shadowed is None or "len" not in shadowed)):
+                arg = expr.args[0]
+                if isinstance(arg, (ast.List, ast.Tuple, ast.Dict, ast.Set, ast.Constant)):
+                    return True
+                if isinstance(arg, ast.Name):
+                    return arg.id in proven
+                return False
+            if (isinstance(expr.func, ast.Name) and expr.func.id in ("int", "float") and len(expr.args) >= 1
+                    and (shadowed is None or expr.func.id not in shadowed)):
+                arg = expr.args[0]
+                if isinstance(arg, ast.Constant):
+                    return True
+                if isinstance(arg, ast.Name):
+                    return arg.id in proven
+                return False
+        return False
+
+    def _collect_function_numeric_locals(self, func_node: ast.AST, shadowed: frozenset = None) -> frozenset[str]:
+        """Collect variables within a single function proven to hold strictly non-CRLF numeric primitives.
+
+        Strictly intra-procedural:
+        - Never crosses function, class, or module boundaries.
+        - Parameters (*args, **kwargs, positional, keyword) are permanently excluded (fail-closed/loud).
+        - Variables assigned or stored inside loops (for, while) or conditional branching (if, try, with, match)
+          are poisoned and excluded, as alternative branches or loop states could bind non-numerics.
+        - Poisoning Guard: If a variable is re-assigned to any unproven expression anywhere in the function,
+          it is discarded and marked poisoned.
+        """
+        if func_node is None or not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return frozenset()
+
+        if shadowed is None:
+            shadowed = frozenset()
+
+        poisoned = set()
+
+        # 1. Parameter names must never be tracked
+        if hasattr(func_node, "args"):
+            for a in getattr(func_node.args, "posonlyargs", []):
+                poisoned.add(a.arg)
+            for a in getattr(func_node.args, "args", []):
+                poisoned.add(a.arg)
+            for a in getattr(func_node.args, "kwonlyargs", []):
+                poisoned.add(a.arg)
+            if func_node.args.vararg:
+                poisoned.add(func_node.args.vararg.arg)
+            if func_node.args.kwarg:
+                poisoned.add(func_node.args.kwarg.arg)
+
+        # 2. Poison any variable assigned or stored inside loops, branching, try, with, match, or inner functions
+        for stmt in func_node.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                poisoned.add(stmt.name)
+            elif isinstance(stmt, ast.Global):
+                poisoned.update(stmt.names)
+            elif isinstance(stmt, ast.Nonlocal):
+                poisoned.update(stmt.names)
+            elif isinstance(stmt, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try,
+                                  getattr(ast, "TryStar", ()), ast.With, ast.AsyncWith,
+                                  getattr(ast, "Match", ()))):
+                for sub in ast.walk(stmt):
+                    if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
+                        poisoned.add(sub.id)
+                    elif isinstance(sub, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                        if isinstance(getattr(sub, "target", None), ast.Name):
+                            poisoned.add(sub.target.id)
+                        for t in getattr(sub, "targets", []):
+                            if isinstance(t, ast.Name):
+                                poisoned.add(t.id)
+                    elif isinstance(sub, ast.NamedExpr):
+                        if isinstance(sub.target, ast.Name):
+                            poisoned.add(sub.target.id)
+                    elif isinstance(sub, (ast.Global, ast.Nonlocal)):
+                        poisoned.update(sub.names)
+
+        # 3. Also poison any walrus operator targets anywhere in the function
+        for sub in ast.walk(func_node):
+            if isinstance(sub, ast.NamedExpr) and isinstance(sub.target, ast.Name):
+                poisoned.add(sub.target.id)
+
+        # 4. Sequentially track linear top-level assignments
+        proven_locals = set()
+
+        for stmt in func_node.body:
+            if isinstance(stmt, ast.Assign):
+                if len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+                    var_name = stmt.targets[0].id
+                    if var_name in poisoned:
+                        proven_locals.discard(var_name)
+                        continue
+                    if self._is_intra_numeric_value(stmt.value, proven_locals, shadowed=shadowed):
+                        proven_locals.add(var_name)
+                    else:
+                        poisoned.add(var_name)
+                        proven_locals.discard(var_name)
+                else:
+                    for t in stmt.targets:
+                        for sub in ast.walk(t):
+                            if isinstance(sub, ast.Name):
+                                poisoned.add(sub.id)
+                                proven_locals.discard(sub.id)
+            elif isinstance(stmt, ast.AnnAssign):
+                if isinstance(stmt.target, ast.Name):
+                    var_name = stmt.target.id
+                    if stmt.value is not None:
+                        if var_name in poisoned:
+                            proven_locals.discard(var_name)
+                            continue
+                        if self._is_intra_numeric_value(stmt.value, proven_locals, shadowed=shadowed):
+                            proven_locals.add(var_name)
+                        else:
+                            poisoned.add(var_name)
+                            proven_locals.discard(var_name)
+                else:
+                    for sub in ast.walk(stmt.target):
+                        if isinstance(sub, ast.Name):
+                            poisoned.add(sub.id)
+                            proven_locals.discard(sub.id)
+            elif isinstance(stmt, ast.AugAssign):
+                if isinstance(stmt.target, ast.Name):
+                    var_name = stmt.target.id
+                    if var_name in proven_locals and var_name not in poisoned:
+                        if self._is_intra_numeric_value(stmt.value, proven_locals, shadowed=shadowed):
+                            pass
+                        else:
+                            poisoned.add(var_name)
+                            proven_locals.discard(var_name)
+                    else:
+                        poisoned.add(var_name)
+                        proven_locals.discard(var_name)
+            elif isinstance(stmt, ast.Delete):
+                for t in stmt.targets:
+                    for sub in ast.walk(t):
+                        if isinstance(sub, ast.Name):
+                            poisoned.add(sub.id)
+                            proven_locals.discard(sub.id)
+
+        return frozenset(proven_locals - poisoned)
+
     def _numeric_safe_expr(self, expr: ast.AST, shadowed: frozenset = None) -> bool:
         """True when the expression can only evaluate to a value with no CR/LF in it.
 
@@ -7166,7 +7334,12 @@ class TaintTracker:
         if isinstance(expr, ast.Num):
             return True
         if isinstance(expr, ast.Name):
-            return expr.id in ("True", "False", "None")
+            if expr.id in ("True", "False", "None"):
+                return True
+            active = getattr(self, "_active_numeric_locals", None)
+            if active and expr.id in active:
+                return True
+            return False
         if isinstance(expr, ast.Call):
             if shadowed is not None and self._builtin_sealed_call(expr, shadowed):
                 return True
@@ -7204,50 +7377,59 @@ class TaintTracker:
         if not getattr(node, "args", None):
             return False
 
-        has_dynamic = False
+        saved_active = getattr(self, "_active_numeric_locals", None)
+        func = self._c22_enclosing_function(node)
+        self._active_numeric_locals = (
+            self._collect_function_numeric_locals(func, shadowed=shadowed)
+            if func is not None else None
+        )
+        try:
+            has_dynamic = False
 
-        for idx, arg in enumerate(node.args):
-            if isinstance(arg, ast.JoinedStr):
-                for part in arg.values:
-                    if isinstance(part, ast.FormattedValue):
-                        has_dynamic = True
-                        if not self._numeric_safe_expr(part.value, shadowed):
-                            return False
-                        spec = getattr(part, "format_spec", None)
-                        if isinstance(spec, ast.JoinedStr) and not all(
-                            self._numeric_safe_expr(sp.value, shadowed)
-                            for sp in spec.values
-                            if isinstance(sp, ast.FormattedValue)
-                        ):
-                            return False
-                    elif not isinstance(part, ast.Constant) or not isinstance(part.value, str):
-                        if not self._numeric_safe_expr(part, shadowed):
-                            return False
-            elif idx == 0 and isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute) and arg.func.attr == "format":
-                if not self._literal_log_text(arg.func.value):
-                    return False
-                for farg in arg.args:
-                    has_dynamic = True
-                    if not self._numeric_safe_expr(farg, shadowed):
+            for idx, arg in enumerate(node.args):
+                if isinstance(arg, ast.JoinedStr):
+                    for part in arg.values:
+                        if isinstance(part, ast.FormattedValue):
+                            has_dynamic = True
+                            if not self._numeric_safe_expr(part.value, shadowed):
+                                return False
+                            spec = getattr(part, "format_spec", None)
+                            if isinstance(spec, ast.JoinedStr) and not all(
+                                self._numeric_safe_expr(sp.value, shadowed)
+                                for sp in spec.values
+                                if isinstance(sp, ast.FormattedValue)
+                            ):
+                                return False
+                        elif not isinstance(part, ast.Constant) or not isinstance(part.value, str):
+                            if not self._numeric_safe_expr(part, shadowed):
+                                return False
+                elif idx == 0 and isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute) and arg.func.attr == "format":
+                    if not self._literal_log_text(arg.func.value):
                         return False
-                for kw in arg.keywords:
+                    for farg in arg.args:
+                        has_dynamic = True
+                        if not self._numeric_safe_expr(farg, shadowed):
+                            return False
+                    for kw in arg.keywords:
+                        has_dynamic = True
+                        if not self._numeric_safe_expr(kw.value, shadowed):
+                            return False
+                elif idx == 0 and ((isinstance(arg, ast.Constant) and isinstance(arg.value, str)) or self._literal_log_text(arg)):
+                    continue
+                else:
+                    has_dynamic = True
+                    if not self._numeric_safe_expr(arg, shadowed):
+                        return False
+
+            for kw in getattr(node, "keywords", []):
+                if kw.arg not in ("exc_info", "stack_info", "stacklevel"):
                     has_dynamic = True
                     if not self._numeric_safe_expr(kw.value, shadowed):
                         return False
-            elif idx == 0 and ((isinstance(arg, ast.Constant) and isinstance(arg.value, str)) or self._literal_log_text(arg)):
-                continue
-            else:
-                has_dynamic = True
-                if not self._numeric_safe_expr(arg, shadowed):
-                    return False
 
-        for kw in getattr(node, "keywords", []):
-            if kw.arg not in ("exc_info", "stack_info", "stacklevel"):
-                has_dynamic = True
-                if not self._numeric_safe_expr(kw.value, shadowed):
-                    return False
-
-        return has_dynamic
+            return has_dynamic
+        finally:
+            self._active_numeric_locals = saved_active
 
     def _literal_log_text(self, expr: ast.AST) -> bool:
         """True when the expression is built only out of string constants."""

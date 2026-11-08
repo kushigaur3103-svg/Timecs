@@ -1,4 +1,4 @@
-"""Active-partitioning lock: the three slices shipped under the updated Zero-FN Shield.
+"""Active-partitioning lock: the slices shipped under the updated Zero-FN Shield.
 
 The mandate asked for three filters. Two of them already existed in the engine, so the work was to
 find the population that is still loud, prove a value-domain slice that no blessed key shares, and
@@ -74,6 +74,40 @@ it yields 3 arena rows and, on the pinned Big-8 corpus, deletes 8 CWE-117 rows o
 1602/1603/1604/1605/1607/1608/1610/1611 in `src/transformers/trainer.py`, every one of them a blessed
 key and not one an FP. Tier 8 pins all eight loud and the mutation installs the predicate to prove
 the refusal is load-bearing.
+
+Slice E -- CWE-22/770, the path a program's own command line chose is not a path a caller chose
+----------------------------------------------------------------------------------------------
+One blessed CWE-22 key can sit in the same origin class (`function_parameter`, 52 arena rows vs 3
+blessed) as hundreds of false alarms, and the answer to that is not to leave the whole class loud:
+it is to add the AST conditions that no blessed key satisfies. The condition here is a positive
+presence proof, twice over -- the file BOTH parses its own command line (`parse_args`) AND runs under
+`if __name__ == "__main__":`, and the `open()`'s path argument walks back to an argparse leaf with
+nothing untrusted joined in. A library module has neither fact, so the same taint shape there stays
+loud. Measured on the CI arena rows the engine still emitted: 14 rows match, all `models/*/convert_*`
+checkpoint scripts, and the predicate silences all 14 at registration; over the whole arena this slice
+alone removes 81 rows (1873 -> 1792) with 0 rows added -- the same 325 chunks with the proof blinded
+emit 1873 rows in 219.79 s against 1792 rows in 204.39 s with it, so the walk costs nothing it does not
+pay back. Muting a CWE-22 row un-masks the `f.read()` underneath it -- which is why the same proof is
+wired into the CWE-770 unbounded-read branch too.
+
+The trust is on the *binding*, never on the spelling of a variable, and that is what the last nine
+fixtures pin. A name is resolved through the enclosing callables innermost-first, so a converter's
+local `args = chkpt["cfg"]["model"]` may not poison the module's `args = parser.parse_args()` (the
+arena's biogpt/fsmt/gptsan/megatron rows are exactly that shape), and equally the module's parse may
+not vouch for a handler whose parameter merely shares the name, a loop target, a lambda argument, a
+nested tuple rebind like `head, (args, tail) = split_request(body())`, or a field somebody wrote
+into. A namespace handed to a function is still a namespace -- `convert(args)` stays quiet while
+`convert(os.environ['P'])` and `args.dest = fetch_payload()` stay loud -- and a name called `argv`
+that came off a socket proves nothing. Mutants M6/M7/M8 blind the binding proof, the scope split and
+the write veto one at a time, and each moves only the fixtures that depend on it.
+
+Reach on the baseline is 0, and tier 9 proves it without the corpus-name shield: the frozen keys live
+under paths containing `src__`/`tests__`, and every CWE-22 exemption sits behind `not is_protected`,
+so a green parity run says nothing about this predicate. Tier 9 reads the SAME bytes and scans them
+under `vendor/...` keys, where the shield cannot help, and pins all 24 blessed CWE-22 lines loud.
+Called directly, the predicate fires on 0 of the 19 `open()` nodes that sit on a blessed line; the
+other 5 keys are `os.remove`/`shutil.rmtree`/`Path.read_bytes`/`.extract()` sinks, and forcing the
+predicate True on them is the mutation that shows the tier can move.
 """
 from __future__ import annotations
 
@@ -87,6 +121,8 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, ROOT)
 GATES_DIR = os.path.join(ROOT, 'benchmark', 'gates')
 BIG8_CORPUS = os.path.join(ROOT, 'benchmark_gates_data', 'corpus_big8')
+CORPUS_DIR = os.path.join(ROOT, 'benchmark', 'corpus')
+BENCHMARK_DIR = os.path.join(ROOT, 'benchmark')
 MODELING_COMMON = 'tests__test_modeling_common.py'
 GENERATION_UTILS = 'tests__generation__test_utils.py'
 WHISPER = 'tests__models__whisper__test_modeling_whisper.py'
@@ -173,6 +209,162 @@ C22_RESOLVER_FIXTURES = {
                                          + "    with open(hf_hub_download(repo_id, filename), stream_mode) as h:\n"
                                          + "        return h.read()\n", [3], 1),
 }
+
+# Slice E fixtures: the operator-program proof. Each entry is (path, source, CWE, loud lines,
+# CWE sink_records) and every expectation is the number the working-copy engine printed for that
+# exact string -- see scratch/_slice_e5.py. Quiet rows must register nothing new, loud rows must
+# still register, and no expectation here is a wildcard.
+OP_ARGV = ("import argparse\n"
+           + "import os\n"
+           + "import shutil\n"
+           + "\n"
+           + "parser = argparse.ArgumentParser()\n")
+OP_WRITE = ("\n"
+            + "\n"
+            + "def convert(out_path):\n"
+            + "    with open(out_path, 'w') as h:\n"
+            + "        h.write('x')\n"
+            + "\n")
+OP_MAIN = ("\n"
+           + "if __name__ == '__main__':\n"
+           + "    args = parser.parse_args()\n")
+
+C22_OPERATOR_FIXTURES = {
+    # The two presence facts and a walkable chain: quiet.
+    'operator_positional_call': ('src/m.py', OP_ARGV + OP_WRITE + OP_MAIN
+                                 + "    convert(args.checkpoint)\n", 'CWE-22', [], 1),
+    'operator_keyword_call': ('src/m.py', OP_ARGV + OP_WRITE + OP_MAIN
+                              + "    convert(out_path=args.checkpoint)\n", 'CWE-22', [], 1),
+    'operator_assigned_local': ('src/m.py', OP_ARGV + OP_WRITE + OP_MAIN
+                                + "    path = args.checkpoint\n    convert(path)\n", 'CWE-22', [], 1),
+    'operator_rmtree_built_dir': ('src/m.py', OP_ARGV
+                                  + "\n\ndef convert(out_dir):\n"
+                                  + "    tmp = os.path.join(out_dir, 'tmp')\n"
+                                  + "    shutil.rmtree(tmp)\n"
+                                  + "\n" + OP_MAIN + "    convert(args.model_dir)\n",
+                                  'CWE-22', [], 1),
+    # Every one of these is an absence or an unresolvable value: loud, and still registered.
+    'no_main_guard_stays_loud': ('src/m.py', OP_ARGV + OP_WRITE
+                                 + "\nargs = parser.parse_args()\nconvert(args.checkpoint)\n",
+                                 'CWE-22', [9], 2),
+    'uncalled_function_stays_loud': ('src/m.py', OP_ARGV + OP_WRITE + OP_MAIN, 'CWE-22', [9], 1),
+    'unknown_call_stays_loud': ('src/m.py', OP_ARGV
+                                + "\n\ndef convert(out_path):\n"
+                                + "    with open(fetch_root(out_path), 'w') as h:\n"
+                                + "        h.write('x')\n"
+                                + "\n" + OP_MAIN + "    convert(args.checkpoint)\n",
+                                'CWE-22', [9], 1),
+    'unknown_wrap_stays_loud': ('src/m.py', OP_ARGV
+                                + "\n\ndef convert(out_path):\n"
+                                + "    with open(resolve(out_path), 'w') as h:\n"
+                                + "        h.write('x')\n"
+                                + "\n" + OP_MAIN + "    convert(args.checkpoint)\n",
+                                'CWE-22', [9], 1),
+    'unbound_wrapper_stays_loud': ('src/m.py', OP_ARGV
+                                   + "\n\ndef convert(out_path):\n"
+                                   + "    with open(removeprefix(out_path, \"pre\"), 'w') as h:\n"
+                                   + "        h.write('x')\n"
+                                   + "\n" + OP_MAIN + "    convert(args.checkpoint)\n",
+                                   'CWE-22', [9], 1),
+    'environ_value_stays_loud': ('src/m.py', OP_ARGV
+                                 + "\ndef convert_gin(gin_file):\n"
+                                 + "    with open(gin_file, 'r') as f:\n"
+                                 + "        raw = f.read()\n    return raw\n"
+                                 + "\n\ndef run():\n    convert_gin(os.environ.get('GIN_FILE'))\n"
+                                 + "\n" + OP_MAIN + "    run()\n", 'CWE-22', [8, 14], 2),
+    'splat_call_stays_loud': ('src/m.py', OP_ARGV + OP_WRITE + OP_MAIN
+                              + "    opts = {'out_path': args.checkpoint}\n    convert(**opts)\n",
+                              'CWE-22', [9], 2),
+    'environ_rmtree_stays_loud': ('src/m.py', OP_ARGV
+                                  + "\ndef convert(out_dir):\n"
+                                  + "    tmp = os.path.join(out_dir, 'tmp')\n"
+                                  + "    shutil.rmtree(tmp)\n"
+                                  + "\n\ndef run():\n    convert(os.environ.get('D'))\n"
+                                  + "\n" + OP_MAIN + "    run()\n", 'CWE-22', [9], 1),
+    # The holder has to still be a parsed command line in the scope that reads it. Each row below is
+    # a way the trust could be borrowed without being earned, and the last two are the shapes the CI
+    # arena's converter scripts actually use, so they must stay quiet for the right reason.
+    'holder_rebound_stays_loud': ('src/m.py', OP_ARGV + OP_WRITE
+                                  + "\nargs = parser.parse_args()\nargs = fetch_from_socket()\n"
+                                  + "convert(args.dest)\n" + OP_MAIN, 'CWE-22', [9, 15], 2),
+    'holder_is_param_stays_loud': ('src/m.py', OP_ARGV
+                                   + "\nargs = parser.parse_args()\n\n\ndef convert(args):\n"
+                                   + "    with open(args.dest, 'w') as h:\n        h.write('x')\n"
+                                   + "\n\nconvert(os.environ['P'])\n" + OP_MAIN, 'CWE-22', [11], 1),
+    'holder_field_written_stays_loud': ('src/m.py', OP_ARGV
+                                        + "\nargs = parser.parse_args()\n"
+                                        + "args.dest = fetch_payload()\n"
+                                        + "with open(args.dest, 'w') as h:\n    h.write('x')\n"
+                                        + OP_MAIN, 'CWE-22', [9], 1),
+    'loop_target_shadows_stays_loud': ('src/m.py', OP_ARGV
+                                       + "\nargs = parser.parse_args()\n"
+                                       + "for args in scan_roots():\n"
+                                       + "    with open(args.dest, 'w') as h:\n        h.write('x')\n"
+                                       + OP_MAIN, 'CWE-22', [9], 1),
+    'lambda_param_shadows_stays_loud': ('src/m.py', OP_ARGV
+                                        + "\nargs = parser.parse_args()\n"
+                                        + "write = lambda args: open(args.dest, 'w')\n"
+                                        + OP_MAIN, 'CWE-22', [8], 1),
+    'nested_tuple_rebind_stays_loud': ('src/m.py', OP_ARGV
+                                       + "\nargs = parser.parse_args()\n"
+                                       + "head, (args, tail) = split_request(body())\n"
+                                       + "with open(args.dest, 'w') as h:\n    h.write('x')\n"
+                                       + OP_MAIN, 'CWE-22', [9], 1),
+    'argv_from_socket_stays_loud': ('src/m.py', OP_ARGV
+                                    + "\nargv = read_socket()\n"
+                                    + "with open(argv.out, 'w') as h:\n    h.write('x')\n"
+                                    + OP_MAIN, 'CWE-22', [8], 1),
+    'namespace_handoff_quiet': ('src/m.py', OP_ARGV
+                                + "\nargs = parser.parse_args()\n\n\ndef convert(args):\n"
+                                + "    with open(args.dest, 'w') as h:\n        h.write('x')\n"
+                                + "\n\nconvert(args)\n" + OP_MAIN, 'CWE-22', [], 0),
+    'other_scope_local_quiet': ('src/m.py', OP_ARGV + OP_WRITE
+                                + "\n\ndef peek(chkpt):\n    args = chkpt[\"cfg\"]\n"
+                                + "    return args\n" + OP_MAIN + "    convert(args.checkpoint)\n",
+                                'CWE-22', [], 1),
+}
+
+# The `f.read()` under a muted operator-program open(): the CWE-22 row is gone, so the unbounded
+# read is only quiet because the same proof is wired into the CWE-770 branch.
+C770_OPERATOR_READ = ('src/m.py',
+                      "import argparse\n"
+                      + "import os\n"
+                      + "import regex as re\n"
+                      + "import shutil\n"
+                      + "\n"
+                      + "parser = argparse.ArgumentParser()\n"
+                      + "\n\ndef convert_gin(gin_file):\n"
+                      + "    with open(gin_file, 'r') as f:\n"
+                      + "        raw = f.read()\n"
+                      + "    return re.findall(r'(.*) = ([0-9.]*)', raw)\n"
+                      + "\n" + OP_MAIN + "    convert_gin(args.gin_file)\n",
+                      'CWE-770', [], 0)
+
+# Tier 9: the frozen blessed CWE-22 keys, scanned under a key that the engine's corpus-name shield
+# cannot see (`src__`/`tests__`/`corpus_big8`/`_p3_big` all make every CWE-22 exemption inert, so a
+# green parity run is not the reach proof). Lines are the keys themselves, from the frozen .keys.
+BLESSED_C22_REACH = {
+    'src__transformers__modeling_utils.py': ('vendor/transformers/modeling_utils.py',
+                                             (336, 3494, 3564)),
+    'src__transformers__trainer.py': ('vendor/transformers/trainer.py', (2008, 4301)),
+    'tests__generation__test_utils.py': ('vendor/generation/test_utils.py', (5537, 5539, 5565)),
+    'tests__models__markuplm__test_tokenization_markuplm.py': ('vendor/markuplm/tok.py',
+                                                               (73, 75, 77, 138)),
+    'tests__test_modeling_common.py': ('vendor/base/modeling_common.py', (1279,)),
+    'tests__test_tokenization_mistral_common.py': ('vendor/mistral/tok.py', (263, 274, 280)),
+    'cwe_22_traversal/bad.py': ('vendor/trav/bad.py', (5,)),
+    'cwe_22_traversal/test_v01_bad.py': ('vendor/trav/v01.py', (5,)),
+    'cwe_22_traversal/test_v02_bad.py': ('vendor/trav/v02.py', (8,)),
+    'cwe_22_traversal/test_v03_bad.py': ('vendor/trav/v03.py', (5,)),
+    'cwe_22_traversal/test_v05_bad.py': ('vendor/trav/v05.py', (8,)),
+    'cwe_937_insecure_protocol/test_v06_bad.py': ('vendor/proto/v06bad.py', (6,)),
+    'cwe_937_insecure_protocol/test_v06_good.py': ('vendor/proto/v06good.py', (7,)),
+    'runner.py': ('vendor/runner.py', (105,)),
+}
+# The single line tier 10's forced-True mutant must silence, and the file it is read from.
+REACH_MUTATION_LEAF = 'tests__test_modeling_common.py'
+REACH_MUTATION_KEY = 'vendor/base/modeling_common.py'
+REACH_MUTATION_LINE = 1279
 
 UNIFORM_UNIT = ("import random\n"
                 + "class A:\n"
@@ -369,6 +561,119 @@ def check_refused_value_slice() -> list:
     return failures
 
 
+def check_slice_e() -> list:
+    failures = []
+    rows = dict(C22_OPERATOR_FIXTURES)
+    rows['operator_program_read'] = C770_OPERATOR_READ
+    for name, (path, source, cwe, expected, expected_records) in sorted(rows.items()):
+        loud, _registered, records = scan({path: source}, cwe)
+        if loud != expected:
+            failures.append(f'{name}: {cwe} lines {loud}, expected {expected}')
+        if records != expected_records:
+            failures.append(f'{name}: {records} {cwe} sink_records, expected {expected_records} '
+                            '(the mandate is registration, not emission)')
+    print('  tier10 slice E fixtures checked:', len(rows))
+    return failures
+
+
+def _reach_row(leaf: str, entry: tuple, src: str) -> list:
+    """One blessed file, scanned under the key the corpus-name shield cannot see."""
+    key, lines = entry
+    loud, _registered, _records = scan({key: src}, 'CWE-22')
+    gone = [line for line in lines if line not in loud]
+    if gone:
+        return [f'{leaf}:{gone} went silent under the non-corpus key {key}; the operator-program '
+                'proof may only fire where a library module cannot be mistaken for a program, and '
+                'a blessed key is a true positive']
+    return []
+
+
+def check_operator_reach() -> list:
+    """All 24 blessed CWE-22 keys re-scanned where the corpus-name shield cannot protect them.
+
+    Every CWE-22 exemption in `_sink_context_exempt` sits behind `not is_protected`, and the frozen
+    keys live under names carrying `src__`/`tests__`/`corpus_big8`, so parity would stay green even
+    if this predicate reached a true positive. These are the same bytes under `vendor/...` keys,
+    where the shield is blind and the shape has to fail on its own merits. Each path is a literal
+    join at its own `open`: a corpus path resolved from a loop variable is itself a variable-derived
+    path, and the engine reports it -- that is how this tier gained a NEW parity key.
+    """
+    failures = []
+    with open(os.path.join(BIG8_CORPUS, 'src__transformers__modeling_utils.py'),
+              encoding='utf-8', errors='replace') as handle:
+        failures.extend(_reach_row('src/transformers/modeling_utils.py',
+                                   BLESSED_C22_REACH['src__transformers__modeling_utils.py'],
+                                   handle.read()))
+    with open(os.path.join(BIG8_CORPUS, 'src__transformers__trainer.py'),
+              encoding='utf-8', errors='replace') as handle:
+        failures.extend(_reach_row('src/transformers/trainer.py',
+                                   BLESSED_C22_REACH['src__transformers__trainer.py'],
+                                   handle.read()))
+    with open(os.path.join(BIG8_CORPUS, 'tests__generation__test_utils.py'),
+              encoding='utf-8', errors='replace') as handle:
+        failures.extend(_reach_row('tests/generation/test_utils.py',
+                                   BLESSED_C22_REACH['tests__generation__test_utils.py'],
+                                   handle.read()))
+    with open(os.path.join(BIG8_CORPUS, 'tests__models__markuplm__test_tokenization_markuplm.py'),
+              encoding='utf-8', errors='replace') as handle:
+        failures.extend(_reach_row('tests/models/markuplm/test_tokenization_markuplm.py',
+                                   BLESSED_C22_REACH['tests__models__markuplm__test_tokenization_markuplm.py'],
+                                   handle.read()))
+    with open(os.path.join(BIG8_CORPUS, 'tests__test_modeling_common.py'),
+              encoding='utf-8', errors='replace') as handle:
+        failures.extend(_reach_row('tests/test_modeling_common.py',
+                                   BLESSED_C22_REACH['tests__test_modeling_common.py'],
+                                   handle.read()))
+    with open(os.path.join(BIG8_CORPUS, 'tests__test_tokenization_mistral_common.py'),
+              encoding='utf-8', errors='replace') as handle:
+        failures.extend(_reach_row('tests/test_tokenization_mistral_common.py',
+                                   BLESSED_C22_REACH['tests__test_tokenization_mistral_common.py'],
+                                   handle.read()))
+    with open(os.path.join(CORPUS_DIR, 'cwe_22_traversal/bad.py'),
+              encoding='utf-8', errors='replace') as handle:
+        failures.extend(_reach_row('cwe_22_traversal/bad.py',
+                                   BLESSED_C22_REACH['cwe_22_traversal/bad.py'], handle.read()))
+    with open(os.path.join(CORPUS_DIR, 'cwe_22_traversal/test_v01_bad.py'),
+              encoding='utf-8', errors='replace') as handle:
+        failures.extend(_reach_row('cwe_22_traversal/test_v01_bad.py',
+                                   BLESSED_C22_REACH['cwe_22_traversal/test_v01_bad.py'],
+                                   handle.read()))
+    with open(os.path.join(CORPUS_DIR, 'cwe_22_traversal/test_v02_bad.py'),
+              encoding='utf-8', errors='replace') as handle:
+        failures.extend(_reach_row('cwe_22_traversal/test_v02_bad.py',
+                                   BLESSED_C22_REACH['cwe_22_traversal/test_v02_bad.py'],
+                                   handle.read()))
+    with open(os.path.join(CORPUS_DIR, 'cwe_22_traversal/test_v03_bad.py'),
+              encoding='utf-8', errors='replace') as handle:
+        failures.extend(_reach_row('cwe_22_traversal/test_v03_bad.py',
+                                   BLESSED_C22_REACH['cwe_22_traversal/test_v03_bad.py'],
+                                   handle.read()))
+    with open(os.path.join(CORPUS_DIR, 'cwe_22_traversal/test_v05_bad.py'),
+              encoding='utf-8', errors='replace') as handle:
+        failures.extend(_reach_row('cwe_22_traversal/test_v05_bad.py',
+                                   BLESSED_C22_REACH['cwe_22_traversal/test_v05_bad.py'],
+                                   handle.read()))
+    with open(os.path.join(CORPUS_DIR, 'cwe_937_insecure_protocol/test_v06_bad.py'),
+              encoding='utf-8', errors='replace') as handle:
+        failures.extend(_reach_row('cwe_937_insecure_protocol/test_v06_bad.py',
+                                   BLESSED_C22_REACH['cwe_937_insecure_protocol/test_v06_bad.py'],
+                                   handle.read()))
+    with open(os.path.join(CORPUS_DIR, 'cwe_937_insecure_protocol/test_v06_good.py'),
+              encoding='utf-8', errors='replace') as handle:
+        failures.extend(_reach_row('cwe_937_insecure_protocol/test_v06_good.py',
+                                   BLESSED_C22_REACH['cwe_937_insecure_protocol/test_v06_good.py'],
+                                   handle.read()))
+    with open(os.path.join(BENCHMARK_DIR, 'runner.py'), encoding='utf-8', errors='replace') as handle:
+        failures.extend(_reach_row('benchmark/runner.py', BLESSED_C22_REACH['runner.py'],
+                                   handle.read()))
+    total = sum(len(lines) for _key, lines in BLESSED_C22_REACH.values())
+    if total != 24:
+        failures.append(f'the reach tier pins {total} blessed CWE-22 keys, expected 24 -- a key was '
+                        'added to or dropped from the frozen baseline without updating this table')
+    print(f'  tier9 blessed CWE-22 keys loud with the corpus-name shield removed: {total}')
+    return failures
+
+
 def check_blessed_lines_stay_loud() -> list:
     """The blessed lines a widened value-domain proof could actually reach, re-scanned loud."""
     failures = []
@@ -401,18 +706,43 @@ def check_source_shape() -> list:
     failures = []
     with open(os.path.join(ROOT, 'ast_scanner.py'), encoding='utf-8') as handle:
         source = handle.read()
-    for spelling in ('def _c22_is_literal_readonly_open',
+    spellings = ('def _c22_is_literal_readonly_open',
                      'def _c22_is_hub_cache_read',
+                     'def _c22_is_operator_program_open',
+                     'def _c22_path_is_operator_supplied',
+                     'def _c770_read_comes_from_operator_program',
+                     'CWE22_OPERATOR_PROGRAM_CALLS = frozenset',
+                     'isinstance(a, ast.Starred) for a in site.args',
+                     # The value chain resolves names through the scope that owns them, so the scope
+                     # tables and the namespace proof have to stay in the engine.
+                     'def _c22_target_names',
+                     'def _c22_scope_binds',
+                     'def _c22_bound_values',
+                     'def _c22_is_namespace_root',
+                     'if (owner, field) in mutated or ("", field) in mutated:',
+                     'stack.append((child, owner if decorators and child in decorators else inner))',
+                     # Every address that can register the row has to ask the new proof.
+                     'if not is_protected and self._c22_is_operator_program_open(node, mod_name):',
+                     'if self._c22_is_operator_program_open(node, mod_name):',
+                     'and not self._c22_is_operator_program_open(node, mod_name):',
+                     'and not self._c22_path_is_operator_supplied(path_expr, mod_name):',
+                     'and not self._c770_read_comes_from_operator_program(node, mod_name)',
                      'CWE22_HUB_CACHE_RESOLVERS = frozenset',
                      'leaf == "uniform" and len(node.args) == 2',
                      'loop.iter is node',
-                     '"passwords", "seeds",'):
+                     '"passwords", "seeds",')
+    for spelling in spellings:
         if spelling not in source:
             failures.append(f'the shipped proof is gone from the engine: {spelling}')
-    for marker in ('_C338_BLESSED_LINES_SHIELD', '_C338_BLESSED_LINES', 'is_test_or_eval'):
+    retired = ('_C338_BLESSED_LINES_SHIELD', '_C338_BLESSED_LINES', 'is_test_or_eval',
+               # A file-wide name table cannot tell a converter's local from the module's command
+               # line, so it must not come back: the scope-keyed table is the shipped proof.
+               'def _c22_assign_map', 'argparse_names:\n                return True')
+    for marker in retired:
         if marker in source:
             failures.append(f'a retired name/line shield is back in the engine: {marker}')
-    print('  tier7 source spellings checked: 6 present, 3 retired markers absent')
+    print(f'  tier7 source spellings checked: {len(spellings)} present, '
+          f'{len(retired)} retired markers absent')
     return failures
 
 
@@ -539,6 +869,144 @@ def run_mutations() -> list:
     finally:
         ast_scanner.TaintTracker._sink_context_exempt = shipped_exempt
 
+    shipped_facts = ast_scanner.TaintTracker._c22_operator_facts
+    shipped_open_pred = ast_scanner.TaintTracker._c22_is_operator_program_open
+    shipped_expr_pred = ast_scanner.TaintTracker._c22_path_is_operator_supplied
+    shipped_path_names = ast_scanner.TaintTracker._c22_module_path_names
+    shipped_c770_read = ast_scanner.TaintTracker._c770_read_comes_from_operator_program
+    shipped_ns_root = ast_scanner.TaintTracker._c22_is_namespace_root
+    shipped_scope_binds = ast_scanner.TaintTracker._c22_scope_binds
+
+    # M1: the `__main__` guard conjunct is the fact that separates a program from a library.
+    ast_scanner.TaintTracker._c22_operator_facts = lambda self, mod: (
+        True, shipped_facts(self, mod)[1])
+    try:
+        loud, _r, _c = scan({'src/m.py': C22_OPERATOR_FIXTURES['no_main_guard_stays_loud'][1]},
+                            'CWE-22')
+        results.append(('c22_main_guard_conjunct_is_load_bearing', loud == []))
+    finally:
+        ast_scanner.TaintTracker._c22_operator_facts = shipped_facts
+
+    # M2: presence facts with the value chain dropped -- the Rung-1 form the doctrine forbids. Every
+    # fixture below is an absence or an unresolvable value, and only the two environ-rooted rows,
+    # whose own argument the chain does resolve, survive the mutant.
+    def presence_only(self, node, mod_name):
+        if not isinstance(node, ast.Call):
+            return False
+        if (ast_scanner.dotted_name(node.func) or '') not in ast_scanner.FILE_OPEN_FUNCS:
+            return False
+        guarded, names = shipped_facts(self, mod_name)
+        return bool(guarded and names)
+
+    def presence_only_expr(self, expr, mod_name):
+        guarded, names = shipped_facts(self, mod_name)
+        return bool(guarded and names and expr is not None)
+
+    ast_scanner.TaintTracker._c22_is_operator_program_open = presence_only
+    ast_scanner.TaintTracker._c22_path_is_operator_supplied = presence_only_expr
+    try:
+        quiet_rows = []
+        for name in ('uncalled_function_stays_loud', 'unknown_call_stays_loud',
+                     'unknown_wrap_stays_loud', 'splat_call_stays_loud'):
+            loud, _r, _c = scan({'src/m.py': C22_OPERATOR_FIXTURES[name][1]}, 'CWE-22')
+            quiet_rows.append(loud == [])
+        env_loud, _re, _ce = scan(
+            {'src/m.py': C22_OPERATOR_FIXTURES['environ_value_stays_loud'][1]}, 'CWE-22')
+        env_rm_loud, _rm, _cm = scan(
+            {'src/m.py': C22_OPERATOR_FIXTURES['environ_rmtree_stays_loud'][1]}, 'CWE-22')
+        results.append(('c22_value_chain_is_load_bearing',
+                        all(quiet_rows) and env_loud == [14] and env_rm_loud == [9]))
+    finally:
+        ast_scanner.TaintTracker._c22_is_operator_program_open = shipped_open_pred
+        ast_scanner.TaintTracker._c22_path_is_operator_supplied = shipped_expr_pred
+
+    # M3: a bare wrapper name proves nothing until the import binding is there.
+    ast_scanner.TaintTracker._c22_module_path_names = lambda self, tree: frozenset({'removeprefix'})
+    try:
+        loud, _r, _c = scan(
+            {'src/m.py': C22_OPERATOR_FIXTURES['unbound_wrapper_stays_loud'][1]}, 'CWE-22')
+        results.append(('c22_wrapper_binding_is_load_bearing', loud == []))
+    finally:
+        ast_scanner.TaintTracker._c22_module_path_names = shipped_path_names
+
+    # M4: the CWE-770 unbounded read only stays quiet because the open underneath it was proven.
+    ast_scanner.TaintTracker._c770_read_comes_from_operator_program = (
+        lambda self, node, mod_name: False)
+    try:
+        loud, _r, _c = scan({C770_OPERATOR_READ[0]: C770_OPERATOR_READ[1]}, 'CWE-770')
+        results.append(('c770_operator_program_read_is_load_bearing', loud == [11]))
+    finally:
+        ast_scanner.TaintTracker._c770_read_comes_from_operator_program = shipped_c770_read
+
+    # M5: tier 9 has to be about this predicate, not about a line that no exemption could reach.
+    ast_scanner.TaintTracker._c22_is_operator_program_open = lambda self, node, mod_name: True
+    ast_scanner.TaintTracker._c22_path_is_operator_supplied = lambda self, expr, mod_name: True
+    try:
+        with open(os.path.join(BIG8_CORPUS, REACH_MUTATION_LEAF),
+                  encoding='utf-8', errors='replace') as handle:
+            common_src = handle.read()
+        loud, _r, _c = scan({REACH_MUTATION_KEY: common_src}, 'CWE-22')
+        results.append(('c22_operator_reach_tier_moves_when_forced',
+                        REACH_MUTATION_LINE not in loud))
+    finally:
+        ast_scanner.TaintTracker._c22_is_operator_program_open = shipped_open_pred
+        ast_scanner.TaintTracker._c22_path_is_operator_supplied = shipped_expr_pred
+
+    # M6: the holder trust is a proof about the binding, not about the spelling of the name. Reduced
+    # to "this name is fed a parse_args() somewhere" it silences every borrowed-authority fixture at
+    # once -- exactly the false negative the scope tables exist to prevent.
+    ast_scanner.TaintTracker._c22_is_namespace_root = (
+        lambda self, tree, node, name, argparse_names, path=None, seen=None: name in argparse_names)
+    try:
+        borrowed = []
+        for fixture in ('holder_is_param_stays_loud', 'holder_field_written_stays_loud',
+                        'loop_target_shadows_stays_loud', 'lambda_param_shadows_stays_loud',
+                        'nested_tuple_rebind_stays_loud'):
+            loud, _r, _c = scan({'src/m.py': C22_OPERATOR_FIXTURES[fixture][1]}, 'CWE-22')
+            borrowed.append(loud == [])
+        rebound, _r2, _c2 = scan(
+            {'src/m.py': C22_OPERATOR_FIXTURES['holder_rebound_stays_loud'][1]}, 'CWE-22')
+        results.append(('c22_namespace_binding_proof_is_load_bearing',
+                        all(borrowed) and rebound == [15]))
+    finally:
+        ast_scanner.TaintTracker._c22_is_namespace_root = shipped_ns_root
+
+    # M7: mixing scopes lets one function's `args = chkpt["cfg"]` poison a different function's
+    # command line. The merged table has to move the converter-shaped fixture and nothing else.
+    def merged_scopes(self, tree):
+        binds, mutated = shipped_scope_binds(self, tree)
+        flat = {}
+        for (_owner, bound), values in binds.items():
+            flat.setdefault(('', bound), []).extend(values)
+        return flat, mutated
+
+    ast_scanner.TaintTracker._c22_scope_binds = merged_scopes
+    try:
+        peek_loud, _r, _c = scan(
+            {'src/m.py': C22_OPERATOR_FIXTURES['other_scope_local_quiet'][1]}, 'CWE-22')
+        handoff, _r2, _c2 = scan(
+            {'src/m.py': C22_OPERATOR_FIXTURES['namespace_handoff_quiet'][1]}, 'CWE-22')
+        positional, _r3, _c3 = scan(
+            {'src/m.py': C22_OPERATOR_FIXTURES['operator_positional_call'][1]}, 'CWE-22')
+        results.append(('c22_scope_separation_is_load_bearing',
+                        peek_loud == [9] and handoff == [] and positional == []))
+    finally:
+        ast_scanner.TaintTracker._c22_scope_binds = shipped_scope_binds
+
+    # M8: the write veto is per field, so blinding it must quiet the written field and leave the
+    # never-written reads alone.
+    ast_scanner.TaintTracker._c22_scope_binds = (
+        lambda self, tree: (shipped_scope_binds(self, tree)[0], frozenset()))
+    try:
+        written, _r, _c = scan(
+            {'src/m.py': C22_OPERATOR_FIXTURES['holder_field_written_stays_loud'][1]}, 'CWE-22')
+        nested, _r2, _c2 = scan(
+            {'src/m.py': C22_OPERATOR_FIXTURES['nested_tuple_rebind_stays_loud'][1]}, 'CWE-22')
+        results.append(('c22_field_mutation_veto_is_load_bearing',
+                        written == [] and nested == [9]))
+    finally:
+        ast_scanner.TaintTracker._c22_scope_binds = shipped_scope_binds
+
     restored = (ast_scanner.TaintTracker._c22_is_literal_readonly_open is shipped_literal
                 and ast_scanner.TaintTracker._c22_is_hub_cache_read is shipped_resolver
                 and ast_scanner.TaintTracker._c22_module_hub_resolvers is shipped_bindings
@@ -546,6 +1014,13 @@ def run_mutations() -> list:
                 and ast_scanner.CWE338_SECURITY_NAME_WORDS is shipped_words
                 and ast_scanner.TaintTracker._compares_two_secrets is shipped_secrets
                 and ast_scanner.TaintTracker._sink_context_exempt is shipped_exempt
+                and ast_scanner.TaintTracker._c22_operator_facts is shipped_facts
+                and ast_scanner.TaintTracker._c22_is_operator_program_open is shipped_open_pred
+                and ast_scanner.TaintTracker._c22_path_is_operator_supplied is shipped_expr_pred
+                and ast_scanner.TaintTracker._c22_module_path_names is shipped_path_names
+                and ast_scanner.TaintTracker._c22_is_namespace_root is shipped_ns_root
+                and ast_scanner.TaintTracker._c22_scope_binds is shipped_scope_binds
+                and ast_scanner.TaintTracker._c770_read_comes_from_operator_program is shipped_c770_read
                 and ast_scanner.TaintTracker._c208_is_unit_test_assertion is shipped_assertion)
     results.append(('engine_restored_after_mutation', restored))
     for name, ok in results:
@@ -557,18 +1032,20 @@ def run_mutations() -> list:
 def main() -> int:
     failures = []
     for check in (check_baseline_domain, check_slice_a, check_slice_b, check_slice_c,
-                   check_slice_d, check_blessed_lines_stay_loud, check_source_shape,
+                   check_slice_d, check_slice_e, check_operator_reach,
+                   check_blessed_lines_stay_loud, check_source_shape,
                    check_refused_value_slice):
         failures.extend(check())
     failures.extend(run_mutations())
     if failures:
         print('VERDICT: FAIL - ' + '; '.join(str(f) for f in failures))
         return 1
-    print('VERDICT: PASS - the literal read-only open and the hub cache-resolver read never register, '
-          'the two CWE-338 value domains are quiet while every credential veto and all 8 blessed '
-          'lines stay loud, the CWE-208 constant partition holds under two independent guards, the '
-          'refused CWE-117 numeric-spec slice keeps all 8 trainer keys loud, and every conjunct '
-          'moves under its own mutation.')
+    print('VERDICT: PASS - the literal read-only open, the hub cache-resolver read and the '
+          'operator-program open/delete never register, all 24 blessed CWE-22 keys stay loud with '
+          'the corpus-name shield removed, the two CWE-338 value domains are quiet while every '
+          'credential veto and all 8 blessed lines stay loud, the CWE-208 constant partition holds '
+          'under two independent guards, the refused CWE-117 numeric-spec slice keeps all 8 trainer '
+          'keys loud, and every conjunct moves under its own mutation.')
     return 0
 
 

@@ -1930,6 +1930,24 @@ CWE22_TEMPFILE_NAME_ATTRS = frozenset({"name", "filename"})
 # the fully-qualified stdlib spelling.
 CWE22_HUB_RESOLVER_MODULE = "huggingface_hub"
 CWE22_HUB_CACHE_RESOLVERS = frozenset({"hf_hub_download", "cached_download"})
+# CWE-22 operator-program proof. A file that BOTH parses its own command line and runs under
+# `if __name__ == "__main__":` is a program: the person who typed the command chose the path, and
+# CWE-22 is about a path a remote user chooses. Two presence facts, never an absence, and the value
+# chain has to be walkable from the `open()` argument back to an argparse leaf. A library module has
+# no argparse and no main guard, so it never qualifies: measured on the 24 blessed CWE-22 keys, the
+# predicate fires on 0 of the 19 `open()` nodes that sit on a blessed line, and every blessed line
+# stays loud even when the corpus-name shield cannot help (same bytes scanned under `vendor/...`
+# keys) -- see benchmark/gates/active_partition_probe.py tier 9.
+CWE22_OPERATOR_PROGRAM_CALLS = frozenset({"parse_args", "parse_known_args"})
+# Pure path reshapers: they return a path built only from their arguments, so trusting the
+# arguments trusts the result. Anything not listed (an arbitrary function call, a method on an
+# object) is unknown and keeps the finding.
+CWE22_OPERATOR_PATH_WRAPPERS = frozenset({
+    "join", "abspath", "realpath", "normpath", "expanduser", "expandvars", "rstrip", "lstrip",
+    "strip", "removeprefix", "removesuffix", "as_posix", "basename", "dirname", "split",
+    "splitext", "format",
+})
+CWE22_OPERATOR_PATH_MODULES = frozenset({"os.path", "os", "posixpath"})
 # Calls that make a path component safe to join, or pin it under a known root. `normpath` is
 # included because every corpus case that uses it pairs it with a `startswith` root check.
 PATH_SANITIZER_SEGMENTS = frozenset({
@@ -3860,6 +3878,25 @@ def dotted_name(node: ast.AST) -> Optional[str]:
     value = _dotted_name_uncached(node)
     memo[key] = (node, value)
     return value
+
+def _c22_target_names(target) -> list:
+    """Every name a binding target introduces, nested unpacking included.
+
+    `a, (b, c) = read_socket()` binds three names; a walker that only looks one level deep would
+    report `b` and `c` as never assigned, and "never assigned" reads as "no origin" instead of as
+    "the origin is this socket". Shared by the binding tables so a name cannot hide in a tuple.
+    """
+    if isinstance(target, str):
+        return [target]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names = []
+        for part in target.elts:
+            names.extend(_c22_target_names(part))
+        return names
+    if isinstance(target, ast.Starred):
+        return _c22_target_names(target.value)
+    name = dotted_name(target)
+    return [name] if name else []
 
 def extract_subscript_key(slice_node: ast.AST) -> Optional[Union[str, int]]:
     """Extracts a static string or integer key from a subscript slice (Python 3.8-3.12 compatible)."""
@@ -7534,6 +7571,403 @@ class TaintTracker:
         return (isinstance(mode_arg, ast.Constant) and isinstance(mode_arg.value, str)
                 and not any(m in mode_arg.value for m in ("w", "a", "x", "+")))
 
+    def _c770_read_comes_from_operator_program(self, node: ast.AST, mod_name: str) -> bool:
+        """The stream this read runs on was opened on a path the operator typed.
+
+        One hop up from `f.read()` to the `with open(...) as f:` that created it, then the same
+        presence proof as the CWE-22 slice: the file has a main guard, the name came from argparse,
+        and nothing untrusted joins into it. Whoever typed the command also chose the size, so no
+        remote caller can make the read exhaust anything.
+        """
+        current = getattr(node, "parent", None)
+        hops = 0
+        while current is not None and hops < 24:
+            if isinstance(current, ast.With):
+                for item in current.items:
+                    if self._c22_is_operator_program_open(item.context_expr, mod_name):
+                        return True
+                return False
+            current = getattr(current, "parent", None)
+            hops += 1
+        return False
+
+    def _c22_operator_facts(self, mod_name: str) -> tuple:
+        """`(has_main_guard, argparse_names)` for one module, computed at most once per tree."""
+        tree = self.modules.get(mod_name) if mod_name else None
+        if tree is None:
+            return (False, frozenset())
+        cached = tree.__dict__.get("_c22_operator_facts")
+        if cached is None:
+            guarded = False
+            names = set()
+            for n in self._module_nodes(tree):
+                if (isinstance(n, ast.If) and isinstance(n.test, ast.Compare)
+                        and isinstance(n.test.left, ast.Name) and n.test.left.id == "__name__"):
+                    guarded = True
+                value = getattr(n, "value", None)
+                if isinstance(n, ast.Assign) and isinstance(value, ast.Call):
+                    if (dotted_name(value.func) or "").rsplit(".", 1)[-1] in \
+                            CWE22_OPERATOR_PROGRAM_CALLS:
+                        for tgt in n.targets:
+                            for base in _c22_target_names(tgt):
+                                names.add(base)
+            cached = (guarded, frozenset(names))
+            tree.__dict__["_c22_operator_facts"] = cached
+        return cached
+
+    def _c22_module_path_names(self, tree) -> frozenset:
+        """Bare names this module imported out of `os.path`.
+
+        A wrapper call only counts when the binding is proven: `basename(x)` inside a file that
+        never imported it could be any function, so the leaf is accepted on the qualified
+        `os.path.basename` spelling or when `from os.path import basename` is present, exactly as
+        the hub-cache proof insists on the import.
+        """
+        cached = tree.__dict__.get("_c22_ospath_names")
+        if cached is None:
+            cached = frozenset(
+                alias.name for n in self._module_nodes(tree)
+                if isinstance(n, ast.ImportFrom) and (n.module or "") in CWE22_OPERATOR_PATH_MODULES
+                for alias in (n.names or ()))
+            tree.__dict__["_c22_ospath_names"] = cached
+        return cached
+
+    def _c22_param_proofs(self, tree) -> dict:
+        """(function name, parameter name) -> the arguments this file passes it, or None.
+
+        Only bare in-file calls count (`convert_fsmt_checkpoint_to_pytorch(args.ckpt, args.out)`),
+        and a function the file never calls poisons every one of its parameters: "no caller here"
+        is an absence, and an absence stays loud. A positional-or-keyword parameter is supplied by
+        either form, because `write_model(model_path=args.model_dir)` is the same value as the
+        positional call; a call that splats `*items` or `**opts` proves nothing and poisons. A
+        parameter some call site skips falls back to its default, and one with no default is
+        poisoned. Memoised per tree, built once, so a sink's lookup is a dict hit.
+        """
+        cached = tree.__dict__.get("_c22_param_proofs")
+        if cached is not None:
+            return cached
+        shapes = {}
+        for n in self._module_nodes(tree):
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                pos = [a.arg for a in n.args.args]
+                kwonly = [a.arg for a in n.args.kwonlyargs]
+                defaults = list(n.args.defaults)
+                dmap = {}
+                if defaults:
+                    for idx, d in enumerate(defaults):
+                        dmap[pos[len(pos) - len(defaults) + idx]] = d
+                dmap.update({a.arg: v for a, v in zip(n.args.kwonlyargs, n.args.kw_defaults)
+                             if v is not None})
+                shapes[n.name] = (pos, set(kwonly), dmap, n.lineno)
+        sites = {}
+        for n in self._module_nodes(tree):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
+                shape = shapes.get(n.func.id)
+                if shape and n.lineno != shape[3]:
+                    sites.setdefault(n.func.id, []).append(n)
+        cached = {}
+        for fname, (pos, kwonly, dmap, _line) in shapes.items():
+            calls = sites.get(fname)
+            if not calls:
+                for pname in pos + list(kwonly):
+                    cached[(fname, pname)] = None
+                continue
+            for pname in pos + list(kwonly):
+                bucket = cached.setdefault((fname, pname), [])
+                idx = pos.index(pname) if pname in pos else -1
+                for site in calls:
+                    # A `*items` or `**opts` splat can carry any parameter, so that call site proves
+                    # nothing about this one -- poison wins over a partial match.
+                    if any(isinstance(a, ast.Starred) for a in site.args) or any(
+                            k.arg is None for k in site.keywords):
+                        cached[(fname, pname)] = None
+                        break
+                    if 0 <= idx < len(site.args):
+                        bucket.append(site.args[idx])
+                        continue
+                    passed = [k.value for k in site.keywords if k.arg == pname]
+                    if passed:
+                        bucket.extend(passed)
+                    elif pname in dmap:
+                        bucket.append(dmap[pname])
+                    else:
+                        cached[(fname, pname)] = None
+                        break
+        tree.__dict__["_c22_param_proofs"] = cached
+        return cached
+
+    @staticmethod
+    def _c22_owner_key(scope_node: ast.AST) -> str:
+        """The table key for a callable's local scope: its name, or an identity key for a lambda."""
+        return getattr(scope_node, "name", None) or f"\x00{id(scope_node)}"
+
+    def _c22_scope_binds(self, tree) -> tuple:
+        """`(binding table, attribute-mutation set)` for one tree, built in one pass and memoised.
+
+        The table maps (owning scope, name) to every value that binding can hold, module scope keyed
+        by "". Python resolves a name through the enclosing callables innermost-first and the first
+        scope that binds it owns it, and a file-wide table cannot say that: `args =
+        chkpt["cfg"]["model"]` inside a converter function is a different binding from the module's
+        `args = parser.parse_args()`, and mixing them would either poison a legitimate command line
+        or vouch for a local that holds a parsed checkpoint. Bindings are collected iteratively --
+        assignments, loop and comprehension targets, `with ... as`, walrus, `except ... as` and
+        imports -- with the scope carried on the stack, so decorators stay in the scope that evaluates
+        them and a `None` value marks a binding whose origin this engine cannot name. The mutation set
+        holds every dotted target that is written (`args.extra = ...` records "args.extra"), because
+        the field somebody writes into is no longer just what the operator typed.
+        """
+        cached = tree.__dict__.get("_c22_scope_binds")
+        if cached is not None:
+            return cached
+        binds = {}
+        mutated = set()
+        stack = [(tree, "")]
+        while stack:
+            node, owner = stack.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                inner = self._c22_owner_key(node)
+                decorators = getattr(node, "decorator_list", None)
+                for child in ast.iter_child_nodes(node):
+                    stack.append((child, owner if decorators and child in decorators else inner))
+                continue
+            if isinstance(node, ast.Assign):
+                pairs = [(tgt, node.value) for tgt in node.targets]
+            elif isinstance(node, ast.AnnAssign):
+                pairs = [] if node.value is None else [(node.target, node.value)]
+            elif isinstance(node, ast.AugAssign):
+                pairs = [(node.target, node.value)]
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                pairs = [(node.target, node.iter)]
+            elif isinstance(node, ast.NamedExpr):
+                pairs = [(node.target, node.value)]
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                pairs = [(item.optional_vars, item.context_expr) for item in node.items
+                         if item.optional_vars is not None]
+            elif isinstance(node, ast.ExceptHandler):
+                pairs = [(node.name, None)] if node.name else []
+            elif isinstance(node, ast.Import):
+                pairs = [((a.asname or a.name).split(".")[0], None) for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                pairs = [(a.asname or a.name, None) for a in node.names if a.asname or a.name != "*"]
+            else:
+                pairs = []
+            for tgt, value in pairs:
+                for bound in _c22_target_names(tgt):
+                    binds.setdefault((owner, bound), []).append(value)
+                    if "." in bound:
+                        mutated.add((owner, bound))
+            for child in ast.iter_child_nodes(node):
+                stack.append((child, owner))
+        cached = (binds, frozenset(mutated))
+        tree.__dict__["_c22_scope_binds"] = cached
+        return cached
+
+    def _c22_bound_values(self, tree, node: ast.AST, name: str):
+        """The values `name` can hold at this exact expression, or None when a scope cannot answer.
+
+        The walk follows the parent links parse already set and stops at the first enclosing callable
+        that owns a binding for `name`: a parameter contributes what the file actually passes it (from
+        the call-site table) and a local binding contributes its assignments, both under the scope key
+        that won. Nothing on the way out to module scope is skipped, and an exhausted hop budget or a
+        lambda parameter returns None -- unknown is loud.
+        """
+        binds, _mutated = self._c22_scope_binds(tree)
+        proofs = None
+        current = node
+        for _hop in range(256):
+            parent = getattr(current, "parent", None)
+            if parent is None:
+                held = list(binds.get(("", name)) or [])
+                return ("", held) if held else None
+            if isinstance(parent, ast.Lambda):
+                owner = self._c22_owner_key(parent)
+                held = list(binds.get((owner, name)) or [])
+                if held:
+                    return (owner, held)
+                if any(p.arg == name for p in list(parent.args.args) + list(parent.args.kwonlyargs)):
+                    return None
+            elif isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                owner = parent.name
+                held = list(binds.get((owner, name)) or [])
+                if any(p.arg == name for p in list(parent.args.args) + list(parent.args.kwonlyargs)):
+                    if proofs is None:
+                        proofs = self._c22_param_proofs(tree)
+                    passed = proofs.get((owner, name))
+                    if passed is None:
+                        return None
+                    held.extend(passed)
+                if held:
+                    return (owner, held)
+            current = parent
+        return None
+
+    def _c22_is_namespace_root(self, tree, node, name, argparse_names, path=None, seen=None):
+        """`name` holds this program's parsed command line, in the scope reading it right now.
+
+        Three things have to agree: the file parses a command line into that name at all (the cheap
+        gate), the scope that owns this very reference binds it only to `parse_args()`-shaped calls --
+        following a hand-off like `handler(args)` through the call-site table -- and this particular
+        field was never written into (`args.dest = payload()` ends the trust for `args.dest`, because
+        the field then holds whatever the caller put there; `args.output = args.output + ".pt"` does
+        not silence a read of `args.tf_model_dir`). A hybrid CLI/server module that rebinds
+        `args = fetch_from_socket()`, or a handler whose parameter merely shares the spelling, fails
+        one of the three and stays loud.
+        """
+        if name not in argparse_names:
+            return False
+        seen = seen or frozenset()
+        found = self._c22_bound_values(tree, node, name)
+        if found is None:
+            return False
+        owner, cands = found
+        field = path if path is not None else name
+        mutated = self._c22_scope_binds(tree)[1]
+        if (owner, field) in mutated or ("", field) in mutated:
+            return False
+        if not cands or any(id(value) in seen for value in cands if value is not None):
+            return False
+        seen = seen | {id(value) for value in cands if value is not None}
+        for value in cands:
+            if isinstance(value, ast.Call):
+                if (dotted_name(value.func) or "").rsplit(".", 1)[-1] not in \
+                        CWE22_OPERATOR_PROGRAM_CALLS:
+                    return False
+            elif isinstance(value, ast.Name):
+                if not self._c22_is_namespace_root(tree, value, value.id, argparse_names,
+                                                   field, seen):
+                    return False
+            else:
+                return False
+        return True
+
+    def _c22_value_is_operator_supplied(self, tree, expr, argparse_names, depth=0, seen=None):
+        """True when EVERY leaf of this value's chain is text the operator typed or compile-time text.
+
+        Unknown is loud at each branch: an unbound name, an attribute the file never assigns, a call
+        to something this file does not define, a cycle, or the depth budget all return False.
+        """
+        if expr is None or depth > 8:
+            return False
+        seen = seen or frozenset()
+        if id(expr) in seen:
+            return False
+        seen = seen | {id(expr)}
+        if isinstance(expr, ast.Constant):
+            return True
+        if isinstance(expr, ast.Name):
+            if expr.id == "__file__":
+                return True
+            if self._c22_is_namespace_root(tree, expr, expr.id, argparse_names):
+                return True
+            found = self._c22_bound_values(tree, expr, expr.id)
+            if not found:
+                return False
+            return all(self._c22_value_is_operator_supplied(tree, c, argparse_names,
+                                                            depth + 1, seen) for c in found[1])
+        if isinstance(expr, ast.Attribute):
+            base = dotted_name(expr) or ""
+            if self._c22_is_namespace_root(tree, expr, dotted_name(expr.value) or "",
+                                           argparse_names, base):
+                return True
+            if base.startswith("sys.argv"):
+                return True
+            found = self._c22_bound_values(tree, expr, base)
+            if not found:
+                return False
+            return all(self._c22_value_is_operator_supplied(tree, c, argparse_names,
+                                                            depth + 1, seen) for c in found[1])
+        if isinstance(expr, ast.Subscript):
+            base = dotted_name(expr.value) or ""
+            if self._c22_is_namespace_root(tree, expr, base, argparse_names):
+                return True
+            if base.startswith("sys.argv"):
+                return True
+            return self._c22_value_is_operator_supplied(tree, expr.value, argparse_names,
+                                                        depth + 1, seen)
+        if isinstance(expr, ast.Call):
+            path = dotted_name(expr.func) or ""
+            leaf = path.rsplit(".", 1)[-1]
+            if path == f"{CWE22_HUB_RESOLVER_MODULE}.{leaf}" and leaf in CWE22_HUB_CACHE_RESOLVERS:
+                return True
+            if leaf in CWE22_TEMPFILE_ROOT_CALLS and path.startswith("tempfile."):
+                return True
+            parts = list(expr.args) + [k.value for k in expr.keywords]
+            if leaf in CWE22_OPERATOR_PATH_WRAPPERS:
+                if isinstance(expr.func, ast.Attribute):
+                    base = getattr(expr.func, "value", None)
+                    qualified = path.startswith(("os.path.", "os.", "posixpath."))
+                    if not qualified:
+                        # A method: the object it runs on is part of the value, so it has to be
+                        # operator-supplied too -- `evil_path.rstrip()` is not a trusted path.
+                        if base is None or not self._c22_value_is_operator_supplied(
+                                tree, base, argparse_names, depth + 1, seen):
+                            return False
+                elif isinstance(expr.func, ast.Name) and leaf not in self._c22_module_path_names(tree):
+                    return False
+                if not parts:
+                    return False
+                return all(self._c22_value_is_operator_supplied(tree, a, argparse_names,
+                                                                 depth + 1, seen) for a in parts)
+            return False
+        if isinstance(expr, ast.BinOp):
+            return (self._c22_value_is_operator_supplied(tree, expr.left, argparse_names,
+                                                          depth + 1, seen)
+                    and self._c22_value_is_operator_supplied(tree, expr.right, argparse_names,
+                                                             depth + 1, seen))
+        if isinstance(expr, ast.JoinedStr):
+            return all(self._c22_value_is_operator_supplied(tree, getattr(v, "value", v),
+                                                            argparse_names, depth + 1, seen)
+                       for v in expr.values)
+        if isinstance(expr, ast.IfExp):
+            return (self._c22_value_is_operator_supplied(tree, expr.body, argparse_names,
+                                                          depth + 1, seen)
+                    and self._c22_value_is_operator_supplied(tree, expr.orelse, argparse_names,
+                                                             depth + 1, seen))
+        if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+            return all(self._c22_value_is_operator_supplied(tree, e, argparse_names,
+                                                            depth + 1, seen) for e in expr.elts)
+        if isinstance(expr, ast.Dict):
+            return all(self._c22_value_is_operator_supplied(tree, v, argparse_names,
+                                                            depth + 1, seen) for v in expr.values)
+        if isinstance(expr, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+            return self._c22_value_is_operator_supplied(tree, expr.elt, argparse_names,
+                                                        depth + 1, seen)
+        if isinstance(expr, ast.DictComp):
+            return self._c22_value_is_operator_supplied(tree, expr.value, argparse_names,
+                                                        depth + 1, seen)
+        return False
+
+    def _c22_path_is_operator_supplied(self, path_expr, mod_name: str) -> bool:
+        """This sink's path expression was built only out of what the operator typed.
+
+        Both presence facts come first (one cached tuple per module), so a library module costs a
+        dict lookup and never runs the chain walk. Measured before shipping, over the rows the CI
+        arena still emits: 14 live CWE-22 rows match the shape, all of them `models/*/convert_*`
+        checkpoint scripts, and this predicate silences all 14 at registration -- 12 of them through
+        an `open()` and 2 (`convert_llama_weights_to_hf.py:288`, `convert_mistral_weights_to_hf.py:235`)
+        through `shutil.rmtree` of a directory the script built from its own `--model_dir`, which the
+        delete-sink site hands here as an expression rather than an `open()` call.
+        Reach on the baseline is 0: on the 24 blessed CWE-22 keys the predicate fires on 0 of the 19
+        `open()` nodes sitting on a blessed line, and no blessed line goes quiet -- including under
+        the delete sinks, where `trainer.py:2008` and `modeling_utils.py:3494` are library modules
+        with no `parse_args()` and no `__main__` guard to begin with.
+        """
+        guarded, argparse_names = self._c22_operator_facts(mod_name)
+        if not guarded or not argparse_names:
+            return False
+        tree = self.modules.get(mod_name)
+        if path_expr is None or tree is None:
+            return False
+        return self._c22_value_is_operator_supplied(tree, path_expr, argparse_names)
+
+    def _c22_is_operator_program_open(self, node: ast.AST, mod_name: str) -> bool:
+        """The path this `open()` takes was chosen at the command line of the program holding it."""
+        if not isinstance(node, ast.Call):
+            return False
+        if (dotted_name(node.func) or "") not in FILE_OPEN_FUNCS:
+            return False
+        return self._c22_path_is_operator_supplied(node.args[0] if node.args else None, mod_name)
+
     def _sink_context_exempt(self, cwe_id: str, node: ast.Call, scope_id: str) -> bool:
         mod_name = self._scope_module(scope_id)
         if not mod_name:
@@ -7553,6 +7987,8 @@ class TaintTracker:
             if not is_protected and self._c22_is_literal_readonly_open(node):
                 return True
             if not is_protected and self._c22_is_hub_cache_read(node, mod_name):
+                return True
+            if not is_protected and self._c22_is_operator_program_open(node, mod_name):
                 return True
             if not is_protected:
                 is_in_tests = fn_lower.startswith("tests/") or any(seg in fn_lower for seg in ("/tests/", "test_arena/", "target_arena/tests/"))
@@ -15008,6 +15444,11 @@ class TaintTracker:
             # literal path skipped just above.
             if self._c22_is_hub_cache_read(node, mod_name):
                 continue
+            # Same class of origin proof again: the program that opens the file is the program that
+            # parsed the command line, so the path came from the operator's own keyboard, not from a
+            # request. The `__main__` guard is what separates it from a library that reads argv.
+            if self._c22_is_operator_program_open(node, mod_name):
+                continue
             # A stream in the path slot resolves nothing: `open(io.BytesIO(body), "rb")` reads bytes
             # that are already in memory. Checked after the literal skip, which is the cheap test.
             if self._is_in_memory_buffer_sink(
@@ -20608,6 +21049,7 @@ class TaintTracker:
                             r_name = (dotted_name(node.func.value) or (node.func.value.id if isinstance(node.func.value, ast.Name) else "")) if isinstance(node.func, ast.Attribute) else ""
                             if ((r_name in ("f", "file", "stream", "self.f", "s", "sock") or "stream" in r_name or fn_name == "recv")
                                     and not self._read_subordinate_to_traversal(node, scope_id)
+                                    and not self._c770_read_comes_from_operator_program(node, mod_name)
                                     and not self._is_packaging_metadata_read(node, r_name, scope_id)
                                     and not self._c770_read_is_bounded(node, mod_name, tree)
                                     and self._c770_evaluate_unbounded_read_fact(node, mod_name, tree, scope_id, lineno, file_path) not in ("SEALED_LOCAL_FILE_READ", "SEALED_BOUNDED")):
@@ -24676,7 +25118,8 @@ class TaintTracker:
                         if path_expr is not None and not _is_safe_path(path_expr, scope_id, lineno):
                             fn_lower = self.file_paths.get(mod_name, "").replace("\\", "/").lower()
                             if not self._c22_is_test_suite_or_cached_path(path_expr, scope_id, lineno, fn_lower, node=node) \
-                                    and not self._c22_is_framework_vocab_serializer_write(node, mod_name):
+                                    and not self._c22_is_framework_vocab_serializer_write(node, mod_name) \
+                                    and not self._c22_is_operator_program_open(node, mod_name):
                                 _add_finding(node, mod_name, scope_id, "FILE_WRITE", "PATH_TRAVERSAL", "CWE-22", "CWE-22")
 
                 if names & path_delete_sinks:
@@ -24684,7 +25127,8 @@ class TaintTracker:
                     if path_expr is None and node.args:
                         path_expr = node.args[0]
                     if path_expr is not None and not _is_safe_path(path_expr, scope_id, lineno) \
-                            and not self._c22_cleanup_is_temp_teardown(node, path_expr, scope_id, lineno):
+                            and not self._c22_cleanup_is_temp_teardown(node, path_expr, scope_id, lineno) \
+                            and not self._c22_path_is_operator_supplied(path_expr, mod_name):
                         fn_lower = self.file_paths.get(mod_name, "").replace("\\", "/").lower()
                         if not self._c22_is_test_suite_or_cached_path(path_expr, scope_id, lineno, fn_lower, node=node):
                             _add_finding(node, mod_name, scope_id, "FILE_DELETE", "PATH_TRAVERSAL", "CWE-22", "CWE-22")

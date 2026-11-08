@@ -293,7 +293,7 @@ def check_source_shape() -> list:
         'blindspot parameter collector':
             'if self._c22_is_framework_vocab_serializer_write(node, mod_name):\n                continue',
         'phase-5 FILE_WRITE collector':
-            'and not self._c22_is_framework_vocab_serializer_write(node, mod_name):',
+            'and not self._c22_is_framework_vocab_serializer_write(node, mod_name) \\',
         'registry sink factory':
             'self._c22_is_framework_vocab_serializer_write(\n                node, self._scope_module(scope_id)):',
     }

@@ -65,6 +65,15 @@ carries `from huggingface_hub import <name>`, or the call uses the qualified
   * a non-literal or writing mode is unknown, so both stay registered.
 Measured over the arena CI rows the current engine still emits: 52 rows in 48 converter scripts
 match, and 0 of the 24 blessed CWE-22 keys (8 parity + 16 Big-8) match in any spelling.
+
+Refused, with its numbers -- CWE-117, the numeric-format-spec proof
+--------------------------------------------------------------------
+`format(v, ",")` raises on a `str`, so an f-string field carrying a `,` (or `d`/`.3f`/`%`) spec is
+CPython-proven numeric and cannot smuggle the newline CWE-117 is about. Elegant, and still wrong:
+it yields 3 arena rows and, on the pinned Big-8 corpus, deletes 8 CWE-117 rows out of 29 --
+1602/1603/1604/1605/1607/1608/1610/1611 in `src/transformers/trainer.py`, every one of them a blessed
+key and not one an FP. Tier 8 pins all eight loud and the mutation installs the predicate to prove
+the refusal is load-bearing.
 """
 from __future__ import annotations
 
@@ -314,6 +323,52 @@ def check_slice_d() -> list:
     return failures
 
 
+TRAINER_LEAF = 'src__transformers__trainer.py'
+TRAINER_KEY = 'scratch/_p3_big/' + TRAINER_LEAF
+BLESSED_C117_TRAINER = (1602, 1603, 1604, 1605, 1607, 1608, 1610, 1611)
+# Filled by the shipped arm below; the mutation compares against it instead of a hand-typed count.
+SHIPPED_TRAINER_LOUD = []
+
+
+def trainer_rows() -> list:
+    """One scan of the corpus file the numeric-spec slice would hit, on the repo-relative key.
+
+    Two halves are load-bearing and both were measured. The bytes come from the tracked corpus copy
+    (`verify_corpus` hashes it against the pinned value and `scratch/_p3_big/` is git-ignored, so CI
+    has nothing else to read -- here they are byte-identical, 233,460 bytes). The key is the baseline
+    spelling: with an absolute key the same source yields 12 CWE-117 rows instead of 29 and loses
+    blessed lines 1605 and 1607, because `scope_module`/`file_paths` resolve through the
+    repo-relative POSIX spelling the frozen `.keys` files themselves use.
+    """
+    with open(os.path.join(BIG8_CORPUS, TRAINER_LEAF), encoding='utf-8', errors='replace') as handle:
+        src = handle.read()
+    return scan({TRAINER_KEY: src}, 'CWE-117')
+
+
+def check_refused_value_slice() -> list:
+    """The numeric-format-spec exemption was measured and refused; this tier keeps it refused.
+
+    `format(value, ",")` raises on a `str`, so a `,`-spec field is CPython-proven numeric and
+    cannot carry the newline CWE-117 is about. It is still the right answer nowhere: measured over
+    the live arena rows it yields 3 rows, and on this corpus the same predicate deletes 8 of the 29
+    CWE-117 rows -- all eight are blessed keys (1602, 1603, 1604, 1605, 1607, 1608, 1610, 1611, the
+    memory-stat block of `src/transformers/trainer.py`) and not one of them is an FP. 3 FPs for 8
+    TPs is the trade the doctrine forbids, so the predicate stays out of the engine and all eight
+    rows must be reported.
+    """
+    failures = []
+    global SHIPPED_TRAINER_LOUD
+    loud, _registered, _records = trainer_rows()
+    SHIPPED_TRAINER_LOUD = list(loud)
+    for line in BLESSED_C117_TRAINER:
+        if line not in loud:
+            failures.append(f'trainer.py:{line} went silent; it is one of the 8 blessed CWE-117 keys '
+                            'the numeric-format-spec refusal exists to protect')
+    print('  tier8 refused value slice pinned: 8 blessed CWE-117 lines loud '
+          f'({len(loud)} CWE-117 rows in the trainer corpus)')
+    return failures
+
+
 def check_blessed_lines_stay_loud() -> list:
     """The blessed lines a widened value-domain proof could actually reach, re-scanned loud."""
     failures = []
@@ -459,12 +514,38 @@ def run_mutations() -> list:
         ast_scanner.TaintTracker._compares_two_secrets = shipped_secrets
         ast_scanner.TaintTracker._c208_is_unit_test_assertion = shipped_assertion
 
+    shipped_exempt = ast_scanner.TaintTracker._sink_context_exempt
+
+    def with_numeric_spec_exemption(self, cwe_id, node, scope_id):
+        if cwe_id == 'CWE-117' and node.args and isinstance(node.args[0], ast.JoinedStr):
+            fields = [v for v in node.args[0].values if isinstance(v, ast.FormattedValue)]
+            if fields and all(
+                    getattr(v.format_spec, 'values', None)
+                    and isinstance(v.format_spec.values[0], ast.Constant)
+                    and ',' in str(v.format_spec.values[0].value) for v in fields):
+                return True
+        return shipped_exempt(self, cwe_id, node, scope_id)
+
+    ast_scanner.TaintTracker._sink_context_exempt = with_numeric_spec_exemption
+    try:
+        loud_mut, _r, _c = trainer_rows()
+        silenced = [line for line in BLESSED_C117_TRAINER if line not in loud_mut]
+        # The mutant has to remove exactly the blessed block and nothing else: on this corpus the
+        # predicate's yield is 8 rows, all 8 are true positives, so 0 FPs is the whole story.
+        results.append(('c117_numeric_spec_refusal_is_load_bearing',
+                        len(silenced) == len(BLESSED_C117_TRAINER)
+                        and bool(SHIPPED_TRAINER_LOUD)
+                        and len(SHIPPED_TRAINER_LOUD) - len(loud_mut) == len(silenced)))
+    finally:
+        ast_scanner.TaintTracker._sink_context_exempt = shipped_exempt
+
     restored = (ast_scanner.TaintTracker._c22_is_literal_readonly_open is shipped_literal
                 and ast_scanner.TaintTracker._c22_is_hub_cache_read is shipped_resolver
                 and ast_scanner.TaintTracker._c22_module_hub_resolvers is shipped_bindings
                 and ast_scanner.TaintTracker._cwe338_display_only_draw is shipped_display
                 and ast_scanner.CWE338_SECURITY_NAME_WORDS is shipped_words
                 and ast_scanner.TaintTracker._compares_two_secrets is shipped_secrets
+                and ast_scanner.TaintTracker._sink_context_exempt is shipped_exempt
                 and ast_scanner.TaintTracker._c208_is_unit_test_assertion is shipped_assertion)
     results.append(('engine_restored_after_mutation', restored))
     for name, ok in results:
@@ -476,7 +557,8 @@ def run_mutations() -> list:
 def main() -> int:
     failures = []
     for check in (check_baseline_domain, check_slice_a, check_slice_b, check_slice_c,
-                   check_slice_d, check_blessed_lines_stay_loud, check_source_shape):
+                   check_slice_d, check_blessed_lines_stay_loud, check_source_shape,
+                   check_refused_value_slice):
         failures.extend(check())
     failures.extend(run_mutations())
     if failures:
@@ -484,8 +566,9 @@ def main() -> int:
         return 1
     print('VERDICT: PASS - the literal read-only open and the hub cache-resolver read never register, '
           'the two CWE-338 value domains are quiet while every credential veto and all 8 blessed '
-          'lines stay loud, the CWE-208 constant partition holds under two independent guards, and '
-          'every conjunct moves under its own mutation.')
+          'lines stay loud, the CWE-208 constant partition holds under two independent guards, the '
+          'refused CWE-117 numeric-spec slice keeps all 8 trainer keys loud, and every conjunct '
+          'moves under its own mutation.')
     return 0
 
 

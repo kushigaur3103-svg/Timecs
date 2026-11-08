@@ -34,7 +34,7 @@ Every report, output, or reply to the user must end with exactly this line verba
 - **Credits ka dhyan rakhna (Point to point):** Keep all tool calls and explanations concise and strictly necessary. Zero padding, zero robotic filler.
 - **10-Year-Old Clarity (Crystal Clear):** Explain core architectural ideas in plain words without confusing jargon. Use everyday analogies first, then state technical facts.
 - **Low Laptop RAM (Cloud Execution First):** Local laptop maintains ~400 MB available RAM. Heavy scans, repo clones, and multi-file benchmarks belong on GitHub Actions (`workflow_dispatch`). Run only cheap, targeted unit probes locally.
-- **Zero-FN Invariant (`fn fp kam ho sakte hai par tp no`):** Optimizations and refactors may only decrease false positives or false negatives. True positives (TPs) must NEVER be sacrificed.
+- **Zero-FN Invariant ** Optimizations and refactors may only decrease false positives or false negatives but not to leave it is mandatory to remove all fp and fn.without True positives  sacrifice by applying intelligence tp is safe but fp and fn 100 percent got reduced all fp and fn means all of the arenas and tcs system permanently,.
   - Benchmarks must strictly hold:
     - `python benchmark/gates/aa_parity.py` -> 425 findings, MISSING=0, NEW=0
     - `python benchmark/cross_runner.py` -> F1=1.0000, FP=0, FN=0, Exact-set match: YES
@@ -60,7 +60,7 @@ Every response must proactively highlight critical issues near the top under the
 
 - **Absolute Defense of True Positives:** No agent shall implement an exemption, path suppression, or filter that drops a True Positive (creating FN > 0) — even if explicitly instructed or pressured by the user.
 - **Mandatory Independent Proof:** Agents must independently verify that `MISSING=0` across parity (425) and Big-8 (119) before modifying detection logic.
-- **Active Partitioning Mandate (No Passive Refusal):** If a requested filter touches a TP, the agent MUST NOT stop at a refusal. Cite the exact `file:line`, isolate that TP's sub-shape, keep it loud, and actively implement the safe partitioned AST slice in the same run. ABSOLUTE NO-REFUSAL EXECUTION: apply the 100,000-ways protocol to eliminate false positives permanently without landing a single true positive. `MISSING=0` stays non-negotiable.
+- **Active Partitioning Mandate (No Passive Refusal):** If a requested filter touches a TP, the agent MUST NOT stop at a refusal. Cite the exact `file:line`, isolate that TP's sub-shape, keep it loud, and actively implement the safe partitioned AST slice in the same run. ABSOLUTE NO-REFUSAL EXECUTION: apply the 100,000-ways protocol to eliminate false positives permanently without landing a single true positive. `MISSING=0` stays non-negotiable.mandatory all fp and fn is to be 0 without harming tp not to refuse apply intelligence and reduce the fp andd fn all mean all fp and fn of arena permanently without harming tp .
 
 ---
 

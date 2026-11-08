@@ -120,6 +120,7 @@ A refusal is never the final answer to an FP elimination task. The answer is nev
 4. **Zero Recurring Defects:** A resolved FP pattern must stay permanently resolved across all subsequent engine iterations.
 
 ---
+## fir wo hi bat bar bar mene kha tha sare jitne bhi fp hai sare khatam karde par tu man kyu nahi raha yar mere credits bhi khatam ho rahe hai terko bar bar yeh samjhane me safly smart tarike se sare fp marde bina tp ko nuksan pahochae fir chahe tu kuch bhi kar .sare matlabh sare fp ek bhi fp nahi bacchna chahiye fp = 0 and fn= 0 is mandetory.
 
 ## Harness Engineering Laws (Ground Rules for Gate Tests)
 

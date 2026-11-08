@@ -133,6 +133,16 @@ SEAL_TARGETS = ('refused', 'implemented')
 BINDING_SEAL_ROWS = ('hole_bound_literal', 'hole_bound_sealed_call', 'hole_bound_float_env',
                      'hole_bound_chain', 'hole_bound_local_in_other_scope')
 
+# The census and the tree argument are two different axes, and TIER 5 used to confuse them.
+# `arity_wanted = 3 if shipped else 2` tied the *seal's parameter count* to *census presence*, which was
+# true the day it was written (52e8676: the funnel took node + shadowed, the census was withdrawn) and
+# stopped being true the day Slice F (3d7097a) widened the funnel to carry the module tree while the
+# census stayed withdrawn on the cost above. The engine was correct and strictly stricter -- both record
+# paths passed the tree -- and the gate failed on its own stale constant: 0 findings moved, 1 gate red.
+# `_sealed_definition_arity()` now asks the shipped signature, and `_arity_counter_discriminates()`
+# proves the counter underneath it tells a 2-argument call from a 3-argument one, so the restored row
+# can still go loud instead of agreeing by construction.
+
 
 def binding_seal_shipped() -> bool:
     """Does this engine carry the unique-binding census? Read from the module, never from a comment."""
@@ -494,6 +504,36 @@ def _sealed_call_arities(module_src: str) -> list:
         start = j
 
 
+def _sealed_definition_arity() -> int:
+    """How many arguments the shipped seal actually declares, read off its own signature.
+
+    This used to be a guess: `3 if shipped else 2`, where `shipped` asked whether the unique-binding
+    census exists. Those are different axes. Slice F (3d7097a) widened the funnel to carry the module
+    tree -- so the registry path and the blindspot collector cannot disagree about one log statement --
+    and left the census withdrawn on its measured cost. A correct engine therefore passes 3 arguments
+    while `shipped` is False, and the guess went loud without a single finding moving. Asking the
+    definition is both the honest source and self-updating: a call site that drops the tree, or a seal
+    that grows a parameter, fails this row on its own instead of waiting for someone to edit a
+    constant to match.
+    """
+    params = inspect.signature(ast_scanner.TaintTracker._cwe117_message_is_sealed).parameters
+    return len([name for name in params if name != 'self'])
+
+
+def _arity_counter_discriminates() -> bool:
+    """Proof that the arity lock can go loud, measured on text the helper is given.
+
+    Harness Law 8: a predicate-only lock must move under its own mutation. A source-text check cannot
+    be reached by an in-memory patch, so the mutation is made in the text -- the same helper reads a
+    two-argument call and a three-argument call, and must report them as different. If it ever returns
+    one count for both, `both sites agree on the arity` is decorative and this row says so.
+    """
+    two = 'class T:\n    def m(self):\n        return self._cwe117_message_is_sealed(a, b)\n'
+    three = ('class T:\n    def m(self):\n        return self._cwe117_message_is_sealed('
+             'a, b, c)\n')
+    return _sealed_call_arities(two) == [2] and _sealed_call_arities(three) == [3]
+
+
 def check_one_answer():
     """TIER 5: one exemption answer for both CWE-117 record paths, proved behaviorally.
 
@@ -512,7 +552,7 @@ def check_one_answer():
     module_src = _frag(ast_scanner)
     calls = module_src.count('self._cwe117_message_is_sealed(')
     numeric_src = _frag(ast_scanner.TaintTracker._log_message_is_numeric_only)
-    arity_wanted = 3 if shipped else 2
+    arity_wanted = _sealed_definition_arity()
     if shipped:
         census_rows = (
             ('binding map asked only through the tree',
@@ -547,8 +587,11 @@ def check_one_answer():
              f'_cwe117_message_is_sealed is called {calls} time(s), expected 2 (registry + collector)'),
             ('both sites agree on the arity', calls == 2
              and all(a == arity_wanted for a in _sealed_call_arities(module_src)),
-             f'a call site answers with a different arity than {arity_wanted}, so the two record '
-             'paths can disagree about the same log statement'),
+             f'a call site answers with a different arity than the {arity_wanted} the definition '
+             'declares, so the two record paths can disagree about the same log statement'),
+            ('the arity lock can go loud', _arity_counter_discriminates(),
+             'the counter read the same argument count off a 2-argument and a 3-argument call, so '
+             '"both sites agree on the arity" would be decorative'),
             *census_rows):
         print(f'  {"ok" if ok else "MISMATCH":8s} {label}')
         if not ok:

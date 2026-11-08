@@ -20,6 +20,32 @@ Every report, output, or reply to the user must end with exactly this line verba
 10x good esse hi dekha kar reports bariki se koi galti nahi dhyan se dekh le isko or assume karo ki credits ka dhyan rakhna hai kyuki vo low hai fir decision lena hai (point to point ) par abhi quodar credit kam hai or jo bhi samjhaye 10 year old boy or cristal clear kaisa jaisa samjhana par respiratory pub hai git ki credits ki problem nahi hai  par  laptop me ram kam hai.or kam ki recomandation phele keval kamki. koi galti ki gunjaish nahi  chodni . or changes se koi, fp, fn tp, accuracy,speed,ability affect nahi honi chahiye fn fp kam ho sakte hai par tp no isko likhne me bhot mehnat haoti hai please remember it refusal nahi fn= 0 .or dekhle fir bad me bolega sorry . proven then claim  ghade samjha bhaiiiii or jo bhi fix kare permanent hone chahiye.
 
 ```
+## Mandatory Protocol: The "Zero-Punt & Professional AST Provenance" Law
+
+### 1. The Anti-Punting & Single-Turn Execution Mandate
+- **Refusal is Strictly Illegal:** "Mujhse nahi ho raha", "TP mar raha hai", ya "Yeh risky hai" bolkar haath khade karna ya execution rokna ek fatal failure mana jayega.
+- **Immediate Sub-Shape Isolation:** Agar koi requested filter kisi ek True Positive (TP) ko touch karta hai, toh agent usi turn mein:
+  1. Us TP ki exact `file:line` aur uski unique AST shape (e.g., dynamic variable, reflection, taint flow) ko isolate karega aur use fail-closed LOUD rakhega.
+  2. Bachi hui 95%+ harmless library shapes par safe AST filter usi response mein deploy karke dikhayega.
+- **No Waiting on Excuses:** "User agla prompt dega tab karunga" bolna mana hai; safe partitioned slice usi turn mein ship hona anivarya hai.
+
+### 2. Prohibition of Cheap Heuristics (Zero-Path-Filter Law)
+- **Folder/File-Name Shortcuts Banned:** Kisi bhi rule ko chup karwane ke liye path-based string match (jaise `tests/`, `examples/`, `convert_*.py`) lagana strictly prohibited hai.
+- **Value & Provenance First (Professional Standard):** Har filter strictly AST-level dataflow aur provenance par based hona chahiye:
+  - Source analysis: Kya path argument kisi untrusted network/socket call se juda hai?
+  - Destination analysis: Kya destination function standard export method (`save_pretrained`, `to_json_file`) hai jisme untrusted taint flow nahi hai?
+  - Mode analysis: Read-only vs write-only distinction node level par verify ho.
+
+### 3. Lexical Scope & Def-Use Enforcement
+- **No Blanket Variable Name Matching:** Variable ke naam (jaise `args`, `path`, `data`) par file-wide assumption lena prohibited hai.
+- **Scope-Aware Binding:** Har identifier ko uske lexical block (`_c22_scope_binds`) aur assignment point par trace karna mandatory hai. Ek function ka dirty `args` doosre function ke clean CLI argument ko poison nahi karega.
+
+### 4. Mathematical Zero-FN Guarantee (The Proof-Before-Commit Bar)
+- Koi bhi filter tabhi production-ready mana jayega jab:
+  - `aa_parity.py` -> EXACT 425/425 (MISSING=0, NEW=0).
+  - `big8_ab.py` -> EXACT 119/119 (MISSING=0, NEW=0).
+  - `cross_runner.py` -> F1 = 1.0000.
+  - Latency invariant: Whole scan time regress nahi hona chahiye (CPU ratio <= 1.0x).
 
 ## 🚨 MOST IMPORTANT RULE #1: Zero-Refusal & Active Engineering Directive (Refusal is a Crime)
 

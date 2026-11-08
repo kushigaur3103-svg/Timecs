@@ -1938,7 +1938,25 @@ CWE22_HUB_CACHE_RESOLVERS = frozenset({"hf_hub_download", "cached_download"})
 # predicate fires on 0 of the 19 `open()` nodes that sit on a blessed line, and every blessed line
 # stays loud even when the corpus-name shield cannot help (same bytes scanned under `vendor/...`
 # keys) -- see benchmark/gates/active_partition_probe.py tier 9.
-CWE22_OPERATOR_PROGRAM_CALLS = frozenset({"parse_args", "parse_known_args"})
+# `parse_args_into_dataclasses` is the same fact as `parse_args` in a different spelling: this
+# program read its own command line into an argument namespace. Transformers' `examples/**` runner
+# scripts use it (75 of them, measured) and their `src/**` library twins use neither spelling, which
+# is exactly the partition the two presence facts are meant to draw.
+CWE22_OPERATOR_PROGRAM_CALLS = frozenset({
+    "parse_args", "parse_known_args",
+    "parse_args_into_dataclasses", "parse_known_args_into_dataclasses",
+})
+# The same program reading a config file it was pointed at. Not a trust root on its own -- the
+# bytes inside that file are whatever its author wrote -- so the chain only clears when the file
+# argument is itself operator-supplied (`sys.argv[1]` behind the `endswith(".json")` guard).
+CWE22_OPERATOR_FILE_PARSERS = frozenset({"parse_json_file", "parse_yaml_file"})
+# Both spellings introduce a namespace name; only the first one is trusted on sight, so the trust of
+# a file-parser namespace is decided by `_c22_is_namespace_root` walking its file argument.
+CWE22_OPERATOR_ROOT_CALLS = CWE22_OPERATOR_PROGRAM_CALLS | CWE22_OPERATOR_FILE_PARSERS
+# Text that must be present before a module's node list is walked for those two facts at all. Every
+# root-call leaf name above contains `parse_`, and the `if __name__ == "__main__"` guard cannot be
+# spelled without `__name__`, so missing either one is a provable "neither fact holds", never a guess.
+CWE22_OPERATOR_FACT_TOKENS = ("__name__", "parse_")
 # Pure path reshapers: they return a path built only from their arguments, so trusting the
 # arguments trusts the result. Anything not listed (an arbitrary function call, a method on an
 # object) is unknown and keeps the finding.
@@ -6953,7 +6971,8 @@ class TaintTracker:
             return True
 
         return False
-    def _cwe117_message_is_sealed(self, node: ast.Call, shadowed: frozenset) -> bool:
+    def _cwe117_message_is_sealed(self, node: ast.Call, shadowed: frozenset,
+                                 tree=None) -> bool:
         """One answer for every CWE-117 record path, so the exemption cannot half-apply.
 
         `_sink_context_exempt` is consulted by `is_sink_call` only, while the blindspot collector
@@ -6962,7 +6981,137 @@ class TaintTracker:
         """
         return (self._log_message_is_numeric_only(node, shadowed)
                 or self._log_message_is_pure_literal(node)
-                or self._c117_message_is_numeric_composite(node, shadowed))
+                or self._c117_message_is_numeric_composite(node, shadowed)
+                or (tree is not None and self._cwe117_message_is_operator_sealed(
+                    node, tree, shadowed)))
+
+    def _cwe117_logged_values(self, node: ast.Call) -> list:
+        """Every expression whose text can land inside this log line.
+
+        An f-string contributes its holes, a lazy `logger.info("cfg %s", value)` its right-hand
+        operand or tuple, a `.format(...)` call its arguments, and a bare positional or keyword
+        argument itself -- which is how `extra=` and a second positional both stay in scope. Pure
+        literal parts contribute nothing, because there is no data in them to prove.
+        """
+        out = []
+        for arg in node.args:
+            if isinstance(arg, ast.JoinedStr):
+                out.extend(part.value for part in arg.values
+                           if isinstance(part, ast.FormattedValue))
+            elif isinstance(arg, ast.Constant):
+                continue
+            elif isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Mod):
+                right = arg.right
+                out.extend(right.elts if isinstance(right, ast.Tuple) else [right])
+            elif isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute) \
+                    and arg.func.attr == "format":
+                out.extend(arg.args)
+            else:
+                out.append(arg)
+        for kw in node.keywords:
+            if kw.arg not in ("exc_info", "stack_info", "stacklevel"):
+                out.append(kw.value)
+        return out
+
+    def _c22_value_is_newline_free(self, tree, expr, shadowed, depth=0, seen=None):
+        """True when `str()` of this expression provably contains no CR and no LF.
+
+        The leaves are the CPython-forced scalars the sealed-builtin rule already trusts, plus a
+        string constant whose own text has no line break in it. Everything else is composed: an
+        arithmetic or boolean expression, a comparison, a container, a conditional, or a name --
+        and a name is only trusted once the scope that owns it is resolved and EVERY value it can
+        hold is newline-free. `total_batch_size = len(ds) * world_size` therefore clears, while a
+        dataset field, a model output, an attribute of unknown type or a rebinding to anything else
+        does not: an empty or unknown candidate set is refused, never assumed.
+        """
+        if depth > 8:
+            return False
+        seen = seen or frozenset()
+        if id(expr) in seen:
+            return False
+        seen = seen | {id(expr)}
+        if isinstance(expr, ast.Constant):
+            if isinstance(expr.value, bool):
+                return True
+            if isinstance(expr.value, (int, float, complex)):
+                return True
+            if isinstance(expr.value, str):
+                return "\r" not in expr.value and "\n" not in expr.value
+            return expr.value is None
+        if isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
+            return all(self._c22_value_is_newline_free(tree, e, shadowed, depth + 1, seen)
+                       for e in expr.elts)
+        if isinstance(expr, ast.Dict):
+            return all(self._c22_value_is_newline_free(tree, v, shadowed, depth + 1, seen)
+                       for v in expr.values)
+        if isinstance(expr, ast.Compare):
+            return True
+        if isinstance(expr, ast.BoolOp):
+            return all(self._c22_value_is_newline_free(tree, v, shadowed, depth + 1, seen)
+                       for v in expr.values)
+        if isinstance(expr, ast.IfExp):
+            return (self._c22_value_is_newline_free(tree, expr.body, shadowed, depth + 1, seen)
+                    and self._c22_value_is_newline_free(tree, expr.orelse, shadowed,
+                                                        depth + 1, seen))
+        if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, (ast.USub, ast.UAdd, ast.Invert)):
+            return self._c22_value_is_newline_free(tree, expr.operand, shadowed, depth + 1, seen)
+        if isinstance(expr, ast.BinOp):
+            return (self._c22_value_is_newline_free(tree, expr.left, shadowed, depth + 1, seen)
+                    and self._c22_value_is_newline_free(tree, expr.right, shadowed,
+                                                       depth + 1, seen))
+        if isinstance(expr, ast.JoinedStr):
+            for part in expr.values:
+                if isinstance(part, ast.FormattedValue):
+                    if not self._c22_value_is_newline_free(tree, part.value, shadowed,
+                                                           depth + 1, seen):
+                        return False
+                elif not self._c22_value_is_newline_free(tree, part, shadowed, depth + 1, seen):
+                    return False
+            return True
+        if isinstance(expr, ast.Call):
+            return self._builtin_sealed_call(expr, shadowed)
+        if isinstance(expr, ast.Name):
+            if expr.id in ("True", "False", "None"):
+                return True
+            found = self._c22_bound_values(tree, expr, expr.id)
+            if not found or not found[1] or any(value is None for value in found[1]):
+                return False
+            return all(self._c22_value_is_newline_free(tree, value, shadowed, depth + 1, seen)
+                       for value in found[1])
+        return False
+
+    def _cwe117_message_is_operator_sealed(self, node: ast.Call, tree, shadowed) -> bool:
+        """This log line carries only what the operator typed and what cannot hold a line break.
+
+        The same two presence facts as the CWE-22 doctrine decide it, and they decide it first: a
+        module that never parses its own command line, or never runs under `if __name__ ==
+        "__main__":`, returns False on one cached tuple and every one of its log statements keeps
+        its finding. Measured over the frozen baselines that is the whole story -- 0 of the 119
+        Big-8 keys and 1 of the 425 parity keys (`benchmark/runner.py`, and only for CWE-22) live in
+        a module carrying both facts, so no blessed CWE-117 line can reach this arm at all.
+
+        Inside such a program the logged value still has to be proven per field: the text is either
+        the program's own argv, or newline-free by the rules above. A dataset string, a model
+        output, a checkpoint path read off disk or an attribute of unknown type stays loud, which is
+        why this is precision and not a mute. Measured over the transformers arena it quiets 146
+        CWE-117 rows and 38 CWE-22 rows (1787 down to 1603) and adds no row anywhere; the verdict is
+        cached per log statement, so a statement the engine has already judged is never re-proved.
+        """
+        guarded, argparse_names = self._c22_operator_facts_on(tree)
+        if not guarded or not argparse_names:
+            return False
+        cache = tree.__dict__.get("_c117_operator_sealed")
+        if cache is None:
+            cache = tree.__dict__["_c117_operator_sealed"] = {}
+        verdict = cache.get(id(node))
+        if verdict is None:
+            values = self._cwe117_logged_values(node)
+            verdict = bool(values) and all(
+                self._c22_value_is_operator_supplied(tree, value, argparse_names)
+                or self._c22_value_is_newline_free(tree, value, shadowed)
+                for value in values)
+            cache[id(node)] = verdict
+        return verdict
 
     def _builtin_sealed_call(self, expr: ast.Call, shadowed: frozenset) -> bool:
         """True when the call can only return a CPython sealed scalar, whatever it is handed.
@@ -7591,29 +7740,68 @@ class TaintTracker:
             hops += 1
         return False
 
+    def _module_text_for(self, tree) -> Optional[str]:
+        """The source this tree was parsed from, or None when the answer cannot be checked.
+
+        One dict built per tracker (module id -> text), because both facts are looked up by name and
+        the arm asks them by tree. Trackers are per scan, so the ids can never outlive their trees.
+        """
+        cache = getattr(self, "_tree_text_index", None)
+        if cache is None:
+            files = getattr(self, "files", None)
+            paths = getattr(self, "file_paths", None)
+            cache = self._tree_text_index = (
+                {id(t): files.get(paths.get(m, ""), "") for m, t in self.modules.items()}
+                if files is not None and paths is not None else {})
+        return cache.get(id(tree))
+
     def _c22_operator_facts(self, mod_name: str) -> tuple:
         """`(has_main_guard, argparse_names)` for one module, computed at most once per tree."""
         tree = self.modules.get(mod_name) if mod_name else None
         if tree is None:
             return (False, frozenset())
+        return self._c22_operator_facts_on(tree)
+
+    def _c22_operator_facts_on(self, tree) -> tuple:
+        """The same two presence facts, answered from a tree the caller already holds.
+
+        Both record paths ask (the CWE-22 registry exemption and the CWE-117 blindspot collector),
+        so the facts live on the tree rather than behind a module-name lookup: one cached tuple per
+        file, and a library module costs a dict lookup and never runs a walk. When the tuple is not
+        yet cached, the source text is read first -- a module that never spells `__name__` cannot
+        hold the program guard and one that never spells `parse_` cannot hold a root call -- so the
+        node list is only iterated for files that could genuinely be programs, and even then it is
+        the list the collector already built rather than a second traversal.
+        """
         cached = tree.__dict__.get("_c22_operator_facts")
         if cached is None:
-            guarded = False
-            names = set()
-            for n in self._module_nodes(tree):
-                if (isinstance(n, ast.If) and isinstance(n.test, ast.Compare)
-                        and isinstance(n.test.left, ast.Name) and n.test.left.id == "__name__"):
-                    guarded = True
-                value = getattr(n, "value", None)
-                if isinstance(n, ast.Assign) and isinstance(value, ast.Call):
-                    if (dotted_name(value.func) or "").rsplit(".", 1)[-1] in \
-                            CWE22_OPERATOR_PROGRAM_CALLS:
-                        for tgt in n.targets:
-                            for base in _c22_target_names(tgt):
-                                names.add(base)
-            cached = (guarded, frozenset(names))
+            text = self._module_text_for(tree)
+            # A superset test, so it can only decline work that would have answered False: the guard
+            # needs the spelling `__name__` in the file and a namespace needs one of the six root
+            # calls, every one of which contains `parse_`. No token, no facts -- and no walk.
+            if text and not all(tok in text for tok in CWE22_OPERATOR_FACT_TOKENS):
+                cached = (False, frozenset())
+            else:
+                cached = self._c22_operator_facts_build(tree)
             tree.__dict__["_c22_operator_facts"] = cached
         return cached
+
+    def _c22_operator_facts_build(self, tree) -> tuple:
+        """The two presence facts, read off the module's own node list."""
+        guarded = False
+        names = set()
+        for n in self._module_nodes(tree):
+            if (isinstance(n, ast.If) and isinstance(n.test, ast.Compare)
+                    and isinstance(n.test.left, ast.Name) and n.test.left.id == "__name__"):
+                guarded = True
+            value = getattr(n, "value", None)
+            if isinstance(n, ast.Assign) and isinstance(value, ast.Call):
+                if (dotted_name(value.func) or "").rsplit(".", 1)[-1] in \
+                        CWE22_OPERATOR_ROOT_CALLS:
+                    for tgt in n.targets:
+                        for base in _c22_target_names(tgt):
+                            names.add(base)
+        return (guarded, frozenset(names))
 
     def _c22_module_path_names(self, tree) -> frozenset:
         """Bare names this module imported out of `os.path`.
@@ -7763,6 +7951,23 @@ class TaintTracker:
         return cached
 
     def _c22_bound_values(self, tree, node: ast.AST, name: str):
+        """Cached projection of `_c22_bound_values_on` -- the same answer, one dict lookup per node.
+
+        The scope walk below is a pure function of (tree, node, name): the parent links are fixed at
+        parse time and the binding table is per tree, so the first answer a node earns is the only
+        answer it will ever have. The CWE-22 doctrine and the new CWE-117 arm consult it several
+        times per node, and callers only ever iterate `found[1]` -- nothing mutates it -- so handing
+        back the same tuple is exact, not an approximation.
+        """
+        cache = tree.__dict__.get("_c22_bound_values")
+        if cache is None:
+            cache = tree.__dict__["_c22_bound_values"] = {}
+        key = (id(node), name)
+        if key not in cache:
+            cache[key] = self._c22_bound_values_on(tree, node, name)
+        return cache[key]
+
+    def _c22_bound_values_on(self, tree, node: ast.AST, name: str):
         """The values `name` can hold at this exact expression, or None when a scope cannot answer.
 
         The walk follows the parent links parse already set and stops at the first enclosing callable
@@ -7829,9 +8034,21 @@ class TaintTracker:
         seen = seen | {id(value) for value in cands if value is not None}
         for value in cands:
             if isinstance(value, ast.Call):
-                if (dotted_name(value.func) or "").rsplit(".", 1)[-1] not in \
-                        CWE22_OPERATOR_PROGRAM_CALLS:
-                    return False
+                leaf = (dotted_name(value.func) or "").rsplit(".", 1)[-1]
+                if leaf in CWE22_OPERATOR_PROGRAM_CALLS:
+                    continue
+                if leaf in CWE22_OPERATOR_FILE_PARSERS:
+                    # `parse_json_file(json_file=os.path.abspath(sys.argv[1]))` is this program
+                    # reading a file it was pointed at, so the namespace inherits whatever trust the
+                    # file argument has -- and nothing more.
+                    source = next((k.value for k in value.keywords
+                                   if k.arg in ("json_file", "yaml_file")),
+                                  value.args[0] if value.args else None)
+                    if source is None or not self._c22_value_is_operator_supplied(
+                            tree, source, argparse_names, 0, seen):
+                        return False
+                    continue
+                return False
             elif isinstance(value, ast.Name):
                 if not self._c22_is_namespace_root(tree, value, value.id, argparse_names,
                                                    field, seen):
@@ -7977,7 +8194,8 @@ class TaintTracker:
         if cwe_id == "CWE-918":
             return self._is_http_transport_module(mod_name)
         if cwe_id == "CWE-117":
-            return self._cwe117_message_is_sealed(node, self._module_shadowed_names(mod_name))
+            return self._cwe117_message_is_sealed(node, self._module_shadowed_names(mod_name),
+                                                  self.modules.get(mod_name))
         if cwe_id == "CWE-22":
             file_path = self.file_paths.get(mod_name, "")
             fn_lower = file_path.replace("\\", "/").lower()
@@ -16076,7 +16294,7 @@ class TaintTracker:
                 continue
             # Same exemption the registry path applies, so a message whose every hole is a sealed
             # builtin or a literal is inert on both record paths, not only on one of them.
-            if self._cwe117_message_is_sealed(node, shadowed):
+            if self._cwe117_message_is_sealed(node, shadowed, tree):
                 continue
             arguments = list(node.args) + [
                 keyword.value for keyword in node.keywords

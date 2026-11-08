@@ -340,6 +340,96 @@ C770_OPERATOR_READ = ('src/m.py',
                       + "\n" + OP_MAIN + "    convert_gin(args.gin_file)\n",
                       'CWE-770', [], 0)
 
+# Slice F: the same two presence facts, applied to CWE-117. Every fixture is a HYBRID module -- it
+# parses its own command line under `if __name__ == '__main__':` and also holds a `request`-shaped
+# client value, because a log call only registers when the file has real client data somewhere. The
+# client line (12) is therefore loud in all of them; what the slice decides is only the second line.
+# Expectations are the numbers the working-copy engine printed for these exact strings.
+C117_HEAD = ("import argparse\n"
+             + "import logging\n"
+             + "import os\n"
+             + "import sys\n"
+             + "\n"
+             + "logger = logging.getLogger(__name__)\n"
+             + "parser = argparse.ArgumentParser()\n")
+C117_CLIENT = ("\n"
+               + "\ndef handle(request):\n"
+               + "    payload = request.args.get('q')\n"
+               + "    logger.info(f'query = {payload}')\n")
+C117_MAIN = ("\n"
+             + "if __name__ == '__main__':\n"
+             + "    args = parser.parse_args()\n")
+C117_JSON_ARGV_MAIN = ("\n"
+                       + "if __name__ == '__main__':\n"
+                       + "    args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))\n")
+C117_JSON_UNKNOWN_MAIN = ("\n"
+                          + "if __name__ == '__main__':\n"
+                          + "    args = parser.parse_json_file(json_file=fetch_path())\n")
+
+
+def c117_case(body, main=C117_MAIN, head=C117_HEAD):
+    return head + C117_CLIENT + body + main
+
+
+C117_OPERATOR_FIXTURES = {
+    # The logged text is this program's own argv, or a value CPython forces to have no line break.
+    'argv_field_quiet': ('src/m.py', c117_case(
+        "\n\ndef show():\n    logger.info(f'root = {args.model_dir}')\n"),
+        'CWE-117', [12], 1),
+    'numeric_local_quiet': ('src/m.py', c117_case(
+        "\n\ndef report():\n    total = len(items) * 2\n"
+        + "    logger.info(f'total = {total}')\n"),
+        'CWE-117', [12], 1),
+    'sealed_builtin_quiet': ('src/m.py', c117_case(
+        "\n\ndef report(request_count):\n    logger.info(f'n = {len(request_count)}')\n"),
+        'CWE-117', [12], 1),
+    'json_config_from_argv_quiet': ('src/m.py', c117_case(
+        "\n\ndef show():\n    logger.info(f'cfg = {args.train_file}')\n",
+        main=C117_JSON_ARGV_MAIN),
+        'CWE-117', [12], 1),
+    # One unprovable field in the line and the whole line is reported again: the rule is every value,
+    # not any value, and `str()`/a client payload/rebinding refuse.
+    'client_text_stays_loud': ('src/m.py', c117_case(
+        "\n\ndef other(request):\n    logger.info(f'e = {request.headers}')\n"),
+        'CWE-117', [12, 16], 2),
+    'mixed_client_and_argv_stays_loud': ('src/m.py', c117_case(
+        "\n\ndef show():\n    logger.info(f'mix = {args.model_dir} {query}')\n"),
+        'CWE-117', [12, 16], 2),
+    'rebound_client_stays_loud': ('src/m.py', c117_case(
+        "\n\ndef report():\n    total = len(items) * 2\n    total = query\n"
+        + "    logger.info(f'total = {total}')\n"),
+        'CWE-117', [12, 18], 2),
+    # The newline-in-a-literal refusal and the shadowed-builtin refusal are predicate-level facts: a
+    # log line whose only unproven value is a literal cannot register a CWE-117 sink at all (measured
+    # 1 record, [12] loud), so pinning them as sink fixtures would be vacuous. They live in
+    # C117_VALUE_PROOFS below, which asks `_c22_value_is_newline_free` the question directly.
+    # A config file is only as trusted as the path it was read from.
+    'json_config_from_unknown_stays_loud': ('src/m.py', c117_case(
+        "\n\ndef show():\n    logger.info(f'cfg = {args.train_file}')\n",
+        main=C117_JSON_UNKNOWN_MAIN),
+        'CWE-117', [12, 16], 2),
+    # Two functions that spell the same local the same way are two different proofs: the small one
+    # binds an arithmetic value, the big one binds the request, and the value cache has to answer each
+    # occurrence on its own.
+    'same_name_two_scopes_split': ('src/m.py', c117_case(
+        "\n\ndef small():\n    total = len(items) * 2\n"
+        + "    logger.info(f'total = {total}')\n"
+        + "\n\ndef big(request):\n    total = request.headers\n"
+        + "    logger.info(f'total = {total}')\n"),
+        'CWE-117', [12, 22], 2),
+    # And a module that does not both parse its own command line and run as a program keeps all of it.
+    'no_main_guard_stays_loud': ('src/m.py', c117_case(
+        "\n\ndef report():\n    total = len(items) * 2\n"
+        + "    logger.info(f'total = {total}')\n", main="\n\nreport()\n"),
+        'CWE-117', [12, 17], 2),
+    'no_parse_stays_loud': ('src/m.py', C117_HEAD.replace(
+        "parser = argparse.ArgumentParser()\n", "") + C117_CLIENT
+        + "\n\ndef report():\n    total = len(items) * 2\n"
+        + "    logger.info(f'total = {total}')\n"
+        + "\nif __name__ == '__main__':\n    report()\n",
+        'CWE-117', [11, 16], 2),
+}
+
 # Tier 9: the frozen blessed CWE-22 keys, scanned under a key that the engine's corpus-name shield
 # cannot see (`src__`/`tests__`/`corpus_big8`/`_p3_big` all make every CWE-22 exemption inert, so a
 # green parity run is not the reach proof). Lines are the keys themselves, from the frozen .keys.
@@ -576,6 +666,90 @@ def check_slice_e() -> list:
     return failures
 
 
+def newline_free_proof(source: str, hole: str):
+    """Ask `_c22_value_is_newline_free` the question it answers, on one f-string hole."""
+    tracker = ast_scanner.TaintTracker(files={'src/m.py': source}, max_workers=1)
+    mod = next(iter(tracker.file_paths), None)
+    tree = tracker.modules.get(mod)
+    if tree is None:
+        return None
+    shadowed = tracker._shadowed_names_in_tree(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FormattedValue) and ast.unparse(node.value) == hole:
+            return tracker._c22_value_is_newline_free(tree, node.value, shadowed)
+    return None
+
+
+def bound_value_probe(source: str, expr: str, names: list) -> list:
+    """Ask `_c22_bound_values` the same node under each spelling in `names`, answers unparsed.
+
+    The scope cache keys on (expression, name), so the question this answers is whether the name half
+    of that key is real: `args.model_dir` is one node, and the namespace proof and the value chain ask
+    it about two different things.
+    """
+    tracker = ast_scanner.TaintTracker(files={'src/m.py': source}, max_workers=1)
+    mod = next(iter(tracker.file_paths), None)
+    tree = tracker.modules.get(mod)
+    if tree is None:
+        return []
+    target = None
+    for node in ast.walk(tree):
+        if ast.unparse(node) == expr and isinstance(node, (ast.Attribute, ast.Name)):
+            target = node
+            break
+    if target is None:
+        return []
+    out = []
+    for name in names:
+        found = tracker._c22_bound_values(tree, target, name)
+        out.append(None if found is None
+                   else tuple(ast.unparse(v) if v is not None else 'None' for v in found[1]))
+    return out
+
+
+# (name, module source, the f-string hole to prove, expectation). `LOG_HEAD` is a module that is NOT
+# an operator program: these rows pin the value proof alone, exactly as the arm composes it.
+C117_VALUE_PROOFS = (
+    ('literal_with_line_break', C117_HEAD + "label = 'a\\nb'\n"
+     + "logger.info(f'v = {label}')\n", 'label', False),
+    ('literal_without_line_break', C117_HEAD + "label = 'a b'\n"
+     + "logger.info(f'v = {label}')\n", 'label', True),
+    ('arithmetic_over_sealed_builtin', C117_HEAD + "total = len(items) * 2\n"
+     + "logger.info(f'v = {total}')\n", 'total', True),
+    ('shadowed_builtin_is_not_sealed', C117_HEAD + "\ndef len(value):\n    return 'a\\nb'\n"
+     + "total = len(items) * 2\nlogger.info(f'v = {total}')\n", 'total', False),
+    ('comparison_yields_a_bool', C117_HEAD + "enabled = count == 2\n"
+     + "logger.info(f'v = {enabled}')\n", 'enabled', True),
+    ('attribute_type_is_unknown', C117_HEAD + "logger.info(f'v = {cfg.name}')\n", 'cfg.name', False),
+    ('rebound_to_unknown', C117_HEAD + "total = len(items)\ntotal = fetch()\n"
+     + "logger.info(f'v = {total}')\n", 'total', False),
+)
+
+
+def check_slice_f() -> list:
+    failures = []
+    for name, (path, source, cwe, expected, expected_records) in sorted(
+            C117_OPERATOR_FIXTURES.items()):
+        loud, registered, records = scan({path: source}, cwe)
+        if loud != expected:
+            failures.append(f'{name}: {cwe} lines {loud}, expected {expected}')
+        if records != expected_records:
+            failures.append(f'{name}: {records} {cwe} sink_records, expected {expected_records} '
+                            f'(registered={registered}; the mandate is registration, not emission)')
+    print('  tier11 slice F fixtures checked:', len(C117_OPERATOR_FIXTURES))
+    proofs = 0
+    for name, source, hole, expected in C117_VALUE_PROOFS:
+        got = newline_free_proof(source, hole)
+        proofs += 1
+        if got is None:
+            failures.append(f'{name}: no f-string hole {hole} reached the proof (harness defect)')
+        elif got is not expected:
+            failures.append(f'{name}: _c22_value_is_newline_free({hole}) = {got}, '
+                            f'expected {expected}')
+    print('  tier11 slice F value proofs checked:', proofs)
+    return failures
+
+
 def _reach_row(leaf: str, entry: tuple, src: str) -> list:
     """One blessed file, scanned under the key the corpus-name shield cannot see."""
     key, lines = entry
@@ -721,6 +895,29 @@ def check_source_shape() -> list:
                      'def _c22_is_namespace_root',
                      'if (owner, field) in mutated or ("", field) in mutated:',
                      'stack.append((child, owner if decorators and child in decorators else inner))',
+                     # Slice F: the arm, the two proofs it composes, and the file-parser trust rule
+                     # that only clears when the file argument itself is operator-supplied.
+                     'def _cwe117_message_is_operator_sealed',
+                     'def _c22_value_is_newline_free',
+                     'def _cwe117_logged_values',
+                     'def _c22_operator_facts_on',
+                     'CWE22_OPERATOR_FILE_PARSERS = frozenset',
+                     'CWE22_OPERATOR_ROOT_CALLS = CWE22_OPERATOR_PROGRAM_CALLS | CWE22_OPERATOR_FILE_PARSERS',
+                     'or (tree is not None and self._cwe117_message_is_operator_sealed(',
+                     'if self._cwe117_message_is_sealed(node, shadowed, tree):',
+                     # The two caches are pure, so their keys are the whole contract: one answer per
+                     # (tree, expression, name) and one verdict per (tree, log statement).
+                     'def _c22_bound_values_on',
+                     'key = (id(node), name)',
+                     'cache = tree.__dict__.get("_c117_operator_sealed")',
+                     'cache[id(node)] = verdict',
+                     # The facts pass reads the module's own cached node list and is only entered when
+                     # the source could hold either fact, so it never costs a second traversal.
+                     'def _c22_operator_facts_build',
+                     'def _module_text_for',
+                     'CWE22_OPERATOR_FACT_TOKENS = ("__name__", "parse_")',
+                     'if text and not all(tok in text for tok in CWE22_OPERATOR_FACT_TOKENS):',
+                     'for n in self._module_nodes(tree):',
                      # Every address that can register the row has to ask the new proof.
                      'if not is_protected and self._c22_is_operator_program_open(node, mod_name):',
                      'if self._c22_is_operator_program_open(node, mod_name):',
@@ -737,7 +934,13 @@ def check_source_shape() -> list:
     retired = ('_C338_BLESSED_LINES_SHIELD', '_C338_BLESSED_LINES', 'is_test_or_eval',
                # A file-wide name table cannot tell a converter's local from the module's command
                # line, so it must not come back: the scope-keyed table is the shipped proof.
-               'def _c22_assign_map', 'argparse_names:\n                return True')
+               'def _c22_assign_map', 'argparse_names:\n                return True',
+               # The collector consulted the seal without a tree, so the operator-program arm could
+               # not reach the path that records most of the arena's log sinks.
+               'if self._cwe117_message_is_sealed(node, shadowed):\n',
+               # The facts pass once did its own whole-tree walk, so every module that ever logged
+               # paid a traversal the collector had already done.
+               'for n in ast.walk(tree):\n                if (isinstance(n, ast.If)')
     for marker in retired:
         if marker in source:
             failures.append(f'a retired name/line shield is back in the engine: {marker}')
@@ -870,6 +1073,8 @@ def run_mutations() -> list:
         ast_scanner.TaintTracker._sink_context_exempt = shipped_exempt
 
     shipped_facts = ast_scanner.TaintTracker._c22_operator_facts
+    shipped_facts_on = ast_scanner.TaintTracker._c22_operator_facts_on
+    shipped_facts_build = ast_scanner.TaintTracker._c22_operator_facts_build
     shipped_open_pred = ast_scanner.TaintTracker._c22_is_operator_program_open
     shipped_expr_pred = ast_scanner.TaintTracker._c22_path_is_operator_supplied
     shipped_path_names = ast_scanner.TaintTracker._c22_module_path_names
@@ -877,15 +1082,17 @@ def run_mutations() -> list:
     shipped_ns_root = ast_scanner.TaintTracker._c22_is_namespace_root
     shipped_scope_binds = ast_scanner.TaintTracker._c22_scope_binds
 
-    # M1: the `__main__` guard conjunct is the fact that separates a program from a library.
-    ast_scanner.TaintTracker._c22_operator_facts = lambda self, mod: (
-        True, shipped_facts(self, mod)[1])
+    # M1: the `__main__` guard conjunct is the fact that separates a program from a library. The
+    # mutant forces it at the tree-level fact source and keeps the names the file really parsed, so
+    # it tests the conjunct and not the token screen that reads the same two facts.
+    ast_scanner.TaintTracker._c22_operator_facts_on = lambda self, tree: (
+        True, shipped_facts_build(self, tree)[1])
     try:
         loud, _r, _c = scan({'src/m.py': C22_OPERATOR_FIXTURES['no_main_guard_stays_loud'][1]},
                             'CWE-22')
         results.append(('c22_main_guard_conjunct_is_load_bearing', loud == []))
     finally:
-        ast_scanner.TaintTracker._c22_operator_facts = shipped_facts
+        ast_scanner.TaintTracker._c22_operator_facts_on = shipped_facts_on
 
     # M2: presence facts with the value chain dropped -- the Rung-1 form the doctrine forbids. Every
     # fixture below is an absence or an unresolvable value, and only the two environ-rooted rows,
@@ -1007,6 +1214,175 @@ def run_mutations() -> list:
     finally:
         ast_scanner.TaintTracker._c22_scope_binds = shipped_scope_binds
 
+    # M9: slice F's arm is what quiets the operator-program log lines. Remove the arm and every one
+    # of the four quiet fixtures registers its second sink again.
+    shipped_c117_arm = ast_scanner.TaintTracker._cwe117_message_is_operator_sealed
+    ast_scanner.TaintTracker._cwe117_message_is_operator_sealed = (
+        lambda self, node, tree, shadowed: False)
+    try:
+        moved = []
+        for fixture in ('argv_field_quiet', 'numeric_local_quiet',
+                        'json_config_from_argv_quiet'):
+            loud, _r, records = scan(
+                {'src/m.py': C117_OPERATOR_FIXTURES[fixture][1]}, 'CWE-117')
+            moved.append(records == 2 and len(loud) == 2)
+        held = []
+        for fixture in ('client_text_stays_loud', 'mixed_client_and_argv_stays_loud',
+                        'rebound_client_stays_loud', 'json_config_from_unknown_stays_loud'):
+            loud, _r, records = scan(
+                {'src/m.py': C117_OPERATOR_FIXTURES[fixture][1]}, 'CWE-117')
+            held.append(records == 2 and len(loud) == 2)
+        results.append(('c117_operator_program_arm_is_load_bearing',
+                        all(moved) and all(held)))
+    finally:
+        ast_scanner.TaintTracker._cwe117_message_is_operator_sealed = shipped_c117_arm
+
+    # M10: the newline-free proof is a separate arm from the argv proof. Blinding it must quiet
+    # nothing and re-loud exactly the two numeric fixtures, while the argv fixture stays quiet.
+    shipped_newline_free = ast_scanner.TaintTracker._c22_value_is_newline_free
+    ast_scanner.TaintTracker._c22_value_is_newline_free = (
+        lambda self, tree, expr, shadowed, depth=0, seen=None: False)
+    try:
+        numeric, _r, _c = scan(
+            {'src/m.py': C117_OPERATOR_FIXTURES['numeric_local_quiet'][1]}, 'CWE-117')
+        argv, _r3, _c3 = scan(
+            {'src/m.py': C117_OPERATOR_FIXTURES['argv_field_quiet'][1]}, 'CWE-117')
+        results.append(('c117_newline_free_proof_is_load_bearing',
+                        len(numeric) == 2 and argv == [12]))
+    finally:
+        ast_scanner.TaintTracker._c22_value_is_newline_free = shipped_newline_free
+
+    # M10b: the same proof asserted the other way. If every value were newline-free, the literal
+    # carrying a real line break and the shadowed `len` would both clear, and the two fixtures that
+    # depend on refusing them would go quiet.
+    ast_scanner.TaintTracker._c22_value_is_newline_free = (
+        lambda self, tree, expr, shadowed, depth=0, seen=None: True)
+    try:
+        flipped = [newline_free_proof(source, hole) for _n, source, hole, _e in C117_VALUE_PROOFS]
+        moved = [got is True and expected is False
+                 for (_n, _s, _h, expected), got in zip(C117_VALUE_PROOFS, flipped)]
+        results.append(('c117_value_proof_refusals_are_load_bearing',
+                        any(moved) and all(flipped)))
+    finally:
+        ast_scanner.TaintTracker._c22_value_is_newline_free = shipped_newline_free
+
+    # M11: a config namespace parsed from a file is trusted only as far as the file argument is.
+    # Admitting `parse_json_file` as a root on sight quiets the fixture whose file came from an
+    # unknown call -- the exact false negative the recursive proof exists to stop.
+    shipped_program_calls = ast_scanner.CWE22_OPERATOR_PROGRAM_CALLS
+    ast_scanner.CWE22_OPERATOR_PROGRAM_CALLS = ast_scanner.CWE22_OPERATOR_ROOT_CALLS
+    try:
+        unknown, _r, records = scan(
+            {'src/m.py': C117_OPERATOR_FIXTURES['json_config_from_unknown_stays_loud'][1]},
+            'CWE-117')
+        results.append(('c117_json_file_argument_proof_is_load_bearing',
+                        records == 1 or len(unknown) < 2))
+    finally:
+        ast_scanner.CWE22_OPERATOR_PROGRAM_CALLS = shipped_program_calls
+
+    # M12: the rule is every logged value, not any. Feeding the proof only the first value quiets a
+    # line that still interpolates a client payload.
+    shipped_logged_values = ast_scanner.TaintTracker._cwe117_logged_values
+    ast_scanner.TaintTracker._cwe117_logged_values = (
+        lambda self, node: shipped_logged_values(self, node)[:1])
+    try:
+        mixed, _r, records = scan(
+            {'src/m.py': C117_OPERATOR_FIXTURES['mixed_client_and_argv_stays_loud'][1]},
+            'CWE-117')
+        results.append(('c117_every_value_rule_is_load_bearing', records == 1 or len(mixed) < 2))
+    finally:
+        ast_scanner.TaintTracker._cwe117_logged_values = shipped_logged_values
+
+    # M13/M14: the two value caches move no finding row on their own -- they are pure caching -- so
+    # each key half has to be shown load-bearing separately. Dropping the expression from the scope
+    # key hands `small()`'s arithmetic binding to `big()`, which reads the request, and line 22 of the
+    # split fixture goes quiet (measured [12] against the shipped [12, 22]). Dropping the name hands
+    # the namespace's own binding to the `args.model_dir` question asked about the same node.
+    shipped_bound = ast_scanner.TaintTracker._c22_bound_values
+    shipped_bound_on = ast_scanner.TaintTracker._c22_bound_values_on
+
+    def bound_by_name_only(self, tree, node, name):
+        cache = tree.__dict__.get('_c22_bound_values')
+        if cache is None:
+            cache = tree.__dict__['_c22_bound_values'] = {}
+        key = ('', name)
+        if key not in cache:
+            cache[key] = shipped_bound_on(self, tree, node, name)
+        return cache[key]
+
+    def bound_by_node_only(self, tree, node, name):
+        cache = tree.__dict__.get('_c22_bound_values')
+        if cache is None:
+            cache = tree.__dict__['_c22_bound_values'] = {}
+        key = (id(node),)
+        if key not in cache:
+            cache[key] = shipped_bound_on(self, tree, node, name)
+        return cache[key]
+
+    split_source = C117_OPERATOR_FIXTURES['same_name_two_scopes_split'][1]
+    argv_source = C117_OPERATOR_FIXTURES['argv_field_quiet'][1]
+    clean_split = scan({'src/m.py': split_source}, 'CWE-117')[0]
+    clean_argv = scan({'src/m.py': argv_source}, 'CWE-117')[0]
+    ast_scanner.TaintTracker._c22_bound_values = bound_by_name_only
+    try:
+        name_only = scan({'src/m.py': split_source}, 'CWE-117')[0]
+    finally:
+        ast_scanner.TaintTracker._c22_bound_values = shipped_bound
+    results.append(('c22_bound_value_cache_scope_key_is_load_bearing',
+                    clean_split == [12, 22] and name_only == [12]))
+
+    spellings = ['args', 'args.model_dir']
+    split_answers = bound_value_probe(argv_source, 'args.model_dir', spellings)
+    ast_scanner.TaintTracker._c22_bound_values = bound_by_node_only
+    try:
+        collapsed = bound_value_probe(argv_source, 'args.model_dir', spellings)
+    finally:
+        ast_scanner.TaintTracker._c22_bound_values = shipped_bound
+    results.append(('c22_bound_value_cache_name_key_is_load_bearing',
+                    len(split_answers) == 2 and split_answers[0] != split_answers[1]
+                    and collapsed[0] == collapsed[1]))
+
+    # M15: the arm caches its own verdict per log statement. A cache that answers every later
+    # statement with the first verdict would quiet the request line behind the arithmetic line.
+    def sticky_arm(self, node, tree, shadowed):
+        store = getattr(sticky_arm, 'store', None)
+        if store is None:
+            store = sticky_arm.store = {}
+        if store:
+            return store['verdict']
+        verdict = shipped_c117_arm(self, node, tree, shadowed)
+        store['verdict'] = verdict
+        return verdict
+
+    sticky_arm.store = {}
+    ast_scanner.TaintTracker._cwe117_message_is_operator_sealed = sticky_arm
+    try:
+        sticky = scan({'src/m.py': split_source}, 'CWE-117')[0]
+    finally:
+        ast_scanner.TaintTracker._cwe117_message_is_operator_sealed = shipped_c117_arm
+    results.append(('c117_verdict_cache_key_is_load_bearing', sticky != clean_split))
+
+    # M16: the facts screen may only ever decline a module that provably holds neither fact. Tightening
+    # the tokens to one root spelling hides the namespaces of every file that spells it differently,
+    # so both fixture sets must come back loud; switching the screen off entirely must change nothing,
+    # which is the exact statement that it is a fast path and not a filter.
+    shipped_tokens = ast_scanner.CWE22_OPERATOR_FACT_TOKENS
+    ast_scanner.CWE22_OPERATOR_FACT_TOKENS = ('__name__', 'parse_args_into_dataclasses')
+    try:
+        strict_argv = scan({'src/m.py': argv_source}, 'CWE-117')[0]
+        strict_split = scan({'src/m.py': split_source}, 'CWE-117')[0]
+    finally:
+        ast_scanner.CWE22_OPERATOR_FACT_TOKENS = shipped_tokens
+    ast_scanner.CWE22_OPERATOR_FACT_TOKENS = ()
+    try:
+        unshielded_argv = scan({'src/m.py': argv_source}, 'CWE-117')[0]
+        unshielded_split = scan({'src/m.py': split_source}, 'CWE-117')[0]
+    finally:
+        ast_scanner.CWE22_OPERATOR_FACT_TOKENS = shipped_tokens
+    results.append(('c22_operator_fact_screen_is_superset_only',
+                    strict_argv != clean_argv and strict_split != clean_split
+                    and unshielded_argv == clean_argv and unshielded_split == clean_split))
+
     restored = (ast_scanner.TaintTracker._c22_is_literal_readonly_open is shipped_literal
                 and ast_scanner.TaintTracker._c22_is_hub_cache_read is shipped_resolver
                 and ast_scanner.TaintTracker._c22_module_hub_resolvers is shipped_bindings
@@ -1015,13 +1391,22 @@ def run_mutations() -> list:
                 and ast_scanner.TaintTracker._compares_two_secrets is shipped_secrets
                 and ast_scanner.TaintTracker._sink_context_exempt is shipped_exempt
                 and ast_scanner.TaintTracker._c22_operator_facts is shipped_facts
+                and ast_scanner.TaintTracker._c22_operator_facts_on is shipped_facts_on
+                and ast_scanner.TaintTracker._c22_operator_facts_build is shipped_facts_build
+                and ast_scanner.CWE22_OPERATOR_FACT_TOKENS == ('__name__', 'parse_')
                 and ast_scanner.TaintTracker._c22_is_operator_program_open is shipped_open_pred
                 and ast_scanner.TaintTracker._c22_path_is_operator_supplied is shipped_expr_pred
                 and ast_scanner.TaintTracker._c22_module_path_names is shipped_path_names
                 and ast_scanner.TaintTracker._c22_is_namespace_root is shipped_ns_root
                 and ast_scanner.TaintTracker._c22_scope_binds is shipped_scope_binds
                 and ast_scanner.TaintTracker._c770_read_comes_from_operator_program is shipped_c770_read
-                and ast_scanner.TaintTracker._c208_is_unit_test_assertion is shipped_assertion)
+                and ast_scanner.TaintTracker._c208_is_unit_test_assertion is shipped_assertion
+                and ast_scanner.TaintTracker._cwe117_message_is_operator_sealed is shipped_c117_arm
+                and ast_scanner.TaintTracker._c22_value_is_newline_free is shipped_newline_free
+                and ast_scanner.TaintTracker._cwe117_logged_values is shipped_logged_values
+                and ast_scanner.TaintTracker._c22_bound_values is shipped_bound
+                and ast_scanner.TaintTracker._c22_bound_values_on is shipped_bound_on
+                and ast_scanner.CWE22_OPERATOR_PROGRAM_CALLS is shipped_program_calls)
     results.append(('engine_restored_after_mutation', restored))
     for name, ok in results:
         print(f'  {"ok " if ok else "FAIL"} mutation {name} -> '
@@ -1032,7 +1417,7 @@ def run_mutations() -> list:
 def main() -> int:
     failures = []
     for check in (check_baseline_domain, check_slice_a, check_slice_b, check_slice_c,
-                   check_slice_d, check_slice_e, check_operator_reach,
+                   check_slice_d, check_slice_e, check_slice_f, check_operator_reach,
                    check_blessed_lines_stay_loud, check_source_shape,
                    check_refused_value_slice):
         failures.extend(check())
@@ -1045,7 +1430,8 @@ def main() -> int:
           'the corpus-name shield removed, the two CWE-338 value domains are quiet while every '
           'credential veto and all 8 blessed lines stay loud, the CWE-208 constant partition holds '
           'under two independent guards, the refused CWE-117 numeric-spec slice keeps all 8 trainer '
-          'keys loud, and every conjunct moves under its own mutation.')
+          'keys loud, the CWE-117 operator-program arm quiets only argv and newline-free log values, '
+          'and every conjunct moves under its own mutation.')
     return 0
 
 

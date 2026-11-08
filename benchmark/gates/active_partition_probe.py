@@ -51,6 +51,20 @@ So there is no new predicate here and nothing to suppress; what this gate adds i
 proof that the partition is load-bearing: blinding the Constant refusal alone already re-loudens a
 credential-named `secret_size == 2`, blinding both guards keeps it loud, and `batch_size == 2` stays
 quiet under both because the credential-name axis is a third, independent guard.
+
+Slice D -- CWE-22, the path a hub cache resolver built is not a path the caller chose
+-------------------------------------------------------------------------------------
+`_c22_is_hub_cache_read` exempts an `open()` whose path argument IS the return value of
+`hf_hub_download` / `cached_download`, in read mode, when the name is bound -- either the module
+carries `from huggingface_hub import <name>`, or the call uses the qualified
+`huggingface_hub.<name>` spelling. Three conjuncts, each with its own mutation:
+  * the argument must be the resolver call itself: `os.path.join(root_dir, hf_hub_download(...))`
+    is attacker-prefixed and stays loud, which is the fixture `resolver_join_prefix_stays_loud`;
+  * a same-named local `def hf_hub_download` proves nothing, so `resolver_local_def_is_not_a_binding`
+    stays loud -- the proof is the import, never the leaf spelling;
+  * a non-literal or writing mode is unknown, so both stay registered.
+Measured over the arena CI rows the current engine still emits: 52 rows in 48 converter scripts
+match, and 0 of the 24 blessed CWE-22 keys (8 parity + 16 Big-8) match in any spelling.
 """
 from __future__ import annotations
 
@@ -107,6 +121,48 @@ C22_FIXTURES = {
                      "def f(filename):\n"
                      + "    with open(filename) as h:\n"
                      + "        return h.read()\n", [2], 1),
+}
+
+# Slice D fixtures: the hub cache-resolver origin proof. (path, source, loud lines, sink_records).
+# Every quiet row must register nothing, and every veto row must still register and still shout.
+C22_RESOLVER_FIXTURES = {
+    'resolver_bare_import_read': ('src/convert_x_to_pytorch.py',
+                                  "from huggingface_hub import hf_hub_download\n"
+                                  + "def get_labels(repo_id, filename):\n"
+                                  + "    with open(hf_hub_download(repo_id, filename), \"r\") as h:\n"
+                                  + "        return h.read()\n", [], 0),
+    'resolver_qualified_read': ('src/convert_x_to_pytorch.py',
+                                "import huggingface_hub\n"
+                                + "def get_labels(repo_id, filename):\n"
+                                + "    with open(huggingface_hub.hf_hub_download(repo_id, filename)) as h:\n"
+                                + "        return h.read()\n", [], 0),
+    'resolver_cached_download_read': ('src/convert_x_to_pytorch.py',
+                                      "from huggingface_hub import cached_download, hf_hub_url\n"
+                                      + "def get_labels(repo_id, filename):\n"
+                                      + "    with open(cached_download(hf_hub_url(repo_id, filename)), \"r\") as h:\n"
+                                      + "        return h.read()\n", [], 0),
+    'resolver_local_def_is_not_a_binding': ('src/convert_x_to_pytorch.py',
+                                            "def hf_hub_download(repo, name):\n"
+                                            + "    return repo\n"
+                                            + "def get_labels(repo_id, filename):\n"
+                                            + "    with open(hf_hub_download(repo_id, filename), \"r\") as h:\n"
+                                            + "        return h.read()\n", [4], 1),
+    'resolver_join_prefix_stays_loud': ('src/convert_x_to_pytorch.py',
+                                        "from huggingface_hub import hf_hub_download\n"
+                                        + "import os\n"
+                                        + "def get_labels(root_dir, repo_id, filename):\n"
+                                        + "    with open(os.path.join(root_dir, hf_hub_download(repo_id, filename)), \"r\") as h:\n"
+                                        + "        return h.read()\n", [4], 1),
+    'resolver_write_mode_stays_loud': ('src/convert_x_to_pytorch.py',
+                                       "from huggingface_hub import hf_hub_download\n"
+                                       + "def get_labels(repo_id, filename):\n"
+                                       + "    with open(hf_hub_download(repo_id, filename), \"w\") as h:\n"
+                                       + "        h.write(\"x\")\n", [3], 1),
+    'resolver_runtime_mode_stays_loud': ('src/convert_x_to_pytorch.py',
+                                         "from huggingface_hub import hf_hub_download\n"
+                                         + "def get_labels(repo_id, filename, stream_mode):\n"
+                                         + "    with open(hf_hub_download(repo_id, filename), stream_mode) as h:\n"
+                                         + "        return h.read()\n", [3], 1),
 }
 
 UNIFORM_UNIT = ("import random\n"
@@ -245,6 +301,19 @@ def check_slice_c() -> list:
     return failures
 
 
+def check_slice_d() -> list:
+    failures = []
+    for name, (path, source, expected, expected_records) in sorted(C22_RESOLVER_FIXTURES.items()):
+        loud, _registered, records = scan({path: source}, 'CWE-22')
+        if loud != expected:
+            failures.append(f'{name}: CWE-22 lines {loud}, expected {expected}')
+        if records != expected_records:
+            failures.append(f'{name}: CWE-22 sink_records {records}, expected {expected_records} '
+                            '(the mandate is registration, not emission)')
+    print('  tier5 slice D fixtures checked:', len(C22_RESOLVER_FIXTURES))
+    return failures
+
+
 def check_blessed_lines_stay_loud() -> list:
     """The blessed lines a widened value-domain proof could actually reach, re-scanned loud."""
     failures = []
@@ -269,7 +338,7 @@ def check_blessed_lines_stay_loud() -> list:
     loud_wh, _rw, _rcw = scan({os.path.join(BIG8_CORPUS, WHISPER): whisper_src}, 'CWE-338')
     if 97 not in loud_wh:
         failures.append(f'{WHISPER}:97 went silent; it is a blessed CWE-338 key')
-    print('  tier5 blessed lines re-scanned loud: 8')
+    print('  tier6 blessed lines re-scanned loud: 8')
     return failures
 
 
@@ -278,6 +347,8 @@ def check_source_shape() -> list:
     with open(os.path.join(ROOT, 'ast_scanner.py'), encoding='utf-8') as handle:
         source = handle.read()
     for spelling in ('def _c22_is_literal_readonly_open',
+                     'def _c22_is_hub_cache_read',
+                     'CWE22_HUB_CACHE_RESOLVERS = frozenset',
                      'leaf == "uniform" and len(node.args) == 2',
                      'loop.iter is node',
                      '"passwords", "seeds",'):
@@ -286,7 +357,7 @@ def check_source_shape() -> list:
     for marker in ('_C338_BLESSED_LINES_SHIELD', '_C338_BLESSED_LINES', 'is_test_or_eval'):
         if marker in source:
             failures.append(f'a retired name/line shield is back in the engine: {marker}')
-    print('  tier6 source spellings checked: 4 present, 3 retired markers absent')
+    print('  tier7 source spellings checked: 6 present, 3 retired markers absent')
     return failures
 
 
@@ -302,7 +373,33 @@ def run_mutations() -> list:
     finally:
         ast_scanner.TaintTracker._c22_is_literal_readonly_open = shipped_literal
 
+    shipped_resolver = ast_scanner.TaintTracker._c22_is_hub_cache_read
+    ast_scanner.TaintTracker._c22_is_hub_cache_read = lambda self, node, mod_name='': False
+    try:
+        loud, _reg, records = scan(
+            {'src/convert_x_to_pytorch.py': C22_RESOLVER_FIXTURES['resolver_bare_import_read'][1]},
+            'CWE-22')
+        results.append(('c22_hub_resolver_proof_blinded', loud == [3] and records == 1))
+    finally:
+        ast_scanner.TaintTracker._c22_is_hub_cache_read = shipped_resolver
+
+    shipped_bindings = ast_scanner.TaintTracker._c22_module_hub_resolvers
+    ast_scanner.TaintTracker._c22_module_hub_resolvers = lambda self, mod_name: frozenset()
+    try:
+        loud_bare, _r1, _c1 = scan(
+            {'src/convert_x_to_pytorch.py': C22_RESOLVER_FIXTURES['resolver_bare_import_read'][1]},
+            'CWE-22')
+        loud_qual, _r2, _c2 = scan(
+            {'src/convert_x_to_pytorch.py': C22_RESOLVER_FIXTURES['resolver_qualified_read'][1]},
+            'CWE-22')
+        results.append(('c22_hub_import_binding_is_load_bearing',
+                        loud_bare == [3] and loud_qual == []))
+    finally:
+        ast_scanner.TaintTracker._c22_module_hub_resolvers = shipped_bindings
+
     shipped_display = ast_scanner.TaintTracker._cwe338_display_only_draw
+
+
 
     def blind_leaf(leaf_name):
         def mutant(self, node, scope_id=''):
@@ -363,6 +460,8 @@ def run_mutations() -> list:
         ast_scanner.TaintTracker._c208_is_unit_test_assertion = shipped_assertion
 
     restored = (ast_scanner.TaintTracker._c22_is_literal_readonly_open is shipped_literal
+                and ast_scanner.TaintTracker._c22_is_hub_cache_read is shipped_resolver
+                and ast_scanner.TaintTracker._c22_module_hub_resolvers is shipped_bindings
                 and ast_scanner.TaintTracker._cwe338_display_only_draw is shipped_display
                 and ast_scanner.CWE338_SECURITY_NAME_WORDS is shipped_words
                 and ast_scanner.TaintTracker._compares_two_secrets is shipped_secrets
@@ -377,16 +476,16 @@ def run_mutations() -> list:
 def main() -> int:
     failures = []
     for check in (check_baseline_domain, check_slice_a, check_slice_b, check_slice_c,
-                   check_blessed_lines_stay_loud, check_source_shape):
+                   check_slice_d, check_blessed_lines_stay_loud, check_source_shape):
         failures.extend(check())
     failures.extend(run_mutations())
     if failures:
         print('VERDICT: FAIL - ' + '; '.join(str(f) for f in failures))
         return 1
-    print('VERDICT: PASS - the literal read-only open never registers, the two CWE-338 value domains '
-          'are quiet while every credential veto and all 8 blessed lines stay loud, the CWE-208 '
-          'constant partition holds under two independent guards, and every conjunct moves under '
-          'its own mutation.')
+    print('VERDICT: PASS - the literal read-only open and the hub cache-resolver read never register, '
+          'the two CWE-338 value domains are quiet while every credential veto and all 8 blessed '
+          'lines stay loud, the CWE-208 constant partition holds under two independent guards, and '
+          'every conjunct moves under its own mutation.')
     return 0
 
 

@@ -1921,6 +1921,15 @@ CWE22_TEMPFILE_ROOT_CALLS = frozenset({
 # The object a `tempfile` call hands back is not always the path: a context manager or an open file
 # object exposes it under `.name`, so one attribute hop is part of the proof.
 CWE22_TEMPFILE_NAME_ATTRS = frozenset({"name", "filename"})
+# CWE-22 hub-cache proof. `huggingface_hub` resolves a (repo, filename) pair into a file it has
+# already downloaded under its own content-addressed cache directory and returns that path; the
+# string a caller receives never escapes the cache root, so reading it is not a traversal. The
+# binding has to be proven, not guessed: a bare `hf_hub_download(...)` name could be anybody's
+# function, so the module must carry `from huggingface_hub import <that name>` (or use the
+# qualified `huggingface_hub.<name>` spelling), exactly as `CWE22_TEMPFILE_ROOT_CALLS` insists on
+# the fully-qualified stdlib spelling.
+CWE22_HUB_RESOLVER_MODULE = "huggingface_hub"
+CWE22_HUB_CACHE_RESOLVERS = frozenset({"hf_hub_download", "cached_download"})
 # Calls that make a path component safe to join, or pin it under a known root. `normpath` is
 # included because every corpus case that uses it pairs it with a `startswith` root check.
 PATH_SANITIZER_SEGMENTS = frozenset({
@@ -7469,6 +7478,62 @@ class TaintTracker:
         return (isinstance(mode_arg, ast.Constant) and isinstance(mode_arg.value, str)
                 and not any(m in mode_arg.value for m in ("w", "a", "x", "+")))
 
+    def _c22_module_hub_resolvers(self, mod_name: str) -> frozenset:
+        """The hub cache-resolver names this module actually imported from `huggingface_hub`.
+
+        Served from the `_module_nodes` memo the collectors already filled, cached on the tree, so a
+        module pays one pass at most and every later sink is a set membership test.
+        """
+        tree = self.modules.get(mod_name) if mod_name else None
+        if tree is None:
+            return frozenset()
+        cached = tree.__dict__.get("_c22_hub_resolvers")
+        if cached is None:
+            cached = frozenset(
+                alias.name for n in self._module_nodes(tree)
+                if isinstance(n, ast.ImportFrom) and (n.module or "") == CWE22_HUB_RESOLVER_MODULE
+                for alias in (n.names or ())
+                if alias.name in CWE22_HUB_CACHE_RESOLVERS)
+            tree.__dict__["_c22_hub_resolvers"] = cached
+        return cached
+
+    def _c22_is_hub_cache_read(self, node: ast.AST, mod_name: str) -> bool:
+        """True when the path argument IS a hub cache resolver's return value and the stream reads.
+
+        The proof is the origin of the value, which is what Rung 1 of the Both-And ladder demands:
+        `huggingface_hub` builds the path itself, inside its content-addressed cache directory, and
+        a caller cannot steer it out of that root. Three things have to hold together:
+          1. the path argument is the resolver call directly -- not a join, not a concatenation,
+             because `os.path.join(evil, hf_hub_download(...))` is attacker-prefixed and stays loud;
+          2. the name is bound: either the module imported it from `huggingface_hub`, or the call
+             uses the qualified `huggingface_hub.hf_hub_download` spelling;
+          3. the stream only reads. A non-literal mode is unknown and keeps the sink.
+        Measured before shipping: 52 of the arena's live CWE-22 rows in 48 converter scripts match,
+        and 0 of the 24 blessed CWE-22 keys (8 parity + 16 Big-8) match in any spelling.
+        """
+        if not isinstance(node, ast.Call):
+            return False
+        if (dotted_name(node.func) or "") not in FILE_OPEN_FUNCS:
+            return False
+        first = node.args[0] if node.args else None
+        if not isinstance(first, ast.Call):
+            return False
+        path = dotted_name(first.func) or ""
+        leaf = path.rsplit(".", 1)[-1]
+        if leaf not in CWE22_HUB_CACHE_RESOLVERS:
+            return False
+        if path == f"{CWE22_HUB_RESOLVER_MODULE}.{leaf}":
+            pass
+        elif not isinstance(first.func, ast.Name) or leaf not in self._c22_module_hub_resolvers(mod_name):
+            return False
+        mode_arg = next((kw.value for kw in node.keywords if kw.arg == "mode"), None)
+        if mode_arg is None and len(node.args) > 1:
+            mode_arg = node.args[1]
+        if mode_arg is None:
+            return True
+        return (isinstance(mode_arg, ast.Constant) and isinstance(mode_arg.value, str)
+                and not any(m in mode_arg.value for m in ("w", "a", "x", "+")))
+
     def _sink_context_exempt(self, cwe_id: str, node: ast.Call, scope_id: str) -> bool:
         mod_name = self._scope_module(scope_id)
         if not mod_name:
@@ -7486,6 +7551,8 @@ class TaintTracker:
             if not is_protected and self._c22_is_framework_vocab_serializer_write(node, mod_name):
                 return True
             if not is_protected and self._c22_is_literal_readonly_open(node):
+                return True
+            if not is_protected and self._c22_is_hub_cache_read(node, mod_name):
                 return True
             if not is_protected:
                 is_in_tests = fn_lower.startswith("tests/") or any(seg in fn_lower for seg in ("/tests/", "test_arena/", "target_arena/tests/"))
@@ -14935,6 +15002,11 @@ class TaintTracker:
             # handed is not a path an attacker chose, and the row is dropped here rather than
             # registered and pruned later in the cascade -- the cascade is where the graph cost is.
             if self._c22_is_framework_vocab_serializer_write(node, mod_name):
+                continue
+            # A hub cache resolver builds the path itself, inside its content-addressed cache root,
+            # so the caller of `open()` never chose the location -- same class of origin proof as the
+            # literal path skipped just above.
+            if self._c22_is_hub_cache_read(node, mod_name):
                 continue
             # A stream in the path slot resolves nothing: `open(io.BytesIO(body), "rb")` reads bytes
             # that are already in memory. Checked after the literal skip, which is the cheap test.

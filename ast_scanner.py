@@ -8154,6 +8154,295 @@ class TaintTracker:
                                                         depth + 1, seen)
         return False
 
+    @staticmethod
+    def _c22_literal_names_whole_location(expr) -> bool:
+        """A literal that spells the entire location, so nothing outside the file picks the root.
+
+        `"pytorch_model.bin"` is a leaf, not a place: it resolves against whatever directory the
+        process was launched in, so the program has named the file while the launcher still owns
+        where it lands. An absolute literal is the program naming both, and that is the only form of
+        "the caller passed a safe literal string" that proves a path no caller steered -- measured
+        against parity `cwe_937_insecure_protocol/test_v06_bad.py:6`, whose caller does pass a
+        literal and whose row is a blessed key. `..` voids either spelling.
+        """
+        if not isinstance(expr, ast.Constant) or isinstance(expr.value, bool):
+            return False
+        if not isinstance(expr.value, str) or not expr.value:
+            return False
+        text = expr.value.replace('\\', '/')
+        if '..' in [segment for segment in text.split('/') if segment]:
+            return False
+        if text.startswith('/'):
+            return True
+        head = expr.value[:3]
+        return len(head) == 3 and head[1] == ':' and head[0].isalpha() and head[2] in ('/', '\\')
+
+    def _c22_value_is_proven_path_origin(self, tree, expr, mod_name, depth=0, seen=None,
+                                         allow_literal=False):
+        """This value's every leaf is text the program chose or a root the program created.
+
+        Slice G's positive proof, asked of what a caller actually hands over. Four origins name
+        themselves:
+
+          * a literal that names the whole location (`_c22_literal_names_whole_location`) or, once
+            this proof's own caller has vouched for the root, any literal segment carrying no `..`
+            (`_c22_anchor_literal_ok`, the same veto the anchor and temp-root proofs use, so
+            `"../secrets"` never buys silence);
+          * a path `tempfile` returned, in its fully-qualified stdlib spelling only, or one
+            attribute hop off the object it returned (`fh.name` of a `NamedTemporaryFile`) --
+            `from tempfile import mkdtemp` then `mkdtemp()` answers False, because a bare leaf
+            could be anybody's function;
+          * a `huggingface_hub` cache resolver whose binding the module proves, exactly as
+            `_c22_is_hub_cache_read` insists on it;
+          * a pure reshaper (`os.path.join`, `Path`, `os.path.basename`, `str.strip`, ...) over
+            parts that each prove themselves, where the receiver or one part has to carry the root
+            and the rest may be appended literals -- the same shape as
+            `_c22_path_is_proven_temp_root`, so one expression cannot answer yes here and no there.
+
+        Everything else is an absence and stays loud: a subscript (an element somebody put in a
+        container), a `*a`/`**k` splat into the reshaper, an `self.<x>` field (that is domain 2's
+        question, asked at the sink with the cascade's own scope triple, not here where there is no
+        scope to name its writes with), a name with no binding in scope, a call into either table
+        that is not a reshaper, or the exhausted depth budget.
+        """
+        if expr is None or depth > 6:
+            return False
+        seen = seen or frozenset()
+        if id(expr) in seen:
+            return False
+        seen = seen | {id(expr)}
+        if isinstance(expr, ast.Constant):
+            return (self._c22_anchor_literal_ok(expr, True) if allow_literal
+                    else self._c22_literal_names_whole_location(expr))
+        if isinstance(expr, ast.Name):
+            found = self._c22_bound_values(tree, expr, expr.id)
+            if not found or not found[1]:
+                return False
+            return all(self._c22_value_is_proven_path_origin(tree, cand, mod_name, depth + 1, seen)
+                       for cand in found[1])
+        if isinstance(expr, ast.Attribute):
+            if isinstance(expr.value, ast.Name) and expr.value.id in ("self", "cls"):
+                return False
+            if expr.attr in CWE22_TEMPFILE_NAME_ATTRS:
+                return self._c22_value_is_proven_path_origin(
+                    tree, expr.value, mod_name, depth + 1, seen)
+            found = self._c22_bound_values(tree, expr, dotted_name(expr) or "")
+            if not found or not found[1]:
+                return False
+            return all(self._c22_value_is_proven_path_origin(tree, cand, mod_name, depth + 1, seen)
+                       for cand in found[1])
+        if isinstance(expr, ast.Call):
+            path = dotted_name(expr.func) or ""
+            leaf = path.rsplit(".", 1)[-1]
+            if path in CWE22_TEMPFILE_ROOT_CALLS:
+                return True
+            if leaf in CWE22_HUB_CACHE_RESOLVERS and (
+                    path == f"{CWE22_HUB_RESOLVER_MODULE}.{leaf}"
+                    or (isinstance(expr.func, ast.Name)
+                        and leaf in self._c22_module_hub_resolvers(mod_name))):
+                return True
+            if leaf not in CWE22_OPERATOR_PATH_WRAPPERS | self._C22_PATH_CONSTRUCTORS \
+                    | self._C22_PATH_FUNCS:
+                return False
+            parts = list(expr.args) + [k.value for k in expr.keywords]
+            if not parts or any(isinstance(a, ast.Starred) for a in expr.args) or any(
+                    k.arg is None for k in expr.keywords):
+                return False
+            receiver_proven = False
+            if isinstance(expr.func, ast.Attribute):
+                receiver = expr.func.value
+                if not self._is_module_qualified(receiver):
+                    # `holder.join(x)` is a method on somebody else's value, so that value is part
+                    # of the path and proves itself the way an argument does.
+                    receiver_proven = self._c22_value_is_proven_path_origin(
+                        tree, receiver, mod_name, depth + 1, seen)
+                    if not receiver_proven:
+                        return False
+            elif isinstance(expr.func, ast.Name):
+                # `join(x)` is only `os.path.join` when this module imported it; a constructor is a
+                # named type, so it needs no import witness to be the thing it spells.
+                if leaf not in self._C22_PATH_CONSTRUCTORS \
+                        and leaf not in self._c22_module_path_names(tree):
+                    return False
+            else:
+                return False
+            if not all(self._c22_value_is_proven_path_origin(
+                    tree, part, mod_name, depth + 1, seen, True) for part in parts):
+                return False
+            if allow_literal:
+                return True
+            return receiver_proven or any(self._c22_value_is_proven_path_origin(
+                tree, part, mod_name, depth + 1, seen) for part in parts)
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Div, ast.Add, ast.Mod)):
+            # The left side carries the root; the right is the segment being appended.
+            return (self._c22_value_is_proven_path_origin(tree, expr.left, mod_name, depth + 1, seen)
+                    and self._c22_value_is_proven_path_origin(
+                        tree, expr.right, mod_name, depth + 1, seen, True))
+        if isinstance(expr, ast.JoinedStr):
+            proven = False
+            for part in expr.values:
+                if isinstance(part, ast.Constant):
+                    if not self._c22_anchor_literal_ok(part, True):
+                        return False
+                    continue
+                if not self._c22_value_is_proven_path_origin(
+                        tree, getattr(part, "value", part), mod_name, depth + 1, seen):
+                    return False
+                proven = True
+            return proven
+        if isinstance(expr, ast.FormattedValue):
+            return self._c22_value_is_proven_path_origin(
+                tree, expr.value, mod_name, depth + 1, seen)
+        return False
+
+    def _c22_param_callers_prove_safe(self, tree, node, expr, params, mod_name) -> bool:
+        """Every parameter reaching this path is handed only proven-safe values, at every call site.
+
+        The closure is the file's own, which is what makes the rule fail closed rather than wide:
+        `_c22_param_proofs` poisons an entry to `None` when the module never calls that helper, when
+        any call splats `*args` or `**opts`, and when a site skips a parameter that carries no
+        default. A helper called only from another module is the first case, so library code whose
+        callers live elsewhere -- `modeling_utils.py`, `trainer.py`, every converter entry point --
+        cannot be silenced here, and no parameter of it needs to be audited line by line.
+
+        The caller's value is then proved by origin, not by spelling, and the proof must hold for
+        *each* parameter in the expression and *each* value the binding can hold: a helper whose
+        `path` arrives from a literal at three sites and from `request.args[...]` at a fourth stays
+        loud, and so does a parameter the helper itself rebinds to something unproven.
+        """
+        names = [sub.id for sub in ast.walk(expr)
+                 if isinstance(sub, ast.Name) and sub.id in params]
+        if not names:
+            return False
+        for param in dict.fromkeys(names):
+            found = self._c22_bound_values(tree, node, param)
+            if not found or not found[1]:
+                return False
+            if not all(self._c22_value_is_proven_path_origin(tree, cand, mod_name)
+                       for cand in found[1]):
+                return False
+        return True
+
+    def _c22_self_attribute_is_temp_sink(self, expr: ast.AST, scope_id: str, lineno: int) -> bool:
+        """`open(self.<x>)` on a field whose every write names a root the program created.
+
+        Slice G domain 2, and deliberately not a second prover: this is the teardown proof the
+        engine already ships and already pins (`_c22_path_is_proven_temp_root`), asked at the read
+        instead of only at the delete. `self.tmpdirname = tempfile.mkdtemp()` in `setUp` then
+        `open(self.tmpdirname + "/weights.bin")` is a file the test made inside a root the OS
+        picked; `self.model_file = request.args["f"]`, a field written outside the class, a field
+        with a second unproven write, or a component the caller chose inside the join all void it,
+        because the lookup takes *every* write `class_field_assignments` shows, never the first.
+
+        The `self`/`cls` gate in front of it is what bounds the rule: without it this clause would
+        also silence deletes, joins and literals the cascade already answers elsewhere, and a
+        broader question is not a narrower proof.
+        """
+        if expr is None:
+            return False
+        if not any(isinstance(part, ast.Attribute) and isinstance(part.value, ast.Name)
+                   and part.value.id in ("self", "cls") for part in ast.walk(expr)):
+            return False
+        return self._c22_path_is_proven_temp_root(expr, scope_id, lineno)
+
+    @staticmethod
+    def _c22_enclosing_function(node):
+        """The nearest enclosing `def`, read off the parent links parsing already set.
+
+        Lambdas are stepped over because the parameter list this rule reads is the function's, which is
+        what the lineno-indexed range table handed back before (`_c22_function_ranges` collects only
+        FunctionDef / AsyncFunctionDef), and the hop budget is the same one `_c22_bound_values_on`
+        walks. A chain that runs out of parents answers None, so a sink the parse never attached stays
+        loud rather than borrowing some other function's callers.
+        """
+        current = node
+        for _hop in range(256):
+            if current is None:
+                return None
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return current
+            current = getattr(current, "parent", None)
+        return None
+
+    def _c22_slice_g_module_facts(self, tree) -> tuple:
+        """(`bare call-site names`, `tempfile spelled anywhere`) -- what this module can possibly prove.
+
+        The funnel below is consulted once per sink record, and both of its domains bottom out in tables
+        that are expensive on a 300 KB library module and worthless to build at all: the caller closure
+        reads `_c22_param_proofs`, which records `None` for every parameter of a function the file never
+        calls by a bare name, and the self-field proof reads `_c22_path_is_proven_temp_root`, which
+        accepts only the qualified `tempfile.` spelling (`from tempfile import mkdtemp` then `mkdtemp()`
+        answers False by design). So a module that spells no `tempfile` and never calls the helper
+        owning this sink gets the same `False` the walk would have produced, without the walk: the scope
+        binding table is never built for it. One pass over the node list parsing already made, cached on
+        the tree exactly the way `_c22_operator_facts_on` caches its pair.
+
+        Neither fact is a file, directory, function or variable-name heuristic. `tempfile` is the module
+        whose return value *is* the proof's content, and the call-site index is the caller closure's own
+        input, so this is the proof's necessary condition stated once instead of paid for per record.
+        """
+        cached = tree.__dict__.get("_c22_slice_g_facts")
+        if cached is not None:
+            return cached
+        called = set()
+        tempfile_witness = False
+        for node in self._module_nodes(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                called.add(node.func.id)
+            elif (not tempfile_witness and isinstance(node, ast.Name)
+                    and node.id == "tempfile"):
+                tempfile_witness = True
+        cached = (frozenset(called), tempfile_witness)
+        tree.__dict__["_c22_slice_g_facts"] = cached
+        return cached
+
+    def _c22_slice_g_proves_safe_sink(self, record, target_expr) -> bool:
+        """The one deciding site for both Slice G proofs, asked before any record path branches.
+
+        CWE-22 `open()` rows reach the cascade through three different registrants, and two of them
+        (`p5_source_id` / `cwe-22_phase5_violation` synthetic sources) append an edge and `continue`
+        long before the exemption disjunction, so a proof wired only inside the disjunction or only
+        inside the parameter collector never sees the generic or adopted sinks -- which is where most
+        of the arena's rows live. Asking once, here, means the same expression gets the same answer on
+        every path (Rule 15.5 rung 4) and the pruned rows never pay for a proof graph at all.
+
+        Everything that decides is a property of the value: the tempfile/hub/literal origin proofs and
+        the caller-closure table. Two presence facts, one cached tuple per module, stand in front of
+        both proofs, because this method is asked for every sink record in the cascade and the tables
+        the proofs read (the scope binding walk, the assignment map) cost real time on a library module
+        and decide nothing in a file that never spells `tempfile` and never calls the helper that owns
+        the sink. They are necessary conditions of those proofs, not a third rule: `scratch/_G_slice_clock.py`
+        measures the funnel against a stub that answers False, and the two mutations
+        `module_tempfile_witness_blind` / `module_call_sites_blind` in the probe show a shipped row moves
+        when either fact is forced, so neither is decorative.
+        """
+        if target_expr is None:
+            return False
+        sink = record.security_node
+        metadata = sink.metadata
+        if not (metadata.get("cwe") == "CWE-22"
+                or metadata.get("sink_type") in ("PATH_TRAVERSAL", "FILE_ACCESS")
+                or metadata.get("operation") == "FILE_ACCESS"):
+            return False
+        mod_name = scope_module(record.scope_id)
+        tree = self.modules.get(mod_name)
+        if tree is None:
+            return False
+        called, has_tempfile = self._c22_slice_g_module_facts(tree)
+        if has_tempfile and self._c22_self_attribute_is_temp_sink(target_expr, record.scope_id,
+                                                                  record.lineno):
+            return True
+        owner = TaintTracker._c22_enclosing_function(record.node)
+        if owner is None:
+            return False
+        declared = (list(owner.args.args) + list(owner.args.posonlyargs)
+                    + list(owner.args.kwonlyargs))
+        params = {a.arg for a in declared if a.arg not in ("self", "cls")}
+        if not params or owner.name not in called:
+            return False
+        expr = self._c22_path_expression(target_expr, self._memo_assignment_map(tree), record.lineno)
+        return self._c22_param_callers_prove_safe(tree, record.node, expr, params, mod_name)
+
     def _c22_path_is_operator_supplied(self, path_expr, mod_name: str) -> bool:
         """This sink's path expression was built only out of what the operator typed.
 
@@ -28194,6 +28483,11 @@ class TaintTracker:
 
             stype = sink.metadata.get("sink_type")
             op = sink.metadata.get("operation")
+
+            if self._c22_slice_g_proves_safe_sink(record, target_expr):
+                if sink in self.sinks:
+                    self.sinks.remove(sink)
+                continue
 
             if (cwe == "CWE-78" or stype in ("COMMAND_INJECTION", "OS_COMMAND_EXECUTION")
                     or op in ("OS_COMMAND_EXECUTION", "COMMAND_EXECUTION")) \

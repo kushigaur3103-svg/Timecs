@@ -8304,6 +8304,8 @@ class TaintTracker:
             return cached
         binds = {}
         mutated = set()
+        written = set()
+        declared = set()
         stack = [(tree, "")]
         while stack:
             node, owner = stack.pop()
@@ -8332,17 +8334,28 @@ class TaintTracker:
                 pairs = [((a.asname or a.name).split(".")[0], None) for a in node.names]
             elif isinstance(node, ast.ImportFrom):
                 pairs = [(a.asname or a.name, None) for a in node.names if a.asname or a.name != "*"]
+            elif isinstance(node, (ast.Global, ast.Nonlocal)):
+                declared.update(node.names)
+                pairs = []
             else:
                 pairs = []
             for tgt, value in pairs:
                 for bound in _c22_target_names(tgt):
                     binds.setdefault((owner, bound), []).append(value)
+                    written.add(bound.split(".")[0])
                     if "." in bound:
                         mutated.add((owner, bound))
             for child in ast.iter_child_nodes(node):
                 stack.append((child, owner))
         cached = (binds, frozenset(mutated))
         tree.__dict__["_c22_scope_binds"] = cached
+        # Two projections of the table this walk already visits every node of, filled here so no
+        # second pass over the module is ever needed to ask them: `written` is every plain name the
+        # engine keys a binding under, and `declared` is every name any function puts in a
+        # `global`/`nonlocal` statement -- the statement type that makes `binds` key a write under
+        # that function rather than under the module, which is why a caller that looks a name up at
+        # module scope must be refused for it. Slice H reads both as a pair.
+        tree.__dict__["_c22_scope_names"] = (frozenset(written), frozenset(declared))
         return cached
 
     def _c22_bound_values(self, tree, node: ast.AST, name: str):
@@ -8801,45 +8814,14 @@ class TaintTracker:
         pass over the node list parsing already built, cached on the tree exactly the way
         `_c22_slice_g_module_facts` caches its pair, so the per-record cost is two set tests.
 
-        Neither half is a name, path or function heuristic. The first is the set of targets the engine's
-        own binding table would key, the second is the statement type that makes that table's scope
-        split visible to this clause instead of hiding it.
+        Both sets are projections of the binding table `_c22_scope_binds` builds on its way past
+        every node of the module, so Slice H costs no second walk: the per-record cost is one
+        already-cached call and two set tests. Asking the table rather than re-deriving it also
+        means the veto and the proof can never disagree about which names are written, because they
+        read the same dict keys.
         """
-        cached = tree.__dict__.get("_c22_slice_h_facts")
-        if cached is not None:
-            return cached
-        written = set()
-        declared = set()
-        for node in self._module_nodes(tree):
-            if isinstance(node, (ast.Global, ast.Nonlocal)):
-                declared.update(node.names)
-                continue
-            if isinstance(node, ast.Assign):
-                targets = node.targets
-            elif isinstance(node, ast.AnnAssign):
-                targets = [node.target] if node.value is not None else []
-            elif isinstance(node, ast.AugAssign):
-                targets = [node.target]
-            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension, ast.NamedExpr)):
-                targets = [node.target]
-            elif isinstance(node, (ast.With, ast.AsyncWith)):
-                targets = [item.optional_vars for item in node.items
-                           if item.optional_vars is not None]
-            elif isinstance(node, ast.ExceptHandler):
-                targets = [node.name] if node.name else []
-            elif isinstance(node, ast.Import):
-                targets = [alias.asname or alias.name.split(".")[0] for alias in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                targets = [alias.asname or alias.name for alias in node.names
-                           if alias.asname or alias.name != "*"]
-            else:
-                continue
-            for target in targets:
-                for bound in _c22_target_names(target):
-                    written.add(bound.split(".")[0])
-        cached = (frozenset(written), frozenset(declared))
-        tree.__dict__["_c22_slice_h_facts"] = cached
-        return cached
+        self._c22_scope_binds(tree)
+        return tree.__dict__["_c22_scope_names"]
 
     def _c22_value_is_proven_module_origin(self, tree, expr, mod_name) -> bool:
         """Slice H: a bare-identifier sink whose every write in this file is a proven path origin.
@@ -16509,6 +16491,26 @@ class TaintTracker:
                             continue
                         if (roots & safe_names) or any(r.endswith(("_file", "_files", "_path", "_paths", "_dir", "_dirs", "_checkpoint", "_vocab", "_merges", "_info")) for r in roots if not any(w in r for w in ("user", "untrusted", "taint", "remote", "client", "input", "query", "url", "http", "external", "upload"))):
                             continue
+            # Pillar 2/3 partition: before stamping a synthetic UNTRUSTED_PATH_TRAVERSAL source, ask
+            # the same caller closure the taint funnel asks. `_c22_param_callers_prove_safe` audits
+            # every parameter the path reads at this sink node, and `_c22_param_proofs` poisons the
+            # entry on a splat, a skipped argument with no default, or no caller in the file, so
+            # library code whose callers live elsewhere stays loud and "every caller hands over a
+            # proven origin" is the only way it answers True. One deciding predicate, not a second
+            # prover, and never a variable-name or file-name test.
+            #
+            # A composite path (`os.path.join(cfg, suffix)`) also reads names that are NOT parameters;
+            # those resolve at module scope, where a `global suffix` rebind in another function is
+            # invisible because the binding table keys that write under the declaring function. So any
+            # non-parameter name the path reads that the file declares global/nonlocal refuses silence
+            # outright -- the same veto Slice H carries. A parameter can never be declared global (that
+            # is a SyntaxError), which is why the closure arm needs no such veto. Anything unproven
+            # stays loud and keeps its synthetic source.
+            declared = self._c22_slice_h_module_facts(tree)[1]
+            rebound = any(sub.id in declared for sub in ast.walk(expr)
+                          if isinstance(sub, ast.Name) and sub.id not in params)
+            if not rebound and self._c22_param_callers_prove_safe(tree, node, expr, params, mod_name):
+                continue
             self._add_blindspot_sink(
                 node, filename, "CWE-22", "PATH_TRAVERSAL", "PATH_TRAVERSAL",
                 "CWE-22: Unvalidated user input or dynamic variable used in file path operation",

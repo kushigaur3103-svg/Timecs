@@ -67,7 +67,11 @@ def vocab_body(method_name: str, last_line_mode: str) -> str:
 
 FIXTURES = {
     'serializer_write_quiet': (vocab_body('save_vocabulary', '"w", encoding="utf-8"'), []),
-    'serializer_read_loud': (vocab_body('save_vocabulary', 'encoding="utf-8"'), [7]),
+    'serializer_read_loud': (vocab_body('save_vocabulary', 'encoding="utf-8"')
+                             # The argv read is the entrypoint fact that keeps the non-write read loud
+                             # now that the entrypoint guard declines synthetic sources in pure
+                             # library modules; the write/read contrast is still what is measured.
+                             + 'import sys\nprint(sys.argv[1])\n', [7]),
     'pretrained_write_loud': (vocab_body('save_pretrained', '"w", encoding="utf-8"'), [7]),
     'serializer_write_with_http_source_loud': (
         "from flask import request\n"

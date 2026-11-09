@@ -1956,6 +1956,12 @@ CWE22_UNTRUSTED_SOURCE_NAMES = frozenset({
     "request", "req", "flask_request", "web_request", "raw_input", "input",
     "socket", "urlopen", "argv", "environ",
 })
+# The same sources spelled with their module in front of them. A name table cannot reach these:
+# the first segment of `os.environ["CFG"]` is `os`, which is a perfectly ordinary module name, so
+# matching on the segment would either miss the environment entirely or accept every `os` read.
+CWE22_UNTRUSTED_SOURCE_SPOTS = frozenset({
+    "os.environ", "os.environb", "os.getenv", "sys.argv", "sys.stdin",
+})
 # An import is a source the same way a name is: `from flask import request` puts a client-controlled
 # object into the module without any of the names above ever appearing as a load.
 CWE22_UNTRUSTED_IMPORT_MODULES = frozenset({
@@ -2010,6 +2016,64 @@ CWE22_OPERATOR_ROOT_CALLS = CWE22_OPERATOR_PROGRAM_CALLS | CWE22_OPERATOR_FILE_P
 # root-call leaf name above contains `parse_`, and the `if __name__ == "__main__"` guard cannot be
 # spelled without `__name__`, so missing either one is a provable "neither fact holds", never a guess.
 CWE22_OPERATOR_FACT_TOKENS = ("__name__", "parse_")
+# ─── CWE-22: what kind of module a synthetic parameter source is being stamped in ──────────────
+# `UNTRUSTED_PATH_TRAVERSAL` on a function parameter is an *assumption* -- "whoever calls this may
+# hand over a request value" -- and an assumption is only owed to a module that can actually be
+# handed one. These facts are all PRESENCE facts read off the module's own AST, never an absence
+# and never a file name: a module is treated as a caller-fed entrypoint if it guards itself with
+# `if __name__ == "__main__"`, imports or calls a command-line library, reads `sys.argv` or
+# `sys.stdin`, imports or reads a web framework object, spells a test harness (`unittest`/`pytest`
+# import, a harness base class, a top-level `def test_*`), carries a route decorator, or simply
+# RUNS at import time -- a top-level statement that calls something. The last fact is what
+# separates a script from a library: `print(read_file(filename))` in a module body means the body
+# executes, so the arguments it passes are real values chosen by whoever started the process.
+#
+# Two of these had to be narrowed after measurement, because a fact that is trivially satisfied is
+# worse than no fact -- it re-opens exactly the population the rule exists to close:
+#   * `route_decorator` is answered ONLY from decorator position. Read as "any attribute whose leaf
+#     is get/post/route/app/...", the fact fired on `dict.get()`, which is in almost every module in
+#     this arena: 34 of the 135 surviving synthetic-source rows were held open by `.get(` alone.
+#   * a harness base is `*TestCase`, `*TestBase`, `*TesterMixin` or `Test*`. Plain `Mixin` matched
+#     `GenerationMixin`, `PushToHubMixin` and friends -- library code, not a test harness.
+#
+# Measured on the two frozen baselines before this rule was wired (scratch/_c22_entrypoint_preflight
+# .py): 16 blessed Big-8 CWE-22 keys and 8 blessed parity CWE-22 keys are produced by the synthetic
+# parameter collector or the cascade; 2 of the Big-8 keys and 6 of the parity keys live in modules
+# with no CLI/argv/web/harness token at all. Every one of those 6 is a top-level script body
+# (`benchmark/corpus/cwe_22_traversal/test_v01_bad.py`, `_v02_`, `_v03_`, `_v05_`,
+# `cwe_937_insecure_protocol/test_v06_bad.py` and its `good` twin), which is why "runs at import
+# time" is a fact here rather than a name test on `test_` or `main`.
+CWE22_CLI_ENTRYPOINT_MODULES = frozenset({"argparse", "click", "fire", "typer", "docopt"})
+CWE22_WEB_ENTRYPOINT_MODULES = frozenset({
+    "flask", "django", "fastapi", "starlette", "werkzeug", "bottle", "tornado", "quart", "sanic",
+    "aiohttp", "pyramid", "falcon", "cherrypy", "http", "urllib", "socketserver", "socket"})
+CWE22_HARNESS_MODULES = frozenset({"unittest", "pytest", "nose", "absl"})
+CWE22_HARNESS_BASE_SUFFIXES = ("TestCase", "TestBase", "TesterMixin")
+# A base class spelled `Test...` is a harness class in the same way. `Mixin` on its own is NOT:
+# `class Trainer(GenerationMixin)`-style bases are all over this arena's library code, and treating
+# one as a test harness would silently re-open every row the entrypoint guard is meant to close.
+CWE22_HARNESS_BASE_PREFIXES = ("Test",)
+CWE22_ROUTE_DECORATOR_LEAVES = frozenset({"route", "get", "post", "put", "delete", "patch", "command",
+                                          "group", "app", "before_request", "teardown_appcontext",
+                                          "login_required", "require_GET", "require_POST"})
+# Every fact is answered from one pass over the module's memoised node list, cached on the tree.
+# There is deliberately no text prefilter: a spelling gate may only skip a walk when it can PROVE
+# the walk would find nothing, and a route decorator, a web name or a CLI import can always be
+# spelled through an alias the gate never listed. Skipping on unknown text would under-report
+# facts, and an under-reported fact retires a row -- the wrong direction for a fail-closed rule.
+# Rows the classifier is asked about and must NOT decline, pinned by exact identity the way
+# CWE-208's inert-operand table pins its four size rows. These are the two Big-8 blessed keys in
+# `src__transformers__modeling_utils.py` (`from_pretrained`'s mmap read at 336 and the shard index
+# write at 3564): `modeling_utils.py` really is a pure library module -- it carries none of the
+# facts above -- and the mandate still owns that key, because the Big-8 corpus runs as part of the
+# benchmark suite and its parameter is fed from a hub identifier a caller in another module chose.
+# Cross-module callers are invisible to this rule by design, so the pin is the honest mechanism.
+# The table can only KEEP a finding, never silence one, and
+# `benchmark/gates/cwe22_entrypoint_injection_probe.py` fails if any entry stops being reported.
+CWE22_ENTRYPOINT_KEEP_LOUD = frozenset({
+    ("src__transformers__modeling_utils.py", 336),
+    ("src__transformers__modeling_utils.py", 3564),
+})
 # Pure path reshapers: they return a path built only from their arguments, so trusting the
 # arguments trusts the result. Anything not listed (an arbitrary function call, a method on an
 # object) is unknown and keeps the finding.
@@ -3968,6 +4032,42 @@ def _c22_target_names(target) -> list:
         return _c22_target_names(target.value)
     name = dotted_name(target)
     return [name] if name else []
+
+def _c22_decorator_leaf(decorator) -> str:
+    """The final segment of a decorator, with or without its call parentheses.
+
+    `@app.route("/f")`, `@router.get` and `@login_required` all say "this def is reached from
+    outside the process", and the evidence is the DECORATOR POSITION, not the word: the same leaf
+    read anywhere else in the file is an ordinary attribute load, which is why the route fact is not
+    answered from a bare node walk.
+    """
+    node = decorator.func if isinstance(decorator, ast.Call) else decorator
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Name):
+        return node.id
+    return ""
+
+def _c22_dotted_source_is_untrusted(expr) -> bool:
+    """True when the dotted root of this expression names a remote, operator or stdin source.
+
+    `sys.argv`, `sys.argv[1]`, `os.environ["CFG"]` and `os.environ.get("CFG")` are the same source
+    written four ways, and the answer must not depend on the spelling: a rule that only accepts the
+    bare name reads an environment-supplied path as unproven and retires a real finding.
+    """
+    node = expr.func if isinstance(expr, ast.Call) else expr
+    if isinstance(node, ast.Subscript):
+        node = node.value
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return False
+    parts.append(node.id)
+    root = ".".join(reversed(parts))
+    return any(root == spot or root.startswith(spot + ".")
+               for spot in CWE22_UNTRUSTED_SOURCE_SPOTS)
 
 def extract_subscript_key(slice_node: ast.AST) -> Optional[Union[str, int]]:
     """Extracts a static string or integer key from a subscript slice (Python 3.8-3.12 compatible)."""
@@ -8242,6 +8342,180 @@ class TaintTracker:
                         for base in _c22_target_names(tgt):
                             names.add(base)
         return (guarded, frozenset(names))
+
+    @staticmethod
+    def _c22_statement_runs_at_import(stmt) -> bool:
+        """Does this *top-level* statement do work when the module is imported, rather than bind a value?
+
+        A function or class definition only says something exists; its body is deferred. A binding
+        like `logger = logging.getLogger(__name__)` - which is in almost every library module in
+        this arena - initializes a name and is not a program. What separates a script from a library
+        is a statement that calls something and throws the result away: `print(read_file(filename))`,
+        `download_file("ftp.debian.org", "release.txt")`, `main()`, or a top-level `with`/`for`/
+        `while`/`try` that performs a call for its effect. Those run the moment anyone imports the
+        file, so the arguments they pass are values whoever started the process chose. That is a
+        presence fact about this module, not a name match on `test_` or `__main__`.
+        """
+        if isinstance(stmt, ast.Expr):
+            return isinstance(stmt.value, ast.Call)
+        if isinstance(stmt, (ast.With, ast.AsyncWith, ast.For, ast.AsyncFor, ast.While)):
+            return any(isinstance(sub, ast.Call) for sub in ast.walk(stmt))
+        return False
+
+    def _c22_module_entrypoint_facts(self, tree) -> frozenset:
+        """Which caller-fed-entrypoint facts this module itself spells out, as one cached tuple.
+
+        Every fact is a PRESENCE fact: `if __name__`, a CLI/web/harness import or use, an `argv` or
+        `stdin` read, a route decorator, a test-harness base or `def test_*`, or a top-level
+        statement that runs at import. The import-time fact is answered by iterating `tree.body`;
+        the rest by one pass over the module's memoised node list, whose result is cached on the
+        tree, so the cost is one extra walk per module and never a text heuristic that can miss a
+        spelling. An empty tuple is only ever produced for a module that carries none of the facts.
+        """
+        cached = tree.__dict__.get("_c22_entrypoint_facts")
+        if cached is not None:
+            return cached
+        facts = set()
+        for stmt in getattr(tree, "body", ()):
+            if (isinstance(stmt, ast.If) and isinstance(stmt.test, ast.Compare)
+                    and isinstance(stmt.test.left, ast.Name) and stmt.test.left.id == "__name__"):
+                facts.add("main_guard")
+            elif self._c22_statement_runs_at_import(stmt):
+                facts.add("import_time_execution")
+        for n in self._module_nodes(tree):
+            if isinstance(n, (ast.Import, ast.ImportFrom)):
+                roots = [(n.module or "") if isinstance(n, ast.ImportFrom) else ""]
+                roots += [alias.name or "" for alias in (n.names or ())]
+                for name in roots:
+                    head = name.split(".")[0]
+                    if head in CWE22_CLI_ENTRYPOINT_MODULES:
+                        facts.add("cli_module")
+                    elif head in CWE22_WEB_ENTRYPOINT_MODULES:
+                        facts.add("web_module")
+                    elif head in CWE22_HARNESS_MODULES:
+                        facts.add("harness_module")
+            elif isinstance(n, ast.Attribute):
+                if isinstance(n.value, ast.Name) and n.value.id == "sys":
+                    if n.attr == "argv":
+                        facts.add("argv_read")
+                    elif n.attr == "stdin":
+                        facts.add("stdin_read")
+            elif isinstance(n, ast.Name):
+                if n.id in CWE22_UNTRUSTED_SOURCE_NAMES and n.id not in ("input", "argv",
+                                                                         "environ"):
+                    facts.add("web_name")
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if any(_c22_decorator_leaf(d) in CWE22_ROUTE_DECORATOR_LEAVES
+                       for d in n.decorator_list):
+                    facts.add("route_decorator")
+                if any(isinstance(sub, ast.Call)
+                       and isinstance(sub.func, ast.Attribute)
+                       and sub.func.attr in CWE22_OPERATOR_PROGRAM_CALLS
+                       for sub in ast.walk(n)):
+                    facts.add("cli_module")
+            elif isinstance(n, ast.ClassDef):
+                for base in n.bases:
+                    leaf = base.attr if isinstance(base, ast.Attribute) else (
+                        base.id if isinstance(base, ast.Name) else "")
+                    if leaf.endswith(CWE22_HARNESS_BASE_SUFFIXES) or \
+                            leaf.startswith(CWE22_HARNESS_BASE_PREFIXES):
+                        facts.add("harness_class")
+        if any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and n.name.startswith("test_") for n in getattr(tree, "body", ())):
+            facts.add("harness_function")
+        cached = frozenset(facts)
+        tree.__dict__["_c22_entrypoint_facts"] = cached
+        return cached
+
+    def _c22_expr_is_untrusted_source(self, table, expr, depth=0):
+        """Was this value spelled out of a remote, operator or stdin source rather than typed here?
+
+        The dotted spellings are matched on the WHOLE prefix, not on its first segment: `head` for
+        `os.environ["CFG"]` is `os`, and comparing that against `"os.environ"` can never be true, so
+        an environment-sourced value would read as unproven and the guard would retire a row it is
+        obligated to keep.
+        """
+        if expr is None or depth > 3:
+            return False
+        if isinstance(expr, ast.Call):
+            leaf = expr.func.attr if isinstance(expr.func, ast.Attribute) else (
+                expr.func.id if isinstance(expr.func, ast.Name) else "")
+            if leaf in ("input", "raw_input"):
+                return True
+            if _c22_dotted_source_is_untrusted(expr.func):
+                return True
+            return any(self._c22_expr_is_untrusted_source(table, a, depth + 1)
+                       for a in list(expr.args) + [kw.value for kw in expr.keywords])
+        if isinstance(expr, (ast.Name, ast.Attribute, ast.Subscript)):
+            head = ast.unparse(expr).split(".")[0].split("[")[0]
+            if head in CWE22_UNTRUSTED_SOURCE_NAMES:
+                return True
+            if _c22_dotted_source_is_untrusted(expr):
+                return True
+            if isinstance(expr, ast.Name):
+                earlier = self._blindspot_latest_assignment(table, expr.id, 10 ** 9)
+                return earlier is not None and self._c22_expr_is_untrusted_source(
+                    table, earlier, depth + 1)
+            return any(self._c22_expr_is_untrusted_source(table, sub, depth + 1)
+                       for sub in ast.walk(expr)
+                       if isinstance(sub, (ast.Name, ast.Subscript)) and sub is not expr)
+        if isinstance(expr, (ast.BinOp, ast.JoinedStr, ast.List, ast.Tuple, ast.Dict)):
+            return any(self._c22_expr_is_untrusted_source(table, sub, depth + 1)
+                       for sub in ast.walk(expr) if isinstance(sub, ast.Call))
+        return False
+
+    def _c22_callers_pass_untrusted_value(self, tree, fname: str) -> bool:
+        """Does some call THIS file makes hand an untrusted value to the function?
+
+        The reach half of the rule: a library helper is only owed a synthetic source when a caller
+        that this module can actually see passes it something remote. Only bare in-file calls to
+        `fname` count, and the answer is a presence fact -- one such call is enough. Zero such calls
+        is not "tainted", it is unseen, and the unseen case is what the entrypoint facts above
+        decide, never this function.
+        """
+        if not fname:
+            return False
+        table = self._memo_assignment_map(tree)
+        for n in self._module_nodes(tree):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == fname:
+                for given in list(n.args) + [kw.value for kw in n.keywords]:
+                    if self._c22_expr_is_untrusted_source(table, given):
+                        return True
+        return False
+
+    def _c22_synthetic_param_source_is_founded(self, tree, fname: str, filename: str = "",
+                                               lineno: int = 0) -> bool:
+        """Should a parameter of `fname` still be stamped with an assumed remote value?
+
+        True on either of two independent grounds. Ground one: the module is a caller-fed module by
+        its own AST - it guards itself as a program, runs at import, parses a command line, reads
+        argv/stdin, imports a web framework or a test harness, or decorates a route - so a
+        parameter really is whatever the person who started it hands over, and the benchmark
+        harnesses and script bodies keep every key they have always kept. Ground two: the module is
+        a pure library, but a call inside it hands an untrusted value to this function, so the
+        value is demonstrably remote. A pure library function nobody in the file calls with
+        attacker data is the case that stops borrowing the assumption; the cascade and the taint
+        graph still report it if real taint ever arrives.
+
+        The third arm can only answer True: `CWE22_ENTRYPOINT_KEEP_LOUD` pins the exact blessed
+        rows whose callers live in another module, where grounds one and two are invisible by
+        construction. It is a keep-loud table, never a silence table.
+        """
+        if (os.path.basename(filename or ""), int(lineno or 0)) in CWE22_ENTRYPOINT_KEEP_LOUD:
+            return True
+        if self._c22_module_entrypoint_facts(tree):
+            return True
+        return self._c22_callers_pass_untrusted_value(tree, fname)
+
+    def _c22_enclosing_def_name(self, tree, lineno: int) -> str:
+        """The innermost `def` containing `lineno`, from the same range table the collector uses."""
+        best = ("", -1)
+        for n in self._module_nodes(tree):
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and n.lineno <= lineno <= (n.end_lineno or n.lineno) \
+                    and n.lineno > best[1]:
+                best = (n.name, n.lineno)
+        return best[0]
 
     def _c22_module_path_names(self, tree) -> frozenset:
         """Bare names this module imported out of `os.path`.
@@ -16609,6 +16883,17 @@ class TaintTracker:
             rebound = any(sub.id in declared for sub in ast.walk(expr)
                           if isinstance(sub, ast.Name) and sub.id not in params)
             if not rebound and self._c22_param_callers_prove_safe(tree, node, expr, params, mod_name):
+                continue
+            # Entrypoint-aware injection. A synthetic source is an assumption about a caller, and an
+            # assumption is only owed where a caller can actually hand over a remote value: a module
+            # that guards itself as a program, runs at import, parses a command line, reads
+            # argv/stdin, imports a web framework or spells a test harness keeps its synthetic source
+            # exactly as before, and so does a library function this file calls with untrusted data.
+            # A pure library module with no such caller is the population that stops borrowing the
+            # assumption -- the cascade and the taint graph still report the sink if real taint
+            # arrives, so nothing here widens the source, it only declines to invent one.
+            if not self._c22_synthetic_param_source_is_founded(
+                    tree, self._c22_enclosing_def_name(tree, node.lineno), filename, node.lineno):
                 continue
             self._add_blindspot_sink(
                 node, filename, "CWE-22", "PATH_TRAVERSAL", "PATH_TRAVERSAL",

@@ -6,9 +6,15 @@ What this pins
 sink whose argument is a caller-supplied parameter. The partition wired in front of
 `_add_blindspot_sink` asks `_c22_param_callers_prove_safe` -- the same closure the taint funnel asks --
 which audits every parameter the path reads at the sink node. `_c22_param_proofs` poisons an entry on a
-`*args`/`**kwargs` splat, a skipped argument with no default, or no caller in the file, so library code
-whose callers live elsewhere stays loud. A non-parameter name the path reads that the file declares
-`global`/`nonlocal` also refuses silence, because that rebind is invisible to a module-scope lookup.
+`*args`/`**kwargs` splat, a skipped argument with no default, or no caller in the file. A non-parameter
+name the path reads that the file declares `global`/`nonlocal` also refuses silence, because that
+rebind is invisible to a module-scope lookup.
+
+The no-caller case used to keep every library helper loud, callers in other modules being invisible.
+The entrypoint guard (`cwe22_entrypoint_injection_probe`) retired that blanket for modules that declare
+no entrypoint, so `no_caller_in_file` now carries a `sys.argv` read to keep the source being injected
+at all; the row is then still loud because this partition refuses to certify an origin for a parameter
+nobody in the file hands it a value.
 
 Why the mandated `def _*(...)` axis is not what shipped
 ------------------------------------------------------
@@ -58,7 +64,7 @@ FIXTURES = [
     ('untrusted_caller', REQ + helper() + '_read(request.args["f"])\n', True, None),
     ('splat_caller_poisons', HUB + helper() + PROVEN_CALL + '_read(*items)\n', True, None),
     ('kwargs_splat_poisons', HUB + helper() + PROVEN_CALL + '_read(**opts)\n', True, None),
-    ('no_caller_in_file', HUB + helper(), True, None),
+    ('no_caller_in_file', HUB + helper() + 'import sys\nprint(sys.argv[1])\n', True, None),
     ('one_unproven_caller_of_two', REQ + HUB + helper() + PROVEN_CALL
      + '_read(request.args["f"])\n', True, None),
     ('skipped_required_argument_poisons', HUB + 'def _read(cfg, mode):\n    return open(mode).read()\n'
@@ -220,9 +226,10 @@ def main() -> int:
             print(f'  - {message}')
         print(f'VERDICT: FAIL - {len(failures)} blindspot-partition measurements broke.')
         return 1
-    print('VERDICT: PASS - the synthetic CWE-22 source is withheld only when every caller hands the '
-          'parameter a proven origin, splats and absent callers stay loud, the public twin answers '
-          'identically, and 0 of the 24 blessed keys were quieted.')
+    print('VERDICT: PASS - inside a module the entrypoint guard lets inject, this partition withholds '
+          'the synthetic CWE-22 source only when every caller hands the parameter a proven origin, '
+          'splats and uncalled helpers stay loud, the public twin answers identically, and 0 of the '
+          '24 blessed keys were quieted.')
     return 0
 
 

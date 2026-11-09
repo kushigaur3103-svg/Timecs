@@ -129,13 +129,21 @@ CONFIG_XXE = (
 )
 # `lit_root_join_name` of `cwe22_repo_anchor_path_probe.py`: a literal directory chosen by the
 # file with a file name chosen by the caller, which that gate proves LOUD at both seals. Nothing
-# but a path policy can change its answer, so it is the carrier for the CWE-22 exclusion tier.
+# but a path policy can change its answer once the module declares an entrypoint, so it is the carrier
+# for the CWE-22 exclusion tier.
+# A traversal in a module that DECLARES an entrypoint: the argv read is what makes the row loud now
+# that the entrypoint guard declines synthetic parameter sources in pure library modules
+# (`cwe22_entrypoint_injection_probe`). Loudness has to come from content for this carrier, or the
+# silence this tier reads on an excluded path could not be attributed to the exclusion.
 CONFIG_TRAV = (
     "import os\n"
+    "import sys\n"
     "\n"
     "\n"
     "def load(name):\n"
     "    return open(os.path.join('models', name)).read()\n"
+    "\n"
+    "print(sys.argv[1])\n"
 )
 
 

@@ -165,7 +165,12 @@ C22_FIXTURES = {
     'runtime_read': ('src/m.py',
                      "def f(filename):\n"
                      + "    with open(filename) as h:\n"
-                     + "        return h.read()\n", [2], 1),
+                     + "        return h.read()\n"
+                     # The argv read is the entrypoint fact that keeps this row loud now that the
+                     # entrypoint guard declines synthetic sources in pure library modules; the
+                     # literal-vs-runtime contrast below is still what this fixture measures.
+                     + "import sys\n"
+                     + "print(sys.argv[1])\n", [2], 1),
 }
 
 # Slice D fixtures: the hub cache-resolver origin proof. (path, source, loud lines, sink_records).
@@ -191,7 +196,11 @@ C22_RESOLVER_FIXTURES = {
                                             + "    return repo\n"
                                             + "def get_labels(repo_id, filename):\n"
                                             + "    with open(hf_hub_download(repo_id, filename), \"r\") as h:\n"
-                                            + "        return h.read()\n", [4], 1),
+                                            + "        return h.read()\n"
+                                            # Entrypoint fact, so the local-def refusal is what keeps
+                                            # this row loud rather than a module-level CLI declaration.
+                                            + "import sys\n"
+                                            + "print(sys.argv[1])\n", [4], 1),
     'resolver_join_prefix_stays_loud': ('src/convert_x_to_pytorch.py',
                                         "from huggingface_hub import hf_hub_download\n"
                                         + "import os\n"

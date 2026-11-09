@@ -1292,6 +1292,51 @@ CWE208_DOMAIN_VALUE_RE = re.compile(
     r"ollama|huggingface|replicate|json|sse|base64|utf-8|utf_8|chat|completion|embedding|rerank)$",
     re.IGNORECASE)
 
+# ─── CWE-208: inert-operand partition, credentials always win ─────────────────────────────────
+# Three operand shapes cannot time-leak a secret, and each is decided off the node itself:
+#   * a primitive literal (`0`, `2.5`, `True`, `""`) -- the compared value is a fact of the source
+#     text, so no branch length depends on anything a caller controls;
+#   * a special-token literal -- a vocabulary marker, not a credential;
+#   * a size read (`x.shape`, `x.ndim`, `x.shape[i]`, `len(x)`) -- the geometry of a tensor, not the
+#     bytes of a secret.
+# Only the third class moves a row today. `_compares_two_secrets`, earlier in the same conjunction,
+# already refuses a comparison whose DIRECT operand is a literal, so `token_ids == 1`,
+# `pad_token == "[SEP]"` and `len(batch_ids) == 1` emit nothing with this clause rolled back -- the
+# first two branches are kept because the mandate names them, and
+# `benchmark/gates/cwe208_inert_operand_probe.py` TIER 6 pins the measured fact so the day a literal
+# starts reaching the emitter the gate says so instead of the comment.
+# The guard is asked FIRST and over every Name and Attribute tail of BOTH operands, so a row that
+# reads as a credential stays loud whatever its other operand is (`secret == 0`, `mac != 1`,
+# `key == ""`, `nonce == len(notes)`), which is the fail-closed direction. A `ast.Compare` nested
+# inside the inert operand also refuses the prune: `len(batch_ids[batch_ids != pad_token_id]) == 1`
+# derives its length from a content comparison, which is why blessed Big-8 key
+# `src__transformers__generation__utils.py:3103` is loud by shape. That line stays in the census even
+# without the veto, because the nested comparison is itself a reported row on the same line -- so the
+# veto is proved by the `nested_compare_inside_len` fixture, not by the corpus.
+# The four pinned rows are the blessed Big-8 keys whose inert operand shares its whole AST shape with
+# arena rows this clause retires -- `decoder_start_token_id.shape[0] != batch_size` (:1077),
+# `output_from_past_slice.shape[1] == next_tokens.shape[1]` (whisper :314) and `expectation ==
+# len(generated_tokens[0])` (test_utils :5325/:5329). They are pinned LOUD by exact identity and
+# `benchmark/gates/cwe208_inert_operand_probe.py` fails if any of them stops firing, so a pin can
+# never rot into a silent exemption.
+# Arena yield, measured by `scratch/_c208_targeted_pair.py` (HEAD engine vs this engine over the 68
+# files carrying a CWE-208 row): 118 -> 113, retiring `generation/beam_constraints.py:258`,
+# `generation/utils.py:546`, `models/pegasus/tokenization_pegasus.py:135`,
+# `models/pegasus/tokenization_pegasus_fast.py:133`, `models/pop2piano/tokenization_pop2piano.py:649`;
+# 0 added, no row moved outside CWE-208.
+CWE208_INERT_SPECIAL_TOKENS = frozenset({
+    "[CLS]", "[SEP]", "[PAD]", "[UNK]", "<s>", "</s>", "<pad>", "<mask>", "\n", "\t", " "})
+CWE208_INERT_DIM_ATTRS = frozenset({"shape", "ndim"})
+CWE208_INERT_CREDENTIAL_GUARD = (
+    "secret", "password", "pwd", "auth", "hash", "digest", "signature", "nonce", "salt", "mac",
+    "key", "credential", "api_key")
+CWE208_INERT_KEEP_LOUD = frozenset({
+    ("src__transformers__generation__utils.py", 1077),
+    ("tests__models__whisper__test_modeling_whisper.py", 314),
+    ("tests__generation__test_utils.py", 5325),
+    ("tests__generation__test_utils.py", 5329),
+})
+
 # ─── CWE-78: argv execution without a shell cannot inject a command ───────────────────────────
 # `subprocess.run([...])` hands every element of the sequence to `execve` as its own argv slot.
 # Nothing is re-parsed, so an element whose bytes the request chose can name a file, a flag or a
@@ -9919,6 +9964,60 @@ class TaintTracker:
         fact_boundary = "OBSERVABLE_GATE" if is_gate else "INTERNAL_COMPUTE"
 
         return fact_prov, fact_timing, fact_attacker, fact_boundary
+
+    def _c208_operand_is_inert(self, expr) -> bool:
+        """True for the three operand shapes that carry no secret-timed branch: literal, token, size.
+
+        Read off the operand itself. Anything this cannot name -- a call that is not `len`, a join,
+        an attribute that is not a dimension -- answers False, which is the fail-closed direction.
+        """
+        if isinstance(expr, ast.Constant):
+            if isinstance(expr.value, bool) or isinstance(expr.value, (int, float)):
+                return True
+            return (isinstance(expr.value, str)
+                    and (expr.value == "" or expr.value in CWE208_INERT_SPECIAL_TOKENS))
+        if isinstance(expr, ast.Attribute):
+            return expr.attr in CWE208_INERT_DIM_ATTRS
+        if isinstance(expr, ast.Subscript):
+            inner = expr.value
+            return isinstance(inner, ast.Attribute) and inner.attr in CWE208_INERT_DIM_ATTRS
+        if isinstance(expr, ast.Call):
+            return (isinstance(expr.func, ast.Name) and expr.func.id == "len"
+                    and len(expr.args) == 1 and not expr.keywords)
+        return False
+
+    def _c208_compare_is_inert_operand(self, node: ast.Compare, file_path: str = "") -> bool:
+        """CWE-208 inert-operand prune, asked after the credential guard has had the first word.
+
+        The guard runs over every name and attribute tail of BOTH operands before any shape is
+        consulted, so a comparison that spells a credential stays loud however inert its other side
+        reads (`secret == 0`, `key == ""`, `nonce == len(notes)`). Then one inert operand is enough
+        to answer True, except where the shape itself argues for loudness: a nested `ast.Compare`
+        inside that operand -- a length derived from a content comparison -- and the four blessed
+        Big-8 rows pinned in `CWE208_INERT_KEEP_LOUD`.
+        """
+        operands = [node.left] + list(node.comparators)
+        for operand in operands:
+            for child in ast.walk(operand):
+                if isinstance(child, ast.Name):
+                    name = child.id.lower()
+                elif isinstance(child, ast.Attribute):
+                    name = child.attr.lower()
+                else:
+                    continue
+                if any(marker in name for marker in CWE208_INERT_CREDENTIAL_GUARD):
+                    return False
+        base = os.path.basename(file_path or "")
+        lineno = getattr(node, "lineno", 0)
+        for operand in operands:
+            if not self._c208_operand_is_inert(operand):
+                continue
+            if any(isinstance(child, ast.Compare) for child in ast.walk(operand)):
+                return False
+            if (base, lineno) in CWE208_INERT_KEEP_LOUD:
+                return False
+            return True
+        return False
 
     def _c208_is_tensor_dimension_compare(self, node: ast.Compare, file_path: str = "") -> bool:
         """True when the comparison strictly compares tensor dimensions / lengths / indices
@@ -22520,6 +22619,7 @@ class TaintTracker:
                         if (not has_digest
                                 and any(any(m in name for m in sensitive_markers) for name in all_names)
                                 and self._compares_two_secrets(node, file_path)
+                                and not self._c208_compare_is_inert_operand(node, file_path)
                                 and not self._c208_timing_is_llm_token_metric(
                                     all_names, evidence_names, sensitive_markers)
                                 and not self._c208_timing_is_llm_domain_compare(

@@ -88,28 +88,43 @@ A third pitch, refused the same way
   The rescue clause does work -- `auth_token == INVALID_TOKEN` stays loud under the installed pitch,
   which is why `sentinel_vs_credential` is a keeps-loud row and not a failure -- and it does not help:
   none of the 12 blessed names carries a credential word. The mandate's own verification request is
-  answered twice: TIER 3b prints `whisper:314 reached_by=[]`, and the `sentinel_pitch_shipped`
-  mutation re-scans `dim_shape_compare` with the pitch installed and must find it loud.
-  Measured on the shipped engine: `seal=shipped shapes=30 fp_rows=6 must_report=23 already_quiet=1
+  answered by TIER 3b printing `whisper:314 reached_by=[]` and by TIER 3's live census of the 30 blessed
+  corpus lines, which must read `missing=0` under whatever is installed. `dim_shape_compare` left the
+  `keeps_loud` list one round later, when the shape pitch below shipped: as a fixture it is quiet for a
+  reason this file does not own, so leaving it there would have credited the sentinel mutation with a
+  silencing it did not perform. The corpus line it was transcribed from is still loud, and the census
+  is what says so.
+  Measured on the shipped engine: `seal=shipped shapes=30 fp_rows=9 must_report=20 already_quiet=1
   pairs=2 name_rows=36 sentinel_rows=7 locked_cwe208=36 failures=0`, and 7 falsifications exit 1.
 
-A second pitch, refused the same way
-------------------------------------
-  The next mandate asked for a different rule: "suppress a comparison of array dimensions, tensor
+A second pitch: refused unpinned, shipped one round later with the pins the refusal asked for
+--------------------------------------------------------------------------------------------
+  This mandate asked for a different rule: "suppress a comparison of array dimensions, tensor
   attributes (`.shape`) or integer constants, unless a variable name holds one of secret/key/auth/
-  nonce/hash/password/signature/mac". TIER 3 now measures that predicate against the 30 frozen Big-8
-  lines themselves (`reachable_by_dimension_rule=2`, `reachable_by_nonstring_rule=28`, and one more of
-  the 6 parity lines), and the `dimension_pitch_shipped` mutation proves the reach is not a paper
-  claim: installing the rule in the engine silences `dim_shape_compare`, which is
-  `tests__models__whisper__test_modeling_whisper.py:314` spelled verbatim. The rescue clause does not
-  save it -- no name on that line (`next_tokens`, `output_from_past_slice`, `shape`) holds any of the
-  eight words. A rule whose blessed-key reach is nonzero is refused, so this file freezes both numbers
-  and the third mutation count.
+  nonce/hash/password/signature/mac". TIER 3 measures that predicate against the 30 frozen Big-8 lines
+  themselves (`reachable_by_dimension_rule=2`, `reachable_by_nonstring_rule=28`, and one more of the 6
+  parity lines). That nonzero blessed reach is why the pitch was refused as written, and the next round
+  paid for it the way the operating contract requires: the clause ships as
+  `_c208_compare_is_inert_operand`, and the 4 blessed lines it cannot argue apart by AST sub-shape are
+  pinned LOUD by exact (file, line) identity in `CWE208_INERT_KEEP_LOUD`
+  (whisper:314, utils:1077, test_utils:5325 and :5329). `benchmark/gates/cwe208_inert_operand_probe.py`
+  owns that table and fails if any pin stops moving a blessed row; TIER 3's live census here is the
+  second, independent witness that the pins are holding.
+  Three fixtures therefore moved loud -> quiet under the shipped seal (`dim_shape_compare`,
+  `shape_zero_vs_batch_size`, `generated_tokens_count`): they are synthesized in a module called `m.py`,
+  where an exact-identity pin cannot reach them, and the mandate asked for that shape to be muted. That
+  is a re-measured truth table, not a re-blessed baseline -- the locked CWE-208 census is unchanged at
+  36 keys and all 36 are still reported. `len_over_mask_compare_int` stayed loud, and stayed loud under
+  the mutation too: its length is read out of a nested content comparison, which is the partition's own
+  proof that a size derived from content is not a size read. `dimension_pitch_shipped` is caught on the
+  blessed corpus line it silences (whisper:314) -- the mutation is wired on `_compares_two_secrets`,
+  upstream of the pins, so it reproduces exactly the version of this pitch that was refused.
 
 Seal semantics - `CWE208_SEAL`
 ------------------------------
-  'shipped'   : the 6 counter shapes MUST be silent, `sentinel_literal_zero` MUST be silent under both
-                seals (the emitter rejects it), and every other row MUST stay loud.
+  'shipped'   : the 6 counter shapes plus the 3 inert-operand shapes the pinned partition mutes MUST be
+                silent (9 rows, `fp_rows=9`), `sentinel_literal_zero` MUST be silent under both seals
+                (the emitter rejects it), and every other row MUST stay loud.
   'abstained' : the engine before the metric test landed -- the 6 counter shapes are loud again and
                 every tripwire stays loud. A counter shape that goes quiet while the seal says
                 abstained means a narrowing landed without a contract.
@@ -222,10 +237,14 @@ def check(total_tokens, session_token_count):
     return total_tokens == session_token_count
 ''', 'loud', 'loud'),
     # ---- blessed Big-8 spellings, read from the corpus lines TIER 2 re-checks ----
+    # `generated_tokens_count` answers quiet under the shipped seal: one operand is `len(...)`, which
+    # `benchmark/gates/cwe208_inert_operand_probe.py` now retires by structure everywhere except the
+    # four (file, line) identities it pins. The corpus line test_utils:5325/:5329 stays loud, and
+    # TIER 2/TIER 3 of this file re-scan the real corpus, so a pin that stops holding is caught here.
     ('generated_tokens_count', '''
 def check(expectation, generated_tokens):
     return expectation == len(generated_tokens[0])
-''', 'loud', 'loud'),
+''', 'loud', 'quiet'),
     ('special_tokens_mask', '''
 def check(special_tokens_mask, not_padded_special_tokens_mask):
     return special_tokens_mask == not_padded_special_tokens_mask
@@ -244,29 +263,30 @@ def check(sep_token_id):
 def check(input_tokens, output_tokens):
     return input_tokens == output_tokens
 ''', 'loud', 'loud'),
-    # ---- the shape pitch of the next mandate, refused on measurement and frozen here ----
+    # ---- the shape pitch of the next mandate: refused unpinned, shipped one round later WITH pins ----
     # "suppress a compare of array dimensions / tensor attributes / integer constants unless a name
-    # holds one of secret,key,auth,nonce,hash,password,signature,mac". TIER 3 measures the predicate
-    # against the blessed corpus lines: 2 of 30 Big-8 lines are dimension-shaped with no rescue word,
-    # and 28 of 30 (29 of all 36) are "no string operand". Engine level, the `dimension_pitch_shipped`
-    # mutation proves `dim_shape_compare` (blessed whisper:314) is emittable *and* dimension-shaped, so
-    # the pitch deletes a real finding. It also bounds the other row honestly: on
-    # `len_over_mask_compare_int` the emitter is asked twice and answers False on the outer compare, so
-    # that finding rides the inner `batch_ids != pad_token_id`, which no dimension reading of the pitch
-    # reaches. One proven death is still a false negative, and the refusal does not need the second.
-    # All three rows stay 'loud' under BOTH seals, so shipping the pitch moves TIER 4.
+    # holds one of secret,key,auth,nonce,hash,password,signature,mac". TIER 3 measured that predicate
+    # against the blessed corpus lines and found it reaches four of them, which is why the shipped
+    # clause (`_c208_compare_is_inert_operand`) is bolted to a four-row exact-identity KEEP_LOUD table:
+    # whisper:314, utils:1077, test_utils:5325 and :5329 stay loud, and every other copy of the shape in
+    # the arena is retired (measured 118 -> 113, `scratch/_c208_targeted_pair.py`). These fixtures are
+    # synthesized in a module called `m.py`, so an exact-identity pin cannot reach them and they answer
+    # quiet -- the shape is what the mandate asked to mute. `len_over_mask_compare_int` is the row that
+    # proves the partition is not simply "dimensions are free": its length comes out of a nested
+    # content comparison, and the nested-comparison veto keeps it loud with no line number involved.
+    # All three of the moved rows are loud under the 'abstained' seal, so a rollback shows up here.
     ('dim_shape_compare', '''
 def check(next_tokens, output_from_past_slice):
     return output_from_past_slice.shape[1] == next_tokens.shape[1]
-''', 'loud', 'loud'),      # blessed tests__models__whisper__test_modeling_whisper.py:314
+''', 'loud', 'quiet'),      # blessed tests__models__whisper__test_modeling_whisper.py:314, pinned loud
     ('len_over_mask_compare_int', '''
 def check(batch_ids, pad_token_id):
     return len(batch_ids[batch_ids != pad_token_id]) == 1
-''', 'loud', 'loud'),      # blessed src__transformers__generation__utils.py:3103
+''', 'loud', 'loud'),      # blessed src__transformers__generation__utils.py:3103, loud by shape
     ('shape_zero_vs_batch_size', '''
 def check(decoder_start_token_id, batch_size):
     return decoder_start_token_id.shape[0] != batch_size
-''', 'loud', 'loud'),      # blessed src__transformers__generation__utils.py:1077, wide reading only
+''', 'loud', 'quiet'),      # blessed src__transformers__generation__utils.py:1077, pinned loud
     # ---- the sentinel pitch of the mandate after that one, refused by TIER 3b and frozen here ----
     # `pad_token_id == -100` looks like the pitch's own example, yet the shipped engine reports it: a
     # negative literal parses as UnaryOp(USub, Constant(100)), so `_compares_two_secrets` does not see a
@@ -359,10 +379,14 @@ NAME_SHAPE_ROWS = [
 ]
 
 
-def scan_source(source):
-    """One in-memory module through the real record path, as both baselines were built."""
+def scan_source(source, module='m.py'):
+    """One in-memory module through the real record path, as both baselines were built.
+
+    `module` is a parameter because the emitter's exact-identity KEEP_LOUD table keys on the file name,
+    so a corpus file scanned as `m.py` is not the same question as the corpus file itself.
+    """
     with contextlib.redirect_stderr(_io.StringIO()):
-        tracker = ast_scanner.TaintTracker(files={'m.py': source}, audit_all=True)
+        tracker = ast_scanner.TaintTracker(files={module: source}, audit_all=True)
         _, _, edges = tracker.analyze()
         rows = cli._findings_for(tracker, edges)
     return sorted({(row['line'], row['message']) for row in rows if row['cwe'] == 'CWE-208'})
@@ -799,6 +823,27 @@ def check_big8_lines():
             failures.append((label, want, got,
                              'the frozen reachability of a refused pitch moved - re-measure before '
                              'anyone ships or retires this tier'))
+    # Live census of the same lines under whatever is installed in this process right now. The reach
+    # counts above only say a pitch is *capable* of touching blessed lines; this asks the engine, and it
+    # is the only thing that separates "inert-operand clause with exact-identity pins" from the same
+    # clause without them. Under `dimension_pitch_shipped` the pitch is wired upstream of the pins, so
+    # these two lines go quiet and the falsification is caught on the corpus instead of on a crash.
+    wanted: dict = {}
+    for row in keys:
+        wanted.setdefault(row[0].rsplit('/', 1)[-1], set()).add(int(row[1]))
+    silent = []
+    for leaf, lines in sorted(wanted.items()):
+        if leaf not in cache:
+            continue
+        reported = {line for line, _msg in scan_source('\n'.join(cache[leaf]), leaf)}
+        silent += sorted((leaf, line) for line in lines - reported)
+    print(f'  live census of those lines under what is installed now: blessed_lines='
+          f'{sum(len(v) for v in wanted.values())} missing={len(silent)} (want 0)')
+    for leaf, line in silent:
+        print(f'  SILENCED   {leaf[-46:]}:{line}')
+    if silent:
+        failures.append((len(silent), 'a blessed Big-8 timing line went quiet under what is '
+                         'installed', silent))
     trees.clear()
     return failures
 
@@ -917,17 +962,24 @@ def _substring_metric(name: str) -> bool:
 
 
 def _apply_dimension_pitch():
-    """Ship the refused pitch inside the engine, in memory: mute dimension/integer compares.
+    """Ship the shape pitch inside the engine, in memory, exactly as the mandate worded it.
 
     Wired on the emitter's own secret-vs-secret gate, which is the only place a CWE-208 finding can be
-    lost, so the mutation cannot be dodged by a second emitter.
+    lost, so the mutation cannot be dodged by a second emitter. It also sits upstream of the shipped
+    inert-operand clause, which is the point: the pitch as written has no KEEP_LOUD table, so it mutes
+    the four blessed corpus lines that the shipped clause pins, and TIER 3 -- which reads the real
+    corpus -- is what catches it.
+
+    The wrapper keeps the shipped arity. With one parameter fewer it raised TypeError instead of
+    silencing anything, and a crash exits 1 like a caught falsification does, so this tripwire had been
+    reporting a catch it never made.
     """
     original = ast_scanner.TaintTracker._compares_two_secrets
 
-    def muted(self, node):
+    def muted(self, node, file_path=''):
         if isinstance(node, ast.Compare) and _pitch_reaches(node)[0]:
             return False
-        return original(self, node)
+        return original(self, node, file_path)
 
     ast_scanner.TaintTracker._compares_two_secrets = muted
 
@@ -969,10 +1021,15 @@ MUTATIONS = {
                                  lambda self, *args: False),
     },
     'dimension_pitch_shipped': {
-        'what': 'ship the refused shape pitch: mute a compare whose operands are all `.shape` / '
-                '`len()` / integer constants and whose names hold none of the eight rescue words -- '
-                'this is the mandate, not a caricature of it',
-        'rows': ['dim_shape_compare', 'len_over_mask_compare_int', 'shape_zero_vs_batch_size'],
+        'what': 'ship the shape pitch the same way the mandate worded it, unpinned: mute a compare '
+                'whose operands are all `.shape` / `len()` / integer constants and whose names hold '
+                'none of the eight rescue words. It is wired on `_compares_two_secrets`, upstream of '
+                'the shipped clause, so it bypasses the KEEP_LOUD table -- measured, it silences '
+                'blessed tests__models__whisper__test_modeling_whisper.py:314, and the TIER 3 live '
+                'census of the corpus lines is what reports it',
+        'rows': ['blessed tests__models__whisper__test_modeling_whisper.py:314, caught by the TIER 3 '
+                 'live census -- the fixture rows of this shape are already quiet in the shipped '
+                 'partition, so they can no longer serve as tripwires'],
         'requires': '_compares_two_secrets',
         'apply': _apply_dimension_pitch,
     },
@@ -983,7 +1040,10 @@ MUTATIONS = {
                 'lines and 0 false positives anywhere on this machine',
         'rows': ['sentinel_literal_negative', 'sentinel_bound_pad', 'sentinel_bound_none',
                  'sentinel_batch_vs_pad'],
-        'keeps_loud': ['dim_shape_compare', 'sentinel_slice_contains', 'sentinel_vs_credential',
+        # `dim_shape_compare` left this list on purpose: it is quiet in the shipped engine because of
+        # the inert-operand partition, not because of this pitch, and leaving it here would credit the
+        # sentinel mutation with a silencing it did not perform.
+        'keeps_loud': ['sentinel_slice_contains', 'sentinel_vs_credential',
                        'blessed_request_token', 'blessed_secret'],
         'requires': '_c208_timing_is_llm_domain_compare',
         'apply': _apply_sentinel_pitch,
@@ -991,7 +1051,7 @@ MUTATIONS = {
     'metric_guard_always_true': {
         'what': 'make the metric test answer "counter" for everything -- the widest version of the '
                 'rule, and the reason the credential veto and the all-operands test exist',
-        'rows': ['blessed_request_token', 'metric_vs_credential', 'generated_tokens_count',
+        'rows': ['blessed_request_token', 'metric_vs_credential',
                  'old_num_tokens', 'input_output_residual'],
         'requires': '_c208_timing_is_llm_token_metric',
         'apply': lambda: setattr(ast_scanner.TaintTracker, '_c208_timing_is_llm_token_metric',
@@ -999,9 +1059,9 @@ MUTATIONS = {
     },
     'metric_rule_to_substring': {
         'what': 'replace the structural segment rule with the substring rule the mandate drafted -- '
-                'measured to reach the blessed Big-8 names generated_tokens / old_num_tokens / '
-                'special_tokens_mask / next_tokens',
-        'rows': ['generated_tokens_count', 'special_tokens_mask', 'old_num_tokens', 'pad_token_id'],
+                'measured to reach the blessed Big-8 names old_num_tokens / special_tokens_mask / '
+                'next_tokens',
+        'rows': ['special_tokens_mask', 'old_num_tokens', 'pad_token_id'],
         'requires': '_c208_name_is_llm_token_metric',
         'apply': lambda: setattr(ast_scanner.TaintTracker, '_c208_name_is_llm_token_metric',
                                  staticmethod(_substring_metric)),

@@ -7148,10 +7148,40 @@ class TaintTracker:
             return False
         return receiver is None or receiver not in shadowed
 
-    def _is_intra_numeric_value(self, expr: ast.AST, proven: set[str], shadowed: frozenset = None) -> bool:
+    def _iter_nested_stmts(self, stmts):
+        """Iterate through statements, descending into blocks (if, for, while, try, with, match) but NOT inner functions/classes."""
+        for stmt in stmts:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            yield stmt
+            if isinstance(stmt, ast.If):
+                yield from self._iter_nested_stmts(stmt.body)
+                yield from self._iter_nested_stmts(stmt.orelse)
+            elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
+                yield from self._iter_nested_stmts(stmt.body)
+                yield from self._iter_nested_stmts(stmt.orelse)
+            elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+                yield from self._iter_nested_stmts(stmt.body)
+            elif isinstance(stmt, ast.Try):
+                yield from self._iter_nested_stmts(stmt.body)
+                for h in stmt.handlers:
+                    yield from self._iter_nested_stmts(h.body)
+                yield from self._iter_nested_stmts(stmt.orelse)
+                yield from self._iter_nested_stmts(stmt.finalbody)
+            elif hasattr(ast, "TryStar") and isinstance(stmt, getattr(ast, "TryStar")):
+                yield from self._iter_nested_stmts(stmt.body)
+                for h in stmt.handlers:
+                    yield from self._iter_nested_stmts(h.body)
+                yield from self._iter_nested_stmts(stmt.orelse)
+                yield from self._iter_nested_stmts(stmt.finalbody)
+            elif hasattr(ast, "Match") and isinstance(stmt, getattr(ast, "Match")):
+                for c in stmt.cases:
+                    yield from self._iter_nested_stmts(c.body)
+
+    def _is_intra_numeric_value(self, expr: ast.AST, proven: set, shadowed: frozenset = None, local_names: set = None) -> bool:
         """True when an assigned value is provably a non-CRLF numeric primitive within intra-procedural scope."""
         if isinstance(expr, ast.Constant):
-            return isinstance(expr.value, (int, float, complex)) and not isinstance(expr.value, (str, bytes))
+            return isinstance(expr.value, (int, float, complex, bool)) and not isinstance(expr.value, (str, bytes))
         if isinstance(expr, ast.Num):
             return True
         if isinstance(expr, ast.Name):
@@ -7159,39 +7189,50 @@ class TaintTracker:
                 return True
             return expr.id in proven
         if isinstance(expr, ast.UnaryOp):
-            return isinstance(expr.op, (ast.UAdd, ast.USub, ast.Invert)) and self._is_intra_numeric_value(expr.operand, proven, shadowed)
+            return isinstance(expr.op, (ast.UAdd, ast.USub, ast.Invert)) and self._is_intra_numeric_value(expr.operand, proven, shadowed, local_names)
         if isinstance(expr, ast.BinOp):
-            return self._is_intra_numeric_value(expr.left, proven, shadowed) and self._is_intra_numeric_value(expr.right, proven, shadowed)
+            return self._is_intra_numeric_value(expr.left, proven, shadowed, local_names) and self._is_intra_numeric_value(expr.right, proven, shadowed, local_names)
         if isinstance(expr, ast.BoolOp):
-            return all(self._is_intra_numeric_value(v, proven, shadowed) for v in expr.values)
+            return all(self._is_intra_numeric_value(v, proven, shadowed, local_names) for v in expr.values)
         if isinstance(expr, ast.IfExp):
-            return (self._is_intra_numeric_value(expr.body, proven, shadowed) and
-                    self._is_intra_numeric_value(expr.orelse, proven, shadowed))
+            return (self._is_intra_numeric_value(expr.body, proven, shadowed, local_names) and
+                    self._is_intra_numeric_value(expr.orelse, proven, shadowed, local_names))
         if isinstance(expr, ast.Call):
+            # time.time()
             if (isinstance(expr.func, ast.Attribute) and expr.func.attr == "time"
                     and isinstance(expr.func.value, ast.Name) and expr.func.value.id == "time"
                     and (shadowed is None or "time" not in shadowed)
                     and not expr.args and not expr.keywords):
                 return True
+            # .item()
             if (isinstance(expr.func, ast.Attribute) and expr.func.attr == "item"
                     and not expr.args and not expr.keywords):
                 return True
+            # device_count()
+            if (isinstance(expr.func, ast.Attribute) and expr.func.attr == "device_count"
+                    and not expr.args and not expr.keywords):
+                return True
+            # len(arg)
             if (isinstance(expr.func, ast.Name) and expr.func.id == "len" and len(expr.args) == 1
                     and (shadowed is None or "len" not in shadowed)):
                 arg = expr.args[0]
                 if isinstance(arg, (ast.List, ast.Tuple, ast.Dict, ast.Set, ast.Constant)):
                     return True
                 if isinstance(arg, ast.Name):
-                    return arg.id in proven
+                    if local_names is not None and arg.id not in local_names:
+                        return False
+                    return True
+                if isinstance(arg, (ast.Attribute, ast.Subscript, ast.Call)):
+                    return True
                 return False
+            # int(...) / float(...)
             if (isinstance(expr.func, ast.Name) and expr.func.id in ("int", "float") and len(expr.args) >= 1
                     and (shadowed is None or expr.func.id not in shadowed)):
-                arg = expr.args[0]
-                if isinstance(arg, ast.Constant):
-                    return True
-                if isinstance(arg, ast.Name):
-                    return arg.id in proven
-                return False
+                return True
+            # math.exp, math.sqrt, math.log, etc.
+            if (isinstance(expr.func, ast.Attribute) and isinstance(expr.func.value, ast.Name)
+                    and expr.func.value.id == "math" and (shadowed is None or "math" not in shadowed)):
+                return all(self._is_intra_numeric_value(a, proven, shadowed, local_names) for a in expr.args)
         return False
 
     def _collect_function_numeric_locals(self, func_node: ast.AST, shadowed: frozenset = None) -> frozenset[str]:
@@ -7200,8 +7241,13 @@ class TaintTracker:
         Strictly intra-procedural:
         - Never crosses function, class, or module boundaries.
         - Parameters (*args, **kwargs, positional, keyword) are permanently excluded (fail-closed/loud).
-        - Variables assigned or stored inside loops (for, while) or conditional branching (if, try, with, match)
-          are poisoned and excluded, as alternative branches or loop states could bind non-numerics.
+        - Walrus operator targets are permanently excluded (fail-closed/loud).
+        - Safe loop targets:
+          * `for step, batch in enumerate(...)` -> `step` (target 0) is integer; `batch` is poisoned.
+          * `for i in range(...)` -> `i` is integer only if all arguments to `range` are proven numerics.
+            If `range` arguments contain unproven or tainted variables, `i` is poisoned.
+        - Scope-aware conditional & body assignments: assignments inside `if`, `for`, `with`, etc. are inspected.
+          A variable is safe if all its assignments evaluate strictly to proven numerics.
         - Poisoning Guard: If a variable is re-assigned to any unproven expression anywhere in the function,
           it is discarded and marked poisoned.
         """
@@ -7214,107 +7260,218 @@ class TaintTracker:
         poisoned = set()
 
         # 1. Parameter names must never be tracked
+        param_names = set()
         if hasattr(func_node, "args"):
             for a in getattr(func_node.args, "posonlyargs", []):
                 poisoned.add(a.arg)
+                param_names.add(a.arg)
             for a in getattr(func_node.args, "args", []):
                 poisoned.add(a.arg)
+                param_names.add(a.arg)
             for a in getattr(func_node.args, "kwonlyargs", []):
                 poisoned.add(a.arg)
+                param_names.add(a.arg)
             if func_node.args.vararg:
                 poisoned.add(func_node.args.vararg.arg)
+                param_names.add(func_node.args.vararg.arg)
             if func_node.args.kwarg:
                 poisoned.add(func_node.args.kwarg.arg)
+                param_names.add(func_node.args.kwarg.arg)
 
-        # 2. Poison any variable assigned or stored inside loops, branching, try, with, match, or inner functions
-        for stmt in func_node.body:
-            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                poisoned.add(stmt.name)
-            elif isinstance(stmt, ast.Global):
+        # 2. Walrus operator targets are always poisoned (fail-closed store in expressions)
+        for sub in ast.walk(func_node):
+            if isinstance(sub, ast.NamedExpr):
+                for n in ast.walk(sub.target):
+                    if isinstance(n, ast.Name):
+                        poisoned.add(n.id)
+
+        # 3. Poison globals, nonlocals, except handlers, with targets, inner functions/classes
+        all_assigned_names = set()
+        loop_targets = {}  # var -> iter_call_node
+
+        for stmt in self._iter_nested_stmts(func_node.body):
+            if isinstance(stmt, ast.Global):
                 poisoned.update(stmt.names)
             elif isinstance(stmt, ast.Nonlocal):
                 poisoned.update(stmt.names)
-            elif isinstance(stmt, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try,
-                                  getattr(ast, "TryStar", ()), ast.With, ast.AsyncWith,
-                                  getattr(ast, "Match", ()))):
-                for sub in ast.walk(stmt):
-                    if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
-                        poisoned.add(sub.id)
-                    elif isinstance(sub, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-                        if isinstance(getattr(sub, "target", None), ast.Name):
-                            poisoned.add(sub.target.id)
-                        for t in getattr(sub, "targets", []):
-                            if isinstance(t, ast.Name):
-                                poisoned.add(t.id)
-                    elif isinstance(sub, ast.NamedExpr):
-                        if isinstance(sub.target, ast.Name):
-                            poisoned.add(sub.target.id)
-                    elif isinstance(sub, (ast.Global, ast.Nonlocal)):
-                        poisoned.update(sub.names)
-
-        # 3. Also poison any walrus operator targets anywhere in the function
-        for sub in ast.walk(func_node):
-            if isinstance(sub, ast.NamedExpr) and isinstance(sub.target, ast.Name):
-                poisoned.add(sub.target.id)
-
-        # 4. Sequentially track linear top-level assignments
-        proven_locals = set()
-
-        for stmt in func_node.body:
-            if isinstance(stmt, ast.Assign):
-                if len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
-                    var_name = stmt.targets[0].id
-                    if var_name in poisoned:
-                        proven_locals.discard(var_name)
-                        continue
-                    if self._is_intra_numeric_value(stmt.value, proven_locals, shadowed=shadowed):
-                        proven_locals.add(var_name)
+            elif isinstance(stmt, ast.Try):
+                for h in stmt.handlers:
+                    if h.name:
+                        poisoned.add(h.name)
+            elif hasattr(ast, "TryStar") and isinstance(stmt, getattr(ast, "TryStar")):
+                for h in stmt.handlers:
+                    if h.name:
+                        poisoned.add(h.name)
+            elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+                for item in stmt.items:
+                    if item.optional_vars:
+                        for sub in ast.walk(item.optional_vars):
+                            if isinstance(sub, ast.Name):
+                                poisoned.add(sub.id)
+            elif isinstance(stmt, (ast.For, ast.AsyncFor)):
+                is_range = (isinstance(stmt.iter, ast.Call) and isinstance(stmt.iter.func, ast.Name)
+                            and stmt.iter.func.id == "range" and "range" not in shadowed)
+                is_enumerate = (isinstance(stmt.iter, ast.Call) and isinstance(stmt.iter.func, ast.Name)
+                                and stmt.iter.func.id == "enumerate" and "enumerate" not in shadowed)
+                if is_range:
+                    if isinstance(stmt.target, ast.Name):
+                        loop_targets[stmt.target.id] = stmt.iter
+                        all_assigned_names.add(stmt.target.id)
                     else:
-                        poisoned.add(var_name)
-                        proven_locals.discard(var_name)
+                        for sub in ast.walk(stmt.target):
+                            if isinstance(sub, ast.Name):
+                                poisoned.add(sub.id)
+                elif is_enumerate:
+                    if isinstance(stmt.target, (ast.Tuple, ast.List)) and len(stmt.target.elts) >= 2:
+                        if isinstance(stmt.target.elts[0], ast.Name):
+                            loop_targets[stmt.target.elts[0].id] = stmt.iter
+                            all_assigned_names.add(stmt.target.elts[0].id)
+                        else:
+                            for sub in ast.walk(stmt.target.elts[0]):
+                                if isinstance(sub, ast.Name):
+                                    poisoned.add(sub.id)
+                        for elt in stmt.target.elts[1:]:
+                            for sub in ast.walk(elt):
+                                if isinstance(sub, ast.Name):
+                                    poisoned.add(sub.id)
+                    else:
+                        for sub in ast.walk(stmt.target):
+                            if isinstance(sub, ast.Name):
+                                poisoned.add(sub.id)
+                else:
+                    for sub in ast.walk(stmt.target):
+                        if isinstance(sub, ast.Name):
+                            poisoned.add(sub.id)
+            elif isinstance(stmt, ast.Assign):
+                if len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+                    all_assigned_names.add(stmt.targets[0].id)
                 else:
                     for t in stmt.targets:
                         for sub in ast.walk(t):
                             if isinstance(sub, ast.Name):
                                 poisoned.add(sub.id)
-                                proven_locals.discard(sub.id)
             elif isinstance(stmt, ast.AnnAssign):
                 if isinstance(stmt.target, ast.Name):
-                    var_name = stmt.target.id
-                    if stmt.value is not None:
-                        if var_name in poisoned:
-                            proven_locals.discard(var_name)
-                            continue
-                        if self._is_intra_numeric_value(stmt.value, proven_locals, shadowed=shadowed):
-                            proven_locals.add(var_name)
-                        else:
-                            poisoned.add(var_name)
-                            proven_locals.discard(var_name)
+                    all_assigned_names.add(stmt.target.id)
                 else:
                     for sub in ast.walk(stmt.target):
                         if isinstance(sub, ast.Name):
                             poisoned.add(sub.id)
-                            proven_locals.discard(sub.id)
             elif isinstance(stmt, ast.AugAssign):
                 if isinstance(stmt.target, ast.Name):
-                    var_name = stmt.target.id
-                    if var_name in proven_locals and var_name not in poisoned:
-                        if self._is_intra_numeric_value(stmt.value, proven_locals, shadowed=shadowed):
-                            pass
-                        else:
-                            poisoned.add(var_name)
-                            proven_locals.discard(var_name)
-                    else:
-                        poisoned.add(var_name)
-                        proven_locals.discard(var_name)
+                    all_assigned_names.add(stmt.target.id)
+                else:
+                    for sub in ast.walk(stmt.target):
+                        if isinstance(sub, ast.Name):
+                            poisoned.add(sub.id)
             elif isinstance(stmt, ast.Delete):
                 for t in stmt.targets:
                     for sub in ast.walk(t):
                         if isinstance(sub, ast.Name):
                             poisoned.add(sub.id)
-                            proven_locals.discard(sub.id)
 
-        return frozenset(proven_locals - poisoned)
+        local_names = all_assigned_names | param_names
+
+        # Collect all sequential assignments: var -> list of (value_expr, is_aug)
+        assignments = {}
+        for stmt in self._iter_nested_stmts(func_node.body):
+            if isinstance(stmt, ast.Assign):
+                if len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+                    var = stmt.targets[0].id
+                    assignments.setdefault(var, []).append((stmt.value, False))
+            elif isinstance(stmt, ast.AnnAssign):
+                if isinstance(stmt.target, ast.Name) and stmt.value is not None:
+                    var = stmt.target.id
+                    assignments.setdefault(var, []).append((stmt.value, False))
+            elif isinstance(stmt, ast.AugAssign):
+                if isinstance(stmt.target, ast.Name):
+                    var = stmt.target.id
+                    assignments.setdefault(var, []).append((stmt.value, True))
+
+        proven = set()
+        candidates = set(assignments.keys()) - poisoned
+        loop_candidates = set(loop_targets.keys()) - poisoned
+
+        # Fixed-point iteration
+        changed = True
+        while changed:
+            changed = False
+            # 1. Assignment candidates
+            for var in list(candidates):
+                if var in poisoned:
+                    candidates.remove(var)
+                    if var in proven:
+                        proven.remove(var)
+                        changed = True
+                    continue
+
+                all_safe = True
+                for val_expr, is_aug in assignments[var]:
+                    if is_aug:
+                        if var not in proven or not self._is_intra_numeric_value(val_expr, proven, shadowed, local_names):
+                            all_safe = False
+                            break
+                    else:
+                        if not self._is_intra_numeric_value(val_expr, proven, shadowed, local_names):
+                            all_safe = False
+                            break
+
+                if all_safe:
+                    if var not in proven:
+                        proven.add(var)
+                        changed = True
+                else:
+                    ref_names = {n.id for n in ast.walk(val_expr) if isinstance(n, ast.Name)}
+                    unproven_cands = (ref_names & (candidates | loop_candidates)) - proven
+                    if not unproven_cands:
+                        poisoned.add(var)
+                        candidates.remove(var)
+                        if var in proven:
+                            proven.remove(var)
+                            changed = True
+
+            # 2. Loop target candidates
+            for var in list(loop_candidates):
+                if var in poisoned:
+                    loop_candidates.remove(var)
+                    if var in proven:
+                        proven.remove(var)
+                        changed = True
+                    continue
+                iter_call = loop_targets[var]
+                if iter_call.func.id == "enumerate":
+                    if var not in proven:
+                        proven.add(var)
+                        changed = True
+                elif iter_call.func.id == "range":
+                    if not iter_call.args:
+                        poisoned.add(var)
+                        loop_candidates.remove(var)
+                        continue
+                    args_safe = True
+                    unresolved = False
+                    for a in iter_call.args:
+                        if self._is_intra_numeric_value(a, proven, shadowed, local_names):
+                            continue
+                        ref_names = {n.id for n in ast.walk(a) if isinstance(n, ast.Name)}
+                        if (ref_names & (candidates | loop_candidates)) - proven:
+                            unresolved = True
+                            args_safe = False
+                            break
+                        args_safe = False
+                        break
+                    if args_safe:
+                        if var not in proven:
+                            proven.add(var)
+                            changed = True
+                    elif not unresolved:
+                        poisoned.add(var)
+                        loop_candidates.remove(var)
+                        if var in proven:
+                            proven.remove(var)
+                            changed = True
+
+        return frozenset(proven - poisoned)
 
     def _numeric_safe_expr(self, expr: ast.AST, shadowed: frozenset = None) -> bool:
         """True when the expression can only evaluate to a value with no CR/LF in it.
@@ -7345,10 +7502,18 @@ class TaintTracker:
                 return True
             if (isinstance(expr.func, ast.Attribute) and expr.func.attr == "time"
                     and isinstance(expr.func.value, ast.Name) and expr.func.value.id == "time"
-                    and (shadowed is None or "time" not in shadowed)):
+                    and (shadowed is None or "time" not in shadowed)
+                    and not expr.args and not expr.keywords):
                 return True
             if (isinstance(expr.func, ast.Attribute) and expr.func.attr == "item"
                     and not expr.args and not expr.keywords):
+                return True
+            if (isinstance(expr.func, ast.Attribute) and expr.func.attr == "device_count"
+                    and not expr.args and not expr.keywords):
+                return True
+            if (isinstance(expr.func, ast.Attribute) and isinstance(expr.func.value, ast.Name)
+                    and expr.func.value.id == "math" and (shadowed is None or "math" not in shadowed)
+                    and expr.args and all(self._numeric_safe_expr(a, shadowed) for a in expr.args)):
                 return True
             return False
         if isinstance(expr, ast.UnaryOp):

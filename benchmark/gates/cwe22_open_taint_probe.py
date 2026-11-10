@@ -210,6 +210,51 @@ numbers above are from the fixed run: a `(code, out)` unpack at the guard and ex
 `encoding='utf-8'` plus `PYTHONIOENCODING` on every child. Neither bug touched the engine or any gate;
 they only made the wrapper that runs them lie about having run.
 
+Round 4 breaks the cycle the bound was braking, and the floor it reaches is not the one asked for
+----------------------------------------------------------------------------------------------
+The round-3 bound left 14 rows loud because their reach walk hit `CWE22_REACH_VISIT_LIMIT` and declined.
+The mandate read those declines as a cycle and asked for an intra-traversal visited set. The walk already
+had one -- `seen`, an ANCESTRY set -- and that is exactly why it exploded: an ancestry set stops a cycle
+but lets the same node be re-walked once per path that reaches it, so a name with dozens of assignments
+re-walks its whole subtree once per binding per path. `scratch/_c22_r4_root_kind.py` and a synthetic
+12-name cycle measure the shape: 602 budget-exhausted entries over 21 DISTINCT nodes. The fix is a second
+set, `done`, that memoises nodes whose exploration COMPLETED with no root, so each is walked once per
+consult instead of once per path. It is keyed by the depth budget the answer was proven under (`6 -
+depth`): a False proven with `r` levels left is a False with fewer, never with more, so a depth-truncated
+answer is only reused where the truncation is at least as early. An in-progress ancestor is never
+memoised (it may still find a root on a branch this path could not take) and a budget exhaustion answers
+True, so no cut-short walk ever writes a False. The synthetic cycle collapses 602 entries to 62, same
+answer; 13 of the 14 arena declines finish, and the one that does not (`modeling_utils.py:3957`, a
+blessed-key module) is genuine breadth, not a cycle.
+
+    python scratch/_c22_universe_arm.py head scratch/_c22_r4_rows_head.json all scratch/_c22_r4_head_ast_scanner.py
+    python scratch/_c22_universe_arm.py head scratch/_c22_r4_rows_cand.json all scratch/_c22_r4_candidate_ast_scanner.py
+    python scratch/_c22_r4_row_diff.py scratch/_c22_r4_rows_head.json scratch/_c22_r4_rows_cand.json
+
+Measured on the whole 2,847-file arena, one process per arm: CWE-22 144 -> 135 (9 retired, 0 appeared),
+total 1118 -> 1109, elapsed 283.0s -> 270.1s (0.95x -- the memo pays for itself because it collapses
+re-exploration in every walk, not only the declining ones), peak RSS 83.8 -> 85.2 MB. All four protected
+CLI rows (`add_new_model_like.py:521/1194/1269/1461`) and all eleven sacred archive/extraction rows are
+loud in BOTH arms; big8 119/119, parity 425/425, cross-file F1 1.0000, 43/43 gates.
+
+The second lever the mandate asked for -- prune pseudo-entrypoint reachability on private helpers -- has
+no sound target in this arena, and the census is why. `scratch/_c22_r4_survivor_detail.py` dumps all 144
+survivors with the innermost def, the module's entrypoint facts and the call edges out of the entrypoint:
+of the 116 non-sacred refusals, 90 are PUBLIC defs (57 of them inside `main()` called DIRECTLY by the
+`if __name__` block), 7 are module-level, and only 5 are private helpers -- 3 `_download` reached through
+a real 3-hop caller chain, 2 `_resumable_file_manager` which are aliased closures (`temp_file_manager =
+_resumable_file_manager`), not dead code. The mechanism probe re-asks every refusal with the command-param
+table emptied and with the binding hop disabled: ZERO rows depend on the click/command-param blanket the
+lever names, 92 roots are real assignment/call-site dataflow ending at a CLI or web root, and 7 are
+demonstrated argument roots. So the "module-wide reachability assumption" the lever would prune is not
+load-bearing for any surviving row; what keeps them loud is condition (a)/(b) of the original mandate --
+a direct CLI argument or a tainted parameter in the entrypoint's caller chain. Withdrawing those refusals
+because an edge is not *direct* would discard demonstrated dataflow and silence genuine remote-download
+paths (`_download` writes the file `urllib.request.urlopen(url)` returns), which is TP loss, not FP
+reduction. The lever is therefore not shipped, and the sound floor under the zero-FN shield is 135, not
+the ~35 the arithmetic of the mandate assumed. The 90 public CLI rows are the reason: they cannot be
+retired without dropping a finding the shield obligates this engine to keep.
+
 One deciding site, and it can only subtract
 ------------------------------------------
 `c22_open_owes_taint` is computed once per funnel record, strictly before any collector's synthetic

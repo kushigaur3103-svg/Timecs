@@ -8737,10 +8737,15 @@ class TaintTracker:
                            if command_params else frozenset())
         owner = (self._c22_enclosing_def_name(tree, node.lineno) if cli_param_names else "")
         budget = [CWE22_REACH_VISIT_LIMIT]
+        # One memo per consult, shared by every argument of this sink: the context it is keyed under
+        # (tree, table, namespace facts, command params, owner) is the same for all of them, so a node
+        # proven root-free for one argument is proven root-free for the next. It is never shared across
+        # sinks, where `owner` differs and the same node can be a root in one scope and not another.
+        done = {}
         for arg in list(node.args) + [kw.value for kw in node.keywords]:
             if self._c22_value_reaches_operator(tree, table, arg, argparse_names,
                                                 command_params, owner, cli_param_names,
-                                                budget=budget):
+                                                budget=budget, done=done):
                 if budget[0] <= 0:
                     # Telemetry, not a verdict: `True` covers "found a root" and "too wide to ask"
                     # because both leave the record on HEAD's path, and the arena scorecard has to be
@@ -8751,7 +8756,7 @@ class TaintTracker:
 
     def _c22_value_reaches_operator(self, tree, table, expr, argparse_names, command_params,
                                     owner: str, cli_param_names=None,
-                                    depth: int = 0, seen=None, budget=None) -> bool:
+                                    depth: int = 0, seen=None, budget=None, done=None) -> bool:
         """Is there a command-line or remote root anywhere in this value's chain?
 
         Unknown is silent here and that is correct, because this predicate only ever REFUSES the
@@ -8765,8 +8770,27 @@ class TaintTracker:
         `budget` is the width bound and it answers in the same direction as a found root -- True --
         because both of those outcomes leave the record exactly where HEAD left it. The outcome that
         needs proof is False, and False is only ever returned from a walk that finished.
+
+        `done` is what lets a walk finish. `seen` is an ANCESTRY set: it stops a cycle, but it lets the
+        same node be re-walked once per path that reaches it, and a name with dozens of assignments
+        re-walks its whole subtree once per binding per path. `done` memoises nodes whose exploration
+        COMPLETED with no root, so each is walked once per sink consult instead of once per path. It is
+        keyed by the depth budget the answer was proven under (`6 - depth`): a False proven with `r`
+        levels left is a False with fewer levels left, never with more, so a depth-truncated answer can
+        only be reused where the truncation is at least as early. An in-progress ancestor is NOT
+        memoised -- it may still find a root on a branch this path was not allowed to take -- and a
+        budget exhaustion answers True, so no cut-short walk ever writes a False here.
         """
-        if expr is None or depth > 6:
+        if expr is None:
+            return False
+        remaining = 6 - depth
+        if done is not None:
+            prior = done.get(id(expr))
+            if prior is not None and prior >= remaining:
+                return False
+        if depth > 6:
+            if done is not None:
+                done[id(expr)] = remaining
             return False
         if budget is not None:
             budget[0] -= 1
@@ -8828,8 +8852,13 @@ class TaintTracker:
                                                             command_params, owner,
                                                             cli_param_names,
                                                             depth=depth + 1, seen=seen,
-                                                            budget=budget):
+                                                            budget=budget, done=done):
                             return True
+        if done is not None:
+            # Only reached when every branch was explored: the ancestry arm returns above without
+            # writing, and a budget exhaustion returns True. The lookup at entry guarantees `remaining`
+            # is larger than any answer already stored for this node, so the memo only ever improves.
+            done[id(expr)] = remaining
         return False
 
     def _c22_cli_command_params(self, tree) -> dict:

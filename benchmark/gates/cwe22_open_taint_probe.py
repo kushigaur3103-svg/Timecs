@@ -190,6 +190,26 @@ failed only because `cwe22_vocab_serializer_probe` reads its corpus from the git
 `scratch/_p3_big/` path, which a fresh worktree does not have; with that directory present it passes.
 In this worktree, with the CWE-117 edits in it, the same sweep is 43/43.
 
+Round 3 was verified the same way, on its own checkout: engine 30,421 lines in the worktree and 30,421
+in the commit blob, then big8 119/119 (`MISSING=0 NEW=0`, 119 pinned keys), parity 425/425
+(`MISSING=0 NEW=0`), cross-file F1 1.0000 with TP=12 / FP=0 / FN=0 and exact-set match YES, and
+`SCORECARD: 42/42 PASSED`. 42 rather than 43 for the same reason as last round -- the 43rd gate here is
+another session's untracked CWE-117/CWE-208 table probe, which is not in this commit and was not
+sneaked in beside it. `python scratch/_c22_r3_fresh_verify.py <commit>` reproduces it.
+
+    python scratch/_c22_r3_fresh_verify.py de07d5f
+
+That harness is worth one confession, because it changes what a green log means. Until this round it
+reported a clean run while executing no gates at all: `run()` answers `(code, out)`, and the
+`if run([...worktree add...])` guard tested the tuple, which is truthy even when the code is 0 -- so the
+script printed `-> exit=0` for the checkout and then returned 1 before the first gate. A second bug sat
+behind it: the blob comparison used `text=True` with no encoding, which on this box decodes the engine as
+cp1252, kills the reader thread on a UTF-8 continuation byte, and leaves `stdout` as `None` -- an error
+that looks like a broken checkout rather than a decode failure. Both are fixed in the harness, and the
+numbers above are from the fixed run: a `(code, out)` unpack at the guard and explicit
+`encoding='utf-8'` plus `PYTHONIOENCODING` on every child. Neither bug touched the engine or any gate;
+they only made the wrapper that runs them lie about having run.
+
 One deciding site, and it can only subtract
 ------------------------------------------
 `c22_open_owes_taint` is computed once per funnel record, strictly before any collector's synthetic

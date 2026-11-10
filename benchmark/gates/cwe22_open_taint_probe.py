@@ -52,6 +52,15 @@ the full arena (201.8s -> 203.6s), and `memo_builds=244` in both arms shows the 
 involved. Absolute RSS is not a usable ceiling on this box: HEAD itself measured 88.9 to 97.7 MB
 across runs of the same engine.
 
+The committed engine was also verified away from this worktree, because the worktree is shared with
+another session's CWE-117 edits and a gate result there cannot be attributed to this commit alone. A
+fresh `git worktree` at the commit -- whose `ast_scanner.py` is byte-identical to
+`scratch/_c22_open_committed_ast_scanner.py`, which is what every scan above loaded -- gives big8
+119/119, parity 425/425, cross-file F1 1.0000 and 42/42 tracked gates. One of those 42 initially
+failed only because `cwe22_vocab_serializer_probe` reads its corpus from the gitignored legacy
+`scratch/_p3_big/` path, which a fresh worktree does not have; with that directory present it passes.
+In this worktree, with the CWE-117 edits in it, the same sweep is 43/43.
+
 One deciding site, and it can only subtract
 ------------------------------------------
 `c22_open_owes_taint` is computed once per funnel record, strictly before any collector's synthetic

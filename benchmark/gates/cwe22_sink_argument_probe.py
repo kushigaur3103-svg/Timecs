@@ -182,7 +182,16 @@ PIL = 'from PIL import Image\n'
 # `list_remove_collision` (P5) - and the rest pin the four clauses of the shipped rule.
 SEAL_BUDGET = [
     # plain traversal surface: nothing here is a stream, so none of it may be exempted
-    ('param_path_open', REQ + IMP + 'def h(user_path):\n    return open(user_path).read()\n', 'report'),
+    #
+    # 2026-11-10 supersession, and it is the module that changed, not the expectation. These two rows
+    # used to be loud because the sink lived in a module that merely mentioned a web framework; the
+    # open()-taint rule stopped accepting that as an origin, so a bare parameter with no caller is now
+    # silent -- which is the mandate's own rule, not a regression in what this gate locks. The carrier
+    # modules hand the helper a request value from inside the file, so the row is loud for a reason
+    # this gate does not own, and the buffer exemption is still falsified on its own axis: a real path
+    # argument in `args[0]` must report.
+    ('param_path_open', REQ + IMP + 'def h(user_path):\n    return open(user_path).read()\n'
+     'def view():\n    return h(request.args.get("p"))\n', 'report'),
     ('fstring_hole_path', REQ + IMP + 'def h():\n    name = request.args.get("n")\n'
      '    return open(f"/var/log/{name}").read()\n', 'report'),
     ('dict_subscript_path', REQ + IMP + 'def h():\n    cfg = {"p": request.args.get("n")}\n'
@@ -213,8 +222,15 @@ SEAL_BUDGET = [
     ('send_file_bytesio_with_name', REQ + IMP + 'from werkzeug.utils import send_file\n'
      'def h():\n    d = request.args.get("d")\n'
      '    return send_file(io.BytesIO(d), download_name=request.args["n"])\n', 'report'),
+    # 2026-11-10 supersession, and it is the module that changed, not the expectation. As first written
+    # this row was `open(io.BytesIO(data), mode)` with two parameters nobody in the file ever filled,
+    # and it reported only because the generic dynamic-variable emitter stamped a source it had not
+    # observed (see `cwe22_open_taint_probe`). That invented source is now retired, so the row has to
+    # name its own origin: the caller below hands `mode` a value straight off the request, which is the
+    # shape the buffer exemption must still report -- args[0] being a stream says nothing about args[1].
     ('open_bytesio_dynamic_mode', REQ + IMP + 'def h(data, mode):\n'
-     '    return open(io.BytesIO(data), mode).read()\n', 'report'),
+     '    return open(io.BytesIO(data), mode).read()\n'
+     'def view():\n    return h(request.args.get("d"), request.args.get("m"))\n', 'report'),
     # the buffer has to *be* the path argument, not sit inside it
     ('bytesio_into_join', REQ + IMP + 'def h():\n    d = request.args.get("d")\n'
      '    return open(os.path.join("/srv", io.BytesIO(d)))\n', 'report'),
@@ -251,8 +267,14 @@ ALREADY_SILENT = ['tempdir_path', 'literal_parent_escape', 'open_literal_path', 
 
 
 def scan(label, source):
+    # `TIER 2` hands this function a basename it took off disk, so the label already ends in `.py`;
+    # appending another extension scanned the file as `test_v06_bad.py.py`. It cost nothing while the
+    # shapes it scans were loud on their own, and costs a blessed key as soon as a rule keeps one by
+    # exact identity, because the engine's keep-loud tables are keyed on `basename(file)` and
+    # `test_v06_bad.py.py` is not `test_v06_bad.py`. The name is passed through as it was spelled.
+    name = label if label.endswith('.py') else f'{label}.py'
     with contextlib.redirect_stderr(io.StringIO()):
-        tracker = ast_scanner.TaintTracker(files={f'{label}.py': source})
+        tracker = ast_scanner.TaintTracker(files={name: source})
         _, _, edges = tracker.analyze()
         rows = cli._findings_for(tracker, edges)
     return [row for row in rows if row['cwe'] == 'CWE-22']

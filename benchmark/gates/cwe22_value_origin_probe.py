@@ -2,10 +2,11 @@
 name in the file hands over a value the program created itself.
 
 The clause lives in `_c22_value_is_proven_module_origin`, consulted from the one Slice G funnel at
-`ast_scanner.py:8431` (measured by TIER 4 below), and it exists because Slice G's two domains each
-require a shape these sinks do not have: domain 1 needs a declared parameter and an in-module call
-site, domain 2 needs a `self`/`cls` field. A function-local `state = tempfile.mkdtemp()` plus
-`open(state)` has neither, so it stayed loud while its value was provably the program's own.
+`ast_scanner.py:9648` (TIER 4 below reads that line off the shipped module rather than trusting this
+sentence), and it exists because Slice G's two domains each require a shape these sinks do not have:
+domain 1 needs a declared parameter and an in-module call site, domain 2 needs a `self`/`cls` field. A
+function-local `state = tempfile.mkdtemp()` plus `open(state)` has neither, so it stayed loud while its
+value was provably the program's own.
 
 Doctrine this probe defends, in the order Rule 15.5 states it:
   * Rung 1, positive proof: the answer comes from `_c22_value_is_proven_path_origin` over EVERY value
@@ -33,8 +34,58 @@ the deciding line. A fixture that fires nothing is reported as decorative and fa
 a blinded veto could otherwise "catch" on a row that never existed. The blessed census reads the
 engine's own funnel through a wrapper, so `asked` cannot drift from what the cascade actually asked.
 
-Falsification: `python benchmark/gates/cwe22_value_origin_probe.py --mutation <name>` exits 1 when the
-mutation moves the row it claims to own. Delete the clause and `arm_removed` fails the sweep.
+Round 3 moved the emit side, not this clause, and it still cost this table ten rows.
+`_c22_open_sink_owes_proven_taint` now asks a CWE-22 path sink for a resolved untrusted origin before
+any emitter will report it, and it asks that question AFTER this funnel has declined: a name this
+clause refuses is no longer automatically a finding, it is a finding only while some argument of the
+sink call carries a value the operator or the network controls. Attribution
+(`scratch/_c22_r3_sliceh_attrib.py`, which only feeds each fixture to `scratch/_c22_r3_engines.py` so
+HEAD's snapshot and the live engine answer in separate processes) splits the ten failures along exactly
+that seam. Five refused shapes were HEAD-reported and are live-quiet -- `name_is_method_parameter@8`,
+`name_never_written_here@3`, `resolver_leaf_not_hub@5`, `subscript_not_bare_ident@9`,
+`tmpdir_direct_open@8` -- and those five are a genuine supersession: the mandate retired "cannot prove
+it safe, therefore report", and none of the five has an origin anywhere near its sink. The five earned
+shapes are quiet under BOTH arms, so no row was lost there at all; what broke is only the floor, which
+cannot see a row the owed rule refuses to emit whatever this clause answers.
+
+Nothing here re-numbers a row, because nothing here should move: the repair is to re-spell the ten
+fixtures so the walk resolves an origin on their sink call, which is what makes the row live again and
+therefore decidable by this clause once more (`scratch/_c22_r3_sliceh_grid.py` measured every spelling,
+`scratch/_c22_r3_sliceh_probe.py` prints, per record, both the funnel's answer and the owed rule's).
+Two shapes are used, and which one a fixture may use is decided by what its label claims:
+  * the refused fixtures take the origin on the PATH argument, exactly as the mandate phrases them:
+    `request.args[...]` in the joined leaf or the root (`join_leaf_from_request`, `join_root_from_request`,
+    `second_write_from_request`), a `global`/`nonlocal` re-bind off the request (the three rebind rows),
+    and for the remaining five an inline `sys.argv` read, because the walk does not resolve the two
+    spellings that would be more literal here -- it follows a plain in-file `helper(argv)` call but not
+    a method one (`self.test(argv)`, `Holder().test(argv)`), and it will not step into a list element
+    (`roots = [sys.argv[1]]` then `open(roots[0])`). Both were measured BAD in the grid and are reported
+    upward as the walk's remaining gaps, not quietly routed around.
+  * the earned fixtures have to keep the path name provably program-created, so they cannot also take
+    the operator's value in that same name: `_c22_bound_values` answers the reach question and the value
+    proof from the identical node, so one spelling would decide both. Their origin therefore sits in the
+    sink's NON-path argument (`open(config_file, "r", encoding=sys.argv[2])`), which the reach test
+    accepts by design -- it is argument-wide precisely because an argument-wide test can only ever keep
+    a row loud, never silence one. The path argument still carries the tempfile join or the hub resolver
+    the label names, so the clause is still the mechanism that decides the row: TIER 3 shows each earned
+    fixture quiet as shipped and loud with the clause rolled back, and `arm_removed` brings all five back.
+
+The appended `ENTRY` argv tail this table used to carry is gone, and measurement is why: once an
+argument of the sink call itself reads `sys.argv`, the module-entrypoint fact that tail declared comes
+with it, and `resolver_plain_local`, `resolver_in_if_branch`, `resolver_loop_bare_positional`,
+`name_never_written_here` and `resolver_leaf_not_hub` scan identically with and without it
+(`scratch/_c22_r3_sliceh_grid.py`, the `/no-entry` rows). Keeping a tail that decides nothing is the
+decorative scaffolding this gate exists to ban.
+
+Falsification: `python benchmark/gates/cwe22_value_origin_probe.py --mutation <name>` exits 0 only when
+the mutation moves the row or the identity its clause owns; `arm_removed` is the rollback that proves
+the five earned rows are quiet BECAUSE of this clause. `facts_cache_removed` was re-anchored this round
+for an unrelated reason: the identity TIER 4 pins comes out of `_c22_scope_binds` (the
+`_c22_scope_names` tuple the binding walk caches on the tree), not out of a Slice-H-owned key, and
+popping `_c22_slice_h_facts` -- the key the mutation named -- has been a no-op against both HEAD's
+engine and this one (`scratch/_c22_r3_sliceh_head_gate/cwe22_value_origin_probe.py`, HEAD's copy of this gate run
+against the shipped engine, MISSES it too). The mutation now pops the key the facts are actually read
+from, so the cache it claims to remove is the cache that exists.
 """
 from __future__ import annotations
 
@@ -63,61 +114,72 @@ TAINT = '    user = request.args.get("name")\n'
 # hand: the first version of this table hand-numbered every entry, each number landed a few lines short
 # of the real sink, and the whole table then "passed" as already-quiet rows that were unfired sinks.
 PRE = 'import json\nimport tempfile\nimport unittest\nfrom pathlib import Path\n'
+# The same carrier with the interpreter's own command line in it. Round 3 made this the shape a Slice H
+# fixture has to be written in: `_c22_open_sink_owes_proven_taint` will not let a path sink report at
+# all unless a resolved origin reaches one of its arguments, so a fixture with no command line anywhere
+# has no row for this clause to decide -- it reads decorative however the clause answers. See the
+# module docstring and `scratch/_c22_r3_sliceh_grid.py`, which measured every spelling the walk does
+# and does not resolve.
+PRE_CLI = 'import json\nimport sys\nimport tempfile\nimport unittest\nfrom pathlib import Path\n'
 HUB = 'from huggingface_hub import hf_hub_download\n'
 REQ = 'from flask import request\n'
 UNTRUSTED = 'request.args["name"]'
-# The open() taint requirement (`cwe22_open_taint_probe`) retires an unproven `open()` in a module
-# that declares no entrypoint, which would make every carrier below quiet with the clause blinded --
-# a decorative fixture. Appending an argv read keeps the sink reporting so the value-origin clause is
-# still the only thing that can quiet it. It is appended, never prepended, so no sink line moves.
-ENTRY = 'import sys\nprint(sys.argv[1])\n'
+# Where a CLI value may sit for the walk to see it. `sys.argv[2]` inline in any argument resolves, and
+# in the fixtures whose path the clause proves safe it is deliberately placed in the sink's NON-path
+# argument: `_c22_bound_values` answers the reach question and the value-proof question from the same
+# node, so one name cannot be proven program-created and operator-steered at once. A quiet fixture
+# therefore keeps its proven path and buys its liveness from the argument beside it, which the
+# argument-wide (and so fail-closed) reach test accepts.
 
 FIXTURES = {
     # --- earned: loud before this clause, quiet after it ---------------------------------------
     # Transcribed from the arena files the clause retired and minimized by dropping sibling
     # statements until only the deciding shape survived (scratch/_H_minimize.py).
-    'tmpdir_join_in_method': PRE + (
+    'tmpdir_join_in_method': PRE_CLI + (
         'class AutoImageProcessorTest(unittest.TestCase):\n'
         '    def test_from_local_directory(self):\n'
         '        with tempfile.TemporaryDirectory() as tmpdirname:\n'
         '            config_tmpfile = Path(tmpdirname) / "config.json"\n'
-        '            json.dump({"model_type": "clip"}, open(config_tmpfile, "w"))\n'),
-    'tmpdir_join_bare_function': PRE + (
+        '            json.dump({"model_type": "clip"},\n'
+        '                      open(config_tmpfile, "w", encoding=sys.argv[2]))\n'),
+    'tmpdir_join_bare_function': PRE_CLI + (
         'def test_from_local_directory():\n'
         '    with tempfile.TemporaryDirectory() as tmpdirname:\n'
         '        config_tmpfile = Path(tmpdirname) / "config.json"\n'
-        '        json.dump({"model_type": "clip"}, open(config_tmpfile, "w"))\n'),
-    'resolver_plain_local': HUB + 'import json\n' + (
+        '        json.dump({"model_type": "clip"},\n'
+        '                  open(config_tmpfile, "w", encoding=sys.argv[2]))\n'),
+    'resolver_plain_local': HUB + 'import json\nimport sys\n' + (
         'def convert_checkpoint(language):\n'
         '    config_file = hf_hub_download(repo_id="facebook/mms-tts", filename="config.json")\n'
-        '    with open(config_file, "r") as handle:\n'
-        '        return json.loads(handle.read())\n') + ENTRY,
-    'resolver_in_if_branch': HUB + 'import json\n' + (
+        '    with open(config_file, "r", encoding=sys.argv[2]) as handle:\n'
+        '        return json.loads(handle.read())\n'),
+    'resolver_in_if_branch': HUB + 'import json\nimport sys\n' + (
         'def convert_checkpoint(out_dir, checkpoint_path=None, language=None):\n'
         '    if checkpoint_path is None:\n'
         '        config_file = hf_hub_download(\n'
         '            repo_id="facebook/mms-tts", filename="config.json",\n'
         '            subfolder=f"models/{language}",\n'
         '        )\n'
-        '        with open(config_file, "r") as handle:\n'
+        '        with open(config_file, "r", encoding=sys.argv[2]) as handle:\n'
         '            hps = json.loads(handle.read())\n'
         '    else:\n'
-        '        print("skip")\n') + ENTRY,
-    'resolver_loop_bare_positional': HUB + 'import json\n' + (
+        '        print("skip")\n'),
+    'resolver_loop_bare_positional': HUB + 'import json\nimport sys\n' + (
         'def get_remote_tools(organization):\n'
         '    tools = {}\n'
         '    for space_info in list_spaces(author=organization):\n'
         '        repo_id = space_info.id\n'
         '        resolved_config_file = hf_hub_download(repo_id, "tool_config.json")\n'
-        '        with open(resolved_config_file, encoding="utf-8") as reader:\n'
+        '        with open(resolved_config_file, encoding=sys.argv[2]) as reader:\n'
         '            tools[repo_id] = json.load(reader)\n'
-        '    return tools\n') + ENTRY,
+        '    return tools\n'),
     # --- refused: the positive proof is missing, so the row stays loud -------------------------
-    'name_is_method_parameter': PRE + (
+    'name_is_method_parameter': PRE_CLI + (
         'class AutoImageProcessorTest(unittest.TestCase):\n'
         '    def test_from_local_directory(self, config_tmpfile):\n'
         '        with tempfile.TemporaryDirectory() as tmpdirname:\n'
-        '            json.dump({"model_type": "clip"}, open(config_tmpfile, "w"))\n'),
+        '            json.dump({"model_type": "clip"},\n'
+        '                      open(config_tmpfile, "w", encoding=sys.argv[2]))\n'),
     'join_leaf_from_request': PRE + REQ + (
         'class AutoImageProcessorTest(unittest.TestCase):\n'
         '    def test_from_local_directory(self):\n'
@@ -164,26 +226,28 @@ FIXTURES = {
         '            return json.load(handle)\n'
         '    poison()\n'
         '    return read_it()\n'),
-    'name_never_written_here': 'import json\n' + (
+    'name_never_written_here': 'import json\nimport sys\n' + (
         'def read_it():\n'
-        '    with open(config_file, "r") as handle:\n'
-        '        return json.load(handle)\n') + ENTRY,
-    'resolver_leaf_not_hub': 'from .utils import hf_hub_download\nimport json\n' + (
+        '    with open(config_file, "r", encoding=sys.argv[2]) as handle:\n'
+        '        return json.load(handle)\n'),
+    'resolver_leaf_not_hub': 'from .utils import hf_hub_download\nimport json\nimport sys\n' + (
         'def convert_checkpoint(language):\n'
         '    config_file = hf_hub_download(repo_id="facebook/mms-tts", filename="config.json")\n'
-        '    with open(config_file, "r") as handle:\n'
-        '        return json.loads(handle.read())\n') + ENTRY,
-    'subscript_not_bare_ident': PRE + (
+        '    with open(config_file, "r", encoding=sys.argv[2]) as handle:\n'
+        '        return json.loads(handle.read())\n'),
+    'subscript_not_bare_ident': PRE_CLI + (
         'class Holder(unittest.TestCase):\n'
         '    def test_slot(self):\n'
         '        with tempfile.TemporaryDirectory() as tmpdirname:\n'
         '            roots = [Path(tmpdirname) / "config.json"]\n'
-        '            json.dump({"model_type": "clip"}, open(roots[0], "w"))\n'),
-    'tmpdir_direct_open': PRE + (
+        '            json.dump({"model_type": "clip"},\n'
+        '                      open(roots[0], "w", encoding=sys.argv[2]))\n'),
+    'tmpdir_direct_open': PRE_CLI + (
         'class Holder(unittest.TestCase):\n'
         '    def test_direct(self):\n'
         '        with tempfile.TemporaryDirectory() as tmpdirname:\n'
-        '            with open(Path(tmpdirname) / "config.json", "w") as handle:\n'
+        '            with open(Path(tmpdirname) / "config.json", "w",\n'
+        '                      encoding=sys.argv[2]) as handle:\n'
         '                handle.write("{}")\n'),
 }
 EXPECT_QUIET = ('tmpdir_join_in_method', 'tmpdir_join_bare_function', 'resolver_plain_local',
@@ -495,9 +559,19 @@ def _remove_the_arm():
 
 
 def _facts_rebuilt_every_call():
-    """Drop the per-tree cache: same answers, so only the identity check can catch it."""
+    """Drop the per-tree cache: same answers, so only the identity check can catch it.
+
+    Re-anchored this round, against the key the facts really come from. Slice H reads
+    `tree.__dict__["_c22_scope_names"]`, which `_c22_scope_binds` memoises beside the binding table it
+    builds, so the key this mutation popped (`_c22_slice_h_facts`) is one no engine has ever written:
+    HEAD's copy of this gate (`scratch/_c22_r3_sliceh_head_gate/`) MISSED this mutation against the
+    shipped engine, so nothing that used to move stopped moving. Popping both keys is the same claim
+    tested against the cache that exists -- the walk re-runs, every answer is identical, and only the
+    identity row inside TIER 4 can see it.
+    """
     def replacement(self, tree):
-        tree.__dict__.pop('_c22_slice_h_facts', None)
+        tree.__dict__.pop('_c22_scope_binds', None)
+        tree.__dict__.pop('_c22_scope_names', None)
         return _SAVED_FACTS(self, tree)
     ast_scanner.TaintTracker._c22_slice_h_module_facts = replacement
 

@@ -26,6 +26,22 @@ CWE-22 tier adds the two proofs the CWE-611 one cannot make: the scaffolding glo
 *load-bearing* (the same traversal in a top-level `benchmark/` directory must survive, because
 that is where this repository's own blessed corpus lives).
 
+Both of those `must survive` claims, and the two the nonprod tier makes about `src/transformers/utils/`
+and the tests tree, are worth nothing unless the traversal carrier is loud for a reason the exclusion
+machinery did not create. It used to be loud the cheap way: `CONFIG_TRAV` declared an entrypoint with
+`print(sys.argv[1])`, the entrypoint-aware collector stamped a placeholder on `load`'s unproven parameter,
+and the sink reported. `cwe22_open_taint_probe` retired exactly that blanket this round --
+`scratch/_c22_r3_engines.py --diff` on the old spelling returns the row as head-only, so the supersession
+is booked rather than hidden -- and a carrier quiet in every tree would have left all four tripwires green
+while an exclusion leaked everywhere. The carrier therefore EARNS its row now: the last line is
+`load(sys.argv[1])`, one hop the walk resolves (`open_helper_param`/`remove_helper_param` of
+`scratch/_c22_walk_resolution_grid.py`), and `scratch/_c22_r3_misc_carrier_grid.py` shows the row travelling
+with `_c22_path_sink_reaches_operator` and nothing else -- blind that walk and the sink line goes quiet,
+restore the retired blanket and it comes back. No number moved with it: the frozen-baseline reach table,
+the glob-shape laws, the two scaffolding trees that must still go quiet and all twenty-nine
+`mutation ... -> CAUGHT` mappings assert what they asserted before, now against a true positive the glob
+would really delete.
+
 A twelfth tier is the mirror image of those two: it locks an exclusion this repository *refuses*
 to ship -- a CWE-338 glob over `**/transformers/models/**`, measured at 0 blessed reach and 58
 live arena rows -- and demands the vocabulary-bound draw in that tree stays loud, that the glob really does
@@ -129,12 +145,20 @@ CONFIG_XXE = (
 )
 # `lit_root_join_name` of `cwe22_repo_anchor_path_probe.py`: a literal directory chosen by the
 # file with a file name chosen by the caller, which that gate proves LOUD at both seals. Nothing
-# but a path policy can change its answer once the module declares an entrypoint, so it is the carrier
-# for the CWE-22 exclusion tier.
-# A traversal in a module that DECLARES an entrypoint: the argv read is what makes the row loud now
-# that the entrypoint guard declines synthetic parameter sources in pure library modules
-# (`cwe22_entrypoint_injection_probe`). Loudness has to come from content for this carrier, or the
-# silence this tier reads on an excluded path could not be attributed to the exclusion.
+# but a path policy can change its answer once the file hands that parameter an operator value, so it
+# is the carrier for the CWE-22 exclusion tier.
+# A traversal whose path argument the module feeds from the command line itself. Loudness has to come
+# from content for this carrier, or the silence this tier reads on an excluded path could not be
+# attributed to the exclusion. It used to come from a declaration: `print(sys.argv[1])` named an
+# entrypoint and the blanket then stamped a placeholder on `load`'s unproven parameter, which is the
+# exact assumption `cwe22_open_taint_probe` retired this round -- `scratch/_c22_r3_engines.py --diff` on
+# that spelling returns this row as head-only (line 6, CWE-22), so the supersession is booked, not
+# hidden. The last line now passes `sys.argv[1]` INTO the helper, the one hop the walk resolves
+# (`open_helper_param`/`remove_helper_param` of `scratch/_c22_walk_resolution_grid.py`), so the row is a
+# true positive earned from a resolved operator origin rather than a floor the retired blanket left
+# behind. That is what keeps the two reached-too-far tripwires and their `CAUGHT` mutations measuring
+# something: with a carrier that was quiet everywhere, the exclusion could have leaked across every tree
+# in this fixture and the tier would still have gone green.
 CONFIG_TRAV = (
     "import os\n"
     "import sys\n"
@@ -143,7 +167,7 @@ CONFIG_TRAV = (
     "def load(name):\n"
     "    return open(os.path.join('models', name)).read()\n"
     "\n"
-    "print(sys.argv[1])\n"
+    "load(sys.argv[1])\n"
 )
 
 

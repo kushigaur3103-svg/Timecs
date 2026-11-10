@@ -84,12 +84,20 @@ Measured evidence behind the numbers
                       triple: `parity asks=8 answers_temp_root=0`, `big8 asks=13 answers_temp_root=0`, and
                       the same sweep answers True on the three proven-temp controls, so the zero is a
                       refusal and not an unasked question.
-  findings          : 34 fixture shapes -- 3 loud->quiet rows the guard itself earns, 13 must-report rows
-                      (the last two are the move pitch's own shapes), 18 already quiet at both seals (never
-                      claimed as wins; two of them are the proof that a move destination is never inspected
-                      and that `os.makedirs` is not a path sink). ADDED (quiet->loud) is 0 and is asserted
-                      as 0.
-  predicate         : 29 shapes -- 12 proven, 17 refused, asserted at the expression the wiring would pass.
+  findings          : 61 fixture shapes -- 12 loud->quiet rows the guard itself earns, 28 must-report rows
+                      (two of them are the move pitch's own shapes, one is the round-3 alive control beside
+                      the bare-import spelling), 18 already quiet at both seals (never claimed as wins; two
+                      of them are the proof that a move destination is never inspected and that
+                      `os.makedirs` is not a path sink) and 3 booked round-3 supersessions. ADDED
+                      (quiet->loud) is 0 and is asserted as 0. TIER 3 prints the bucket arithmetic and
+                      fails the gate if the four buckets do not add back to 61. These tallies were
+                      re-measured this round by `scratch/_c22_r3_seal_remeasure.py` (they read 34/3/13/18
+                      before the stream table and the round-3 rows landed), so no number here is a
+                      recollection.
+  predicate         : 37 rows -- 15 proven, 22 refused, asserted at the expression the wiring would pass;
+                      the stream table beside it is 23 rows -- 7 proven, 16 refused.
+  pairs             : 10 axes, one of them (`tempfile module spelling vs the same function imported bare`)
+                      re-anchored to the guard itself in `guard-answers` mode this round.
   real tree         : 19 -> 15 CWE-22 rows on the audited 14-file subset, RETIRED=4 ADDED=0; blessed delta
                       0/24. The 4 are all `Path(tempfile.mkdtemp(...))`-shaped: the constructor is what made
                       the path look dynamic to the engine, which is why the yield is small and exact.
@@ -135,6 +143,74 @@ Yield and cost, measured: 117 arena CWE-22 rows retired, **ADDED=0**, over 86 fi
 asked on all 24 frozen lines by name (TIER 6). The three retired spellings that are *not* the arena's shape
 (`io.open(...raw)`, `import requests as rq`, a literal second argument) are asserted anyway, because a
 clause that only answers one spelling is a fixture, not a rule.
+
+Round-3 supersessions, and the one pair they re-anchored
+--------------------------------------------------------
+The rule that moved rows is `TaintTracker._c22_open_sink_owes_proven_taint` (ast_scanner.py:8707): a
+CWE-22 filesystem sink now owes a resolved untrusted origin before any of the four emitters it gates
+(the phase-11 registry sink, the phase-5 and phase-4 short-circuits, the subtract-only
+`ProvenanceState.UNKNOWN` prune arm) may report. It answers False -- the row stays loud, unchanged -- when
+the node is not a `Call`, when the sink is an archive constructor or an extraction (the sacred floor),
+when `_c22_path_sink_reaches_operator` finds an operator/CLI/remote value reaching one of the arguments,
+or when the row is pinned in `CWE22_OPEN_TAINT_KEEP_LOUD` / `CWE22_ENTRYPOINT_KEEP_LOUD`. Three seal rows
+of this file were the retired generic "dynamic variable used in file path" fallback and nothing else:
+`pytest_tmp_path_param` (a pytest `tmp_path` parameter with no origin anywhere in the module),
+`bare_import_mkdtemp` (`from tempfile import mkdtemp`, whose root this guard has always refused, so it
+had no proof of its own to fall back on), and `self_attr_from_constructor_param` (`self.outdir = where`,
+a class field written from a parameter).
+
+Attribution came first, and it is the only kind this round accepts: `python scratch/_c22_r3_engines.py
+--diff --name m.py --source ...` on each of the three prints `head_rows=1 live_rows=0` -- the sink line
+is HEAD-only, so the row is a supersession by this round rather than something an older clause has
+always silenced. `scratch/_c22_r3_seal_remeasure.py` then re-measured the whole table (the 60 rows as
+they stood, plus the 61st the re-anchored pair needed) under HEAD's snapshot, the live engine, and the
+live engine with the owed rule pinned to False, and the booking is exact in both directions: those three
+are the only head-loud/live-quiet rows in the table, the restored blanket reports exactly those three and
+no other quiet row, and no booked row fails to come back. TIER 3 asserts that arithmetic on every run, so
+a fourth supersession cannot land here unfiled and a booked row cannot be quieted by some clause nobody
+is arguing about. `retire_owed_taint_requirement` is the same statement as a falsification: restoring the
+fallback (`_c22_open_sink_owes_proven_taint` answering False) measures
+`CAUGHT on 3 row(s) [T3=3] -- bare_import_mkdtemp, pytest_tmp_path_param, self_attr_from_constructor_param`
+-- three rows, the booked three, and nothing else in nine tiers. The booking therefore reads in both
+directions from a running engine: TIER 3 proves no other quiet row needs the blanket, the mutation proves
+no booked row survives without it. Re-running the whole falsification suite alongside these edits measured
+21/21 mutations CAUGHT and 0 ERROR, `scratch/_c22_r3_seal_pil_mut_results.txt` keeps that census.
+`scratch/_c22_walk_resolution_grid.py` is why none of them was EARNed. The walk resolves
+`sys.argv`/`os.environ` inline and through one assignment, `os.path.join("/srv", sys.argv[1])`, module
+constants, rebinds, a helper parameter called with argv, and `shutil.rmtree(options.out_dir)` after a
+real `argparse` namespace; it does not resolve an f-string or concat into a local, a bare-imported
+`mkdtemp()` with no `tempfile.` receiver, or an attribute hop. Re-spelling these three to force loudness
+would have deleted each fixture's proposition to buy a row.
+
+The attribute hop is a reported limitation, not a hidden one. `self_attr_from_constructor_param` does
+name a recognised root -- `GateCase(request.args.get("d")).clean()` -- and the row still went quiet, so
+the question was measured rather than assumed: `python scratch/_c22_r3_engines.py --diff --name m.py
+--source ...` on `GateCase(sys.argv[1]).clean()` -- the same class handed the strongest recognised root
+the walk table knows, through the same constructor -- prints `head_rows=1 live_rows=0`, so the quiet is
+the hop's, not the root's, because `_c22_bound_values` walks a parameter back to its call sites and no
+shipped walk follows a constructor argument into a `self.` field written in another frame. That gap is
+the engine's, and it belongs in this paragraph rather than in a fixture: if the hop is ever taught to
+read the call site, this row moves back to loud and the booking above is what will say so.
+
+What this guard decides did not move. All three fixtures are still asked of
+`_c22_cleanup_is_temp_teardown` at TIER 4 -- `pytest_tmp_path_param`, `bare_import_mkdtemp`, and the new
+`self_attr_from_constructor_param_caller` row, which asks the exact sealed fixture including its call
+site -- and the guard still answers False on every one: a parameter, a bare-imported leaf and a class
+field written from a parameter are not `tempfile` roots.
+
+`tempfile module spelling vs the same function imported bare` is re-anchored, not dropped. It was a
+findings pair only because the two arms were reported by different rules: the qualified
+`tempfile.mkdtemp()` spelling was silenced by *this* guard, while the bare-import arm was loud because of
+the blanket -- an assumption about a caller, never this rule's proof. The axis is real and still
+measurable, so the pair now runs in `guard-answers` mode: both arms are asked of the shipped guard with
+the wiring's own triple and must disagree (`True` on `Path(tempfile.mkdtemp()) / "sub" / "f.txt"`,
+`False` on the identical delete built from `from tempfile import mkdtemp`), the clean arm stays a
+guard-earned loud->quiet row, and the dirty arm must be a booked supersession, so its silence is
+attributed instead of presumed. The pair also demands that the bare spelling is still *alive*: the new
+`bare_import_mkdtemp_caller_segment_inside` fixture hands the same `shutil.rmtree` a caller-chosen
+segment and reports at both seals, which is the measurement that the row went quiet because nothing
+untrusted reaches it, not because a bare-import delete is invisible to the engine. TIER 7's
+`bare_leaves=[]` census of `CWE22_TEMPFILE_ROOT_CALLS` still holds the table itself, unchanged.
 
 Seal semantics - `CWE22_TEMP_SEAL`
 ------------------------------------
@@ -192,6 +268,16 @@ URL = 'url = request.args.get("u")\nprint(url)\n'
 
 # (label, source, expect_when_abstained, expect_when_shipped)
 # 'loud' = a CWE-22 finding is required in that module, 'quiet' = none is allowed.
+
+# Rows whose loud answer was the generic "dynamic variable used in file path" fallback that round 3
+# retired, and nothing else. They are booked here instead of being folded into `FP_ROWS`, because the
+# clause that silenced them is `_c22_open_sink_owes_proven_taint` and not this guard: `FP_ROWS` is the
+# list `delete_temp_guard` must bring back, and these three are not its rows. Every label here is
+# measured loud on HEAD's snapshot, quiet live, and loud again under the restored blanket -- see the
+# docstring and `scratch/_c22_r3_seal_remeasure.py` -- and TIER 3 asserts all three statements.
+BLANKET_RETIRED_ROWS = ('pytest_tmp_path_param', 'bare_import_mkdtemp',
+                        'self_attr_from_constructor_param')
+
 SHAPES = [
     # ---- proven temp roots: retired by this guard, or already silent before it ----
     ('name_bound_to_path_mkdtemp', REQ + HEAD + 'q = request.args.get("q")\nprint(q)\n'
@@ -242,8 +328,12 @@ SHAPES = [
      'shutil.rmtree(os.path.join(runtime_dir, request.args["s"]))\n', 'loud', 'loud'),
     ('twice_written_root_in_join', REQ + HEAD + 'root = tempfile.mkdtemp()\n'
      'root = request.args.get("d")\nshutil.rmtree(os.path.join(root, "x.json"))\n', 'loud', 'loud'),
+    # 2026-11-10 supersession, booked in `BLANKET_RETIRED_ROWS`: the pytest fixture parameter is the
+    # mandate's "local test fixture teardown context" shape, the module holds no `sys.argv`, no
+    # `os.environ` and no `parse_args()`, and nothing calls the function, so nothing reaches the delete.
+    # The guard's refusal is untouched and is still asserted at TIER 4 on this exact source.
     ('pytest_tmp_path_param', REQ + HEAD + '\n\ndef test_teardown(tmp_path):\n'
-     '    os.remove(tmp_path / "x.json")\n', 'loud', 'loud'),
+     '    os.remove(tmp_path / "x.json")\n', 'loud', 'quiet'),
     ('name_says_temp_but_is_repo_relative', REQ + HEAD + 'schema_path = Path(request.args["s"])\n'
      'temp_migrations_dir = schema_path.parent / "migrations"\nshutil.rmtree(temp_migrations_dir)\n',
      'loud', 'loud'),
@@ -253,8 +343,19 @@ SHAPES = [
      'cleanup(request.args.get("d"))\n', 'loud', 'loud'),
     ('env_var_tmpdir', REQ + HEAD + 'tmp = os.environ.get("TMPDIR")\nshutil.rmtree(tmp)\n',
      'loud', 'loud'),
+    # 2026-11-10 supersession, booked in `BLANKET_RETIRED_ROWS`. This row was never this guard's to
+    # report: `bare_import_mkdtemp` is the spelling `_c22_path_is_proven_temp_root` refuses by branch
+    # (TIER 4, `bare_leaves=[]` at TIER 7), and the only reason a finding existed was the blanket. Loud
+    # on HEAD, quiet live, loud under `retire_owed_taint_requirement` -- and the pair that named this
+    # axis now runs at the guard, where the axis is still decidable (see `PAIRS`).
     ('bare_import_mkdtemp', REQ + 'from tempfile import mkdtemp\nimport os, shutil\n'
-     'd = mkdtemp()\nshutil.rmtree(d)\n', 'loud', 'loud'),
+     'd = mkdtemp()\nshutil.rmtree(d)\n', 'loud', 'quiet'),
+    # The alive control beside it: the same bare-import delete, with a caller-chosen segment riding
+    # inside the join. Reported under both engines, so the row above is quiet because nothing untrusted
+    # reaches it and not because a bare-import teardown is invisible to the engine.
+    ('bare_import_mkdtemp_caller_segment_inside', REQ + 'from tempfile import mkdtemp\n'
+     'import os, shutil\nshutil.rmtree(os.path.join(mkdtemp(), request.args["sub"]))\n',
+     'loud', 'loud'),
     # ---- mandate item 1, asserted loud at both seals ----
     ('pil_image_open_param_path', REQ + 'from PIL import Image\n\n\ndef check(gif_path):\n'
      '    return Image.open(gif_path)\n\n\ncheck(request.args.get("p"))\n', 'loud', 'loud'),
@@ -298,10 +399,17 @@ SHAPES = [
      '    def setUp(self):\n        self.tmpdirname = tempfile.mkdtemp()\n\n'
      '    def go(self):\n        self.tmpdirname = request.args["dir"]\n'
      '        shutil.rmtree(self.tmpdirname)\n', 'loud', 'loud'),
+    # 2026-11-10 supersession, booked in `BLANKET_RETIRED_ROWS`. The call site does name a request value
+    # and the row still went quiet, because the hop the walk cannot take is a constructor argument into a
+    # `self.` field written in another frame -- `GateCase(sys.argv[1]).clean()` reads quiet the same way
+    # (`scratch/_c22_r3_engines.py --diff`, and the docstring), which is why this is reported as an engine
+    # gap rather than earned with a spelling that no longer means a pytest-shaped teardown. The fixture's
+    # proposition is the retired "attribute used in a file path" assumption, and the guard's refusal on
+    # this exact source is now asserted at TIER 4 (`self_attr_from_constructor_param_caller`).
     ('self_attr_from_constructor_param', REQ + HEAD + '\n\nclass GateCase:\n'
      '    def __init__(self, where):\n        self.outdir = where\n\n'
      '    def clean(self):\n        shutil.rmtree(self.outdir)\n\n\n'
-     'GateCase(request.args.get("d")).clean()\n', 'loud', 'loud'),
+     'GateCase(request.args.get("d")).clean()\n', 'loud', 'quiet'),
     # ---- the HTTP response body stream: an object in the path slot, so no path is ever reached ----
     # Every row here is loud at HEAD, because the clause that reads it is new. The retired spellings are
     # one per clause the proof depends on: the keyword that makes it a stream, the two sink names, the
@@ -357,20 +465,36 @@ SHAPES = [
      + 'img = Image.open(requests_toolbelt.Session().get(url).raw)\nprint(img)\n', 'loud', 'loud'),
 ]
 
-FP_ROWS = [row for row in SHAPES if row[2] == 'loud' and row[3] == 'quiet']
+FP_ROWS = [row for row in SHAPES if row[2] == 'loud' and row[3] == 'quiet'
+           and row[0] not in BLANKET_RETIRED_ROWS]
+BLANKET_ROWS = [row for row in SHAPES if row[0] in BLANKET_RETIRED_ROWS]
 MUST_REPORT_ROWS = [row for row in SHAPES if row[3] == 'loud']
 ALREADY_QUIET_ROWS = [row for row in SHAPES if row[2] == 'quiet']
 _BY_LABEL = {row[0]: row[1] for row in SHAPES}
+_BY_SEAL = {row[0]: (row[2], row[3]) for row in SHAPES}
 
 # One axis per row, with the two arms on opposite sides of it. Every clean arm is a row the guard itself
 # silences, so a pair that agrees only because both arms went quiet for some other reason cannot pass.
+# A 4th element selects how the axis is decided: 'findings' (the default) reads the two arms off the
+# real record path, 'guard-answers' reads them off `_c22_cleanup_is_temp_teardown` itself, and is only
+# allowed when the finding-level contrast stopped existing for a *booked* reason (see the docstring).
+# A 5th element, required by 'guard-answers', names the alive control: a must-report row that is loud at
+# both seals and proves the booked arm went quiet for want of an untrusted origin, not for want of a
+# sink the engine can see.
 PAIRS = [
     ('temp root vs a segment the caller chose inside it', 'name_bound_to_path_mkdtemp',
      'name_bound_rmtree_taint_inside'),
     ('proven tempfile root vs a name that merely says temp', 'name_bound_mkdtemp_no_prefix',
      'name_says_temp_but_is_repo_relative'),
+    # Re-anchored by round 3. The two arms still differ by exactly one thing -- the spelling the
+    # `tempfile` entry point reaches the guard through -- but only the guard's own answer can show it
+    # now: the bare-import arm's finding was the retired blanket's, not this rule's, and booking it as
+    # quiet (TIER 3) is what lets this pair name the axis honestly instead of dropping the pair. The
+    # mode asserts guard(True) vs guard(False), keeps the clean arm a guard-earned loud->quiet row,
+    # requires the dirty arm to be a booked supersession, and requires the bare spelling to still report
+    # the moment a caller-chosen segment rides inside it (`bare_import_mkdtemp_caller_segment_inside`).
     ('tempfile module spelling vs the same function imported bare', 'pathlib_div_under_mkdtemp',
-     'bare_import_mkdtemp'),
+     'bare_import_mkdtemp', 'guard-answers', 'bare_import_mkdtemp_caller_segment_inside'),
     ('proven root vs the same root rebound to a request value', 'name_bound_mkdtemp_no_prefix',
      'twice_written_root_in_join'),
     ('delete of a proven root vs delete of a parameter somebody passed in',
@@ -467,6 +591,15 @@ PREDICATES = [
     ('self_attr_constructor_param', 'shutil.rmtree', REQ + HEAD + '\n\nclass C:\n'
      '    def __init__(self, where):\n        self.outdir = where\n\n'
      '    def clean(self):\n        shutil.rmtree(self.outdir)\n', False),
+    # Round 3 asked the same question of the *sealed fixture*, call site and all, because that is the
+    # source whose finding moved. The guard still answers False: `self.outdir = where` is a class field
+    # written from a parameter, not a tempfile root, and the deleted fallback's guess about who calls
+    # the constructor is not this clause's proof. Keeping this row here is what makes the booking in
+    # TIER 3 an observation about the owed rule rather than an accusation against the guard.
+    ('self_attr_from_constructor_param_caller', 'shutil.rmtree', REQ + HEAD + '\n\nclass GateCase:\n'
+     '    def __init__(self, where):\n        self.outdir = where\n\n'
+     '    def clean(self):\n        shutil.rmtree(self.outdir)\n\n\n'
+     'GateCase(request.args.get("d")).clean()\n', False),
     # The table is keyed by class, so a sibling class that writes the same attribute name from a
     # request value must not lend its proof to this one -- and must not lose its own finding either.
     ('self_attr_sibling_class_writes_same_name', 'shutil.rmtree', REQ + HEAD + '\n\nclass A:\n'
@@ -479,6 +612,9 @@ PREDICATES = [
 
 PRED_PROVEN = [row for row in PREDICATES if row[3]]
 PRED_REFUSED = [row for row in PREDICATES if not row[3]]
+# `guard-answers` pairs consult the guard's own table by label, so the pair can name the same expression
+# the seal table names without duplicating a fixture.
+_BY_PREDICATE = {row[0]: row for row in PREDICATES}
 
 # The stream proof's own truth table, at two levels, because the clause and the wrapper that consults it
 # answer different questions. `want_sink` is what the CWE-22 wiring sees -- `_is_in_memory_buffer_sink`
@@ -761,6 +897,25 @@ def check_corpus():
     return failures
 
 
+@contextlib.contextmanager
+def _retired_blanket_restored():
+    """The policy round 3 retired, installed in memory: no path sink owes a resolved untrusted origin.
+
+    `_c22_open_sink_owes_proven_taint` answering False is the generic "dynamic variable used in file
+    path" fallback -- the registry sink, both short-circuits and the `ProvenanceState.UNKNOWN` prune arm
+    stop refusing and report whatever they cannot prove safe. A booked supersession in this table is only
+    an honest booking if this arm moves it back, and no other quiet row may be moved by it, so TIER 3 runs
+    both directions on every row the shipped engine leaves quiet. That is what keeps the three booked rows
+    credited to the owed rule and this guard's own silences credited to this guard.
+    """
+    original = ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint
+    ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = lambda self, record, sink: False
+    try:
+        yield
+    finally:
+        ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = original
+
+
 def check_shapes():
     """TIER 3: the findings truth table, asserted against the seal this file stands under."""
     failures = []
@@ -783,6 +938,37 @@ def check_shapes():
     added = [row[0] for row in SHAPES if row[2] == 'quiet' and row[3] == 'loud']
     if added:
         failures.append(('ADDED', 'a quiet shape went loud -- this guard may only retire rows', added))
+    # The booking, asserted instead of argued. A booked round-3 supersession has to be moved by the clause
+    # that booked it, and no other row this shipped engine leaves quiet may be moved by that clause: if one
+    # is, a second supersession landed in this table without being filed and the seal would be papering
+    # over it -- and if a booked row stays quiet under the restored blanket, the re-filing credited the
+    # owed rule with a silence some other clause owns.
+    for label in BLANKET_RETIRED_ROWS:
+        if label not in _BY_SEAL:
+            failures.append((label, 'blanket booking', 'a booked supersession present in SHAPES',
+                             'absent'))
+        elif _BY_SEAL[label] != ('loud', 'quiet'):
+            failures.append((label, 'blanket booking', ('loud', 'quiet'), _BY_SEAL[label],
+                             'a booked supersession is measured loud on HEAD and quiet live'))
+    restored = []
+    for label, source, _when_abstained, when_shipped in SHAPES:
+        if when_shipped == 'loud':
+            continue
+        with _retired_blanket_restored():
+            came_back = bool(scan_source(source))
+        booked = label in BLANKET_RETIRED_ROWS
+        if came_back:
+            restored.append(label)
+        if came_back != booked:
+            failures.append((label, 'blanket booking',
+                             'restored by the retired blanket' if booked else 'stays quiet',
+                             'restored' if came_back else 'quiet',
+                             ('the owed rule is not what silences this booked row, so the re-filing '
+                              'credited the wrong clause' if booked else
+                              'a quiet row the seal does not book comes back under the retired '
+                              'blanket, so this table is missing a supersession')))
+    print(f'  booked round-3 supersessions={len(BLANKET_ROWS)}  quiet rows restored by the retired '
+          f'blanket={restored}')
     return failures
 
 
@@ -807,19 +993,61 @@ def check_pairs():
     failures = []
     fp_labels = {row[0] for row in FP_ROWS}
     loud_labels = {row[0] for row in MUST_REPORT_ROWS}
-    for label, clean, dirty in PAIRS:
+    booked_labels = set(BLANKET_RETIRED_ROWS)
+    for entry in PAIRS:
+        label, clean, dirty = entry[0], entry[1], entry[2]
+        mode = entry[3] if len(entry) > 3 else 'findings'
+        alive = entry[4] if len(entry) > 4 else None
         if clean not in fp_labels:
             failures.append((label, 'clean arm is a loud->quiet row (the guard moves it)', clean))
-        if dirty not in loud_labels:
-            failures.append((label, 'tripwire arm is a must-report row', dirty))
-        a = bool(scan_source(_BY_LABEL[clean]))
-        b = bool(scan_source(_BY_LABEL[dirty]))
+        if mode not in ('findings', 'guard-answers'):
+            failures.append((label, 'pair mode', 'findings or guard-answers', mode))
+            continue
+        if mode == 'findings':
+            if dirty not in loud_labels:
+                failures.append((label, 'tripwire arm is a must-report row', dirty))
+            a = bool(scan_source(_BY_LABEL[clean]))
+            b = bool(scan_source(_BY_LABEL[dirty]))
+            want_clean = CWE22_TEMP_SEAL == 'abstained'
+            agree = (a == want_clean) and b
+            print(f'  {label:52} clean_loud={a} (want {want_clean})  tripwire_loud={b} (want True)  '
+                  f'{"agree" if agree else "DISAGREE"}')
+            if not agree:
+                failures.append((label, 'pair provenance', (want_clean, True), (a, b)))
+            continue
+        # `guard-answers`: the axis is the spelling a `tempfile` entry point reaches this guard through,
+        # so the pair asks the guard itself, on the wiring's own triple, and requires the two answers to
+        # disagree in the booked direction. The finding-level half of the pair is still checked, but only
+        # where it still means something: the clean arm must be guard-earned loud->quiet, the dirty arm
+        # must be a booked supersession (TIER 3 already proved the owed rule is what silenced it), and the
+        # alive control must report at both seals so the dirty arm cannot be quiet for want of visibility.
+        if dirty not in booked_labels:
+            failures.append((label, 'guard-answers pair needs a booked supersession as its dirty arm',
+                             f'{dirty} in BLANKET_RETIRED_ROWS', 'absent'))
+        if alive is None:
+            failures.append((label, 'guard-answers pair needs an alive control as its 5th element',
+                             'a loud-at-both-seals row', 'absent'))
+            continue
+        if _BY_SEAL.get(alive) != ('loud', 'loud') or alive not in loud_labels:
+            failures.append((label, 'alive control', ('loud', 'loud'), _BY_SEAL.get(alive)))
+        clean_row = _BY_PREDICATE.get(clean)
+        dirty_row = _BY_PREDICATE.get(dirty)
+        if not clean_row or not dirty_row:
+            failures.append((label, 'guard-answers pair asks both arms of PREDICATES by label',
+                             (clean, dirty), (bool(clean_row), bool(dirty_row))))
+            continue
+        gc = predicate_ask(clean_row[2], clean_row[1])
+        gd = predicate_ask(dirty_row[2], dirty_row[1])
+        ga = bool(scan_source(_BY_LABEL[alive]))
         want_clean = CWE22_TEMP_SEAL == 'abstained'
-        agree = (a == want_clean) and b
-        print(f'  {label:52} clean_loud={a} (want {want_clean})  tripwire_loud={b} (want True)  '
+        a = bool(scan_source(_BY_LABEL[clean]))
+        agree = gc is clean_row[3] is True and gd is dirty_row[3] is False and ga and (a == want_clean)
+        print(f'  {label:52} guard_clean={gc} (want True)  guard_dirty={gd} (want False)  '
+              f'alive_control_loud={ga} (want True)  clean_loud={a} (want {want_clean})  '
               f'{"agree" if agree else "DISAGREE"}')
         if not agree:
-            failures.append((label, 'pair provenance', (want_clean, True), (a, b)))
+            failures.append((label, 'pair provenance (guard answers + alive control)',
+                             (True, False, True, want_clean), (gc, gd, ga, a)))
     return failures
 
 
@@ -1347,6 +1575,18 @@ MUTATIONS = {
         'rows': ['move_source_chosen_by_caller_to_temp_dest', 'move_source_param_to_template_dir'],
         'apply': lambda: globals().update({'_MOVE_PITCH_APPLIED': True}),
     },
+    'retire_owed_taint_requirement': {
+        'what': 'restore the generic fallback this round retired: `_c22_open_sink_owes_proven_taint` '
+                'answers False, so no CWE-22 filesystem sink owes a resolved untrusted origin and every '
+                'bare variable or attribute in a file path reports again on "cannot prove this safe". '
+                'The three booked supersessions come back loud under it and no other quiet row does -- '
+                'that is the measurement which says the re-filed seal rows were silenced by that clause '
+                'and not by a quieter accident, and it is the half of the booking a passing gate proves '
+                'in the other direction',
+        'rows': list(BLANKET_RETIRED_ROWS),
+        'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_open_sink_owes_proven_taint',
+                                 lambda self, record, sink: False),
+    },
 }
 
 
@@ -1747,8 +1987,19 @@ def main() -> int:
     failures += check_cache_anchor_refusal()
     print('TIER 9 - the HTTP response body stream: its table, its two clause tables, its consult sites:')
     failures += check_stream_proof()
+    # Four buckets, one row each: the guard-earned silences, the must-report rows, the rows that were
+    # already quiet before any of this, and the round-3 supersessions booked to the owed rule. A shape
+    # that lands in two of them (or none) means a bucket derivation started reading like a guess.
+    accounted = (len(FP_ROWS) + len(MUST_REPORT_ROWS) + len(ALREADY_QUIET_ROWS) + len(BLANKET_ROWS))
+    print(f'  accounting: shapes={len(SHAPES)} = guard-earned {len(FP_ROWS)} + must-report '
+          f'{len(MUST_REPORT_ROWS)} + already-quiet {len(ALREADY_QUIET_ROWS)} + booked round-3 '
+          f'supersessions {len(BLANKET_ROWS)}')
+    if accounted != len(SHAPES):
+        failures.append(('accounting', 'every shape belongs in exactly one bucket',
+                         len(SHAPES), accounted))
     print(f'\nseal={CWE22_TEMP_SEAL} shapes={len(SHAPES)} fp_rows={len(FP_ROWS)} '
           f'must_report={len(MUST_REPORT_ROWS)} already_quiet={len(ALREADY_QUIET_ROWS)} '
+          f'blanket_retired={len(BLANKET_ROWS)} '
           f'pred_rows={len(PREDICATES)} pred_proven={len(PRED_PROVEN)} '
           f'pred_refused={len(PRED_REFUSED)} stream_rows={len(STREAMS)} '
           f'stream_proven={len(STREAM_PROVEN)} stream_refused={len(STREAM_REFUSED)} '
@@ -1767,6 +2018,7 @@ def main() -> int:
     print(f'VERDICT: PASS - all {sum(CWE22_LOCKED.values())} blessed CWE-22 keys still reported, '
           f'parity corpus exact-set, {len(FP_ROWS)} proven-temp and stream shapes silent, '
           f'{len(MUST_REPORT_ROWS)} caller/name/scope/path shapes reported, '
+          f'{len(BLANKET_ROWS)} round-3 supersessions booked and blanket-locked, '
           f'{len(PRED_REFUSED)} predicate refusals and {len(STREAM_REFUSED)} stream refusals held, '
           f'{len(PAIRS)} pairs agreeing.')
     return 0

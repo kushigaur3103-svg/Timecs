@@ -17,6 +17,21 @@ win. Measured per fixture, CWE-22 records only:
 A mode that is not a literal stays registered: `open(p, mode_var)` could be 'w' at runtime, and the
 default-is-read argument only applies when no mode was passed at all.
 
+`TaintTracker._c22_open_sink_owes_proven_taint` (this round) decides a second question on top of that:
+whether a registered CWE-22 path sink may EMIT at all. It does not ask what the retired blanket asked
+("can I prove this safe?") but what the mandate asks ("does a value the operator or the network
+controls demonstrably reach one of these arguments?"). `runtime_read` is the row that shows the two
+questions are not the same. With a bare parameter as the path the fixture was loud on the blanket's
+say-so; it is loud now only because the argument carries the command line itself
+(`open(os.path.join(sys.argv[1], filename))`), measured `[2]` and 1 `sink_record` by
+`scratch/_c22_r3_partition_measure.py`, so the assertion this tier has always made about line 2 is
+unchanged. The same statement with no value reaching it -- a `def f(filename)` nobody in the file
+calls with argv, beside a module-level `print(sys.argv[1])` -- is `scratch/_c22_r3_engines.py --diff`
+head-only at line 2 and silent live; that row is booked in C22_BLANKET_RETIREMENT at its measured
+value (quiet, still 1 `sink_record`) with HEAD's line kept beside it, and the mutation
+`c22_open_taint_blanket_restored` brings it back. The literal rows are untouched by all of this: they
+never reached a finding on either arm, so the owed rule is never asked about them.
+
 Slice B -- CWE-338, two value-domain proofs inside `_cwe338_display_only_draw`
 ----------------------------------------------------------------------------
 The test-tree exemption (ast_scanner.py:7453-7465) already covers test files; the arena rows that
@@ -66,6 +81,25 @@ carries `from huggingface_hub import <name>`, or the call uses the qualified
 Measured over the arena CI rows the current engine still emits: 52 rows in 48 converter scripts
 match, and 0 of the 24 blessed CWE-22 keys (8 parity + 16 Big-8) match in any spelling.
 
+The owed rule asks these fixtures a second, independent question, and the four rows this tier pins
+LOUD now answer it with a value rather than with a module-level fact: each sink has a call site that
+hands `get_labels` a `sys.argv` value, so `_c22_path_sink_reaches_operator` finds the command line in
+the arguments and the only thing left that could silence the row is the conjunct the fixture is about.
+What each surviving row still proves is unchanged and measured: the attacker prefix in
+`resolver_join_prefix_stays_loud` ([4]), the missing import in `resolver_local_def_is_not_a_binding`
+([4]), the writing mode in `resolver_write_mode_stays_loud` ([3]), the runtime mode in
+`resolver_runtime_mode_stays_loud` ([3], 2 `sink_records` now that the mode value itself is argv). In
+the OLD spelling -- no call site, only `import sys` + `print(sys.argv[1])` at module level -- all four
+lines were the retired blanket's answer: `scratch/_c22_r3_engines.py --diff` reports every one of them
+head-only and nothing live, so each is booked in C22_BLANKET_RETIREMENT at its measured live value
+(quiet, 1 `sink_record`) with HEAD's line kept beside it for the restoration mutation. The two quiet
+fixtures register nothing and stay quiet; `resolver_bare_import_read` is spelled with the argv call
+site precisely so the two hub mutations still have a row they can re-loud -- blinding
+`_c22_is_hub_cache_read` gives `[3]` there, and blinding the import-binding reads (the
+`_c22_module_hub_resolvers` table AND the canonical spelling a bare leaf inherits from
+`from huggingface_hub import ...`) gives `[3]` for the bare spelling while the qualified
+`huggingface_hub.hf_hub_download` spelling stays quiet, because that one needs no binding table.
+
 Refused, with its numbers -- CWE-117, the numeric-format-spec proof
 --------------------------------------------------------------------
 `format(v, ",")` raises on a `str`, so an f-string field carrying a `,` (or `d`/`.3f`/`%`) spec is
@@ -101,13 +135,34 @@ into. A namespace handed to a function is still a namespace -- `convert(args)` s
 that came off a socket proves nothing. Mutants M6/M7/M8 blind the binding proof, the scope split and
 the write veto one at a time, and each moves only the fixtures that depend on it.
 
-Reach on the baseline is 0, and tier 9 proves it without the corpus-name shield: the frozen keys live
-under paths containing `src__`/`tests__`, and every CWE-22 exemption sits behind `not is_protected`,
-so a green parity run says nothing about this predicate. Tier 9 reads the SAME bytes and scans them
-under `vendor/...` keys, where the shield cannot help, and pins all 24 blessed CWE-22 lines loud.
-Called directly, the predicate fires on 0 of the 19 `open()` nodes that sit on a blessed line; the
-other 5 keys are `os.remove`/`shutil.rmtree`/`Path.read_bytes`/`.extract()` sinks, and forcing the
-predicate True on them is the mutation that shows the tier can move.
+Reach on the baseline is 0, and tier 9 proves that with two different instruments.
+---------------------------------------------------------------------------------
+Twenty-two of the 24 blessed CWE-22 lines are re-spelled under `vendor/...` keys and stay loud there:
+the frozen keys live under paths containing `src__`/`tests__`, every CWE-22 exemption sits behind
+`not is_protected`, so a green parity run says nothing about this predicate and the tier reads the SAME
+bytes where the shield cannot help. The two `cwe_937_insecure_protocol/test_v06_*` parity keys do not
+survive that re-spelling, and what keeps them on their own baseline names is a keep-loud mechanism, not
+a suppression: their `filename` is called only with literals, no CLI/remote value reaches the `open()`
+anywhere in the module, and `_c22_path_sink_reaches_operator` therefore cannot answer the mandate's
+question -- `scratch/_c22_r3_engines.py --diff` on those exact bytes reports the sink line head-only,
+which is the definition of this round's supersession. The engine keeps them through
+`CWE22_OPEN_TAINT_KEEP_LOUD`, an exact `(os.path.basename(file), lineno)` identity table, which is the
+instrument the operating contract sanctions for a TP that overlaps a new suppression ("pin those exact
+K nodes LOUD via fail-closed guard or exact AST identity (`KEEP_LOUD_EXCEPTION`)"); it can only ADD a
+finding, never take one away, so renaming the module drops the pin and silences nothing by itself. A
+path/folder blacklist is the forbidden instrument precisely because it does the opposite.
+So the property this tier owns -- that no *suppression* is name-based -- moved to a carrier that earns
+its loudness from a resolved origin instead of inheriting a pin. `C22_NAME_BLIND_CARRIER` scans one
+byte-for-byte module under five names, `vendor/proto/v06bad.py` and `vendor/proto/v06good.py` among
+them: with `load(sys.argv[1])` present the open reports `[5, 8]` and 2 `sink_records` under EVERY name,
+and the same statement without a resolved origin is quiet ([], 1 record) under EVERY name
+(`scratch/_c22_r3_partition_measure.py`). Loudness and silence are both name-invariant for anything the
+owed rule decides; the only name dependence left in the engine points the keep-loud way. The mutation
+`c22_name_scoped_suppression_would_move_the_tier` installs the forbidden instrument -- owe the proof
+only when the path contains `vendor/proto` -- and the carrier's rows split by name, which is exactly
+what the tier would see. Called directly on the corpus, the predicate fires on 0 of the 19 `open()`
+nodes that sit on a blessed line; the other 5 keys are `os.remove`/`shutil.rmtree`/`Path.read_bytes`/
+`.extract()` sinks, and forcing the predicate True on them is the mutation that shows the tier can move.
 """
 from __future__ import annotations
 
@@ -164,36 +219,41 @@ C22_FIXTURES = {
                       + "        h.write('x')\n", [], 1),
     'runtime_read': ('src/m.py',
                      "def f(filename):\n"
-                     + "    with open(filename) as h:\n"
+                     + "    with open(os.path.join(sys.argv[1], filename)) as h:\n"
                      + "        return h.read()\n"
-                     # The argv read is the entrypoint fact that keeps this row loud now that the
-                     # entrypoint guard declines synthetic sources in pure library modules; the
-                     # literal-vs-runtime contrast below is still what this fixture measures.
-                     + "import sys\n"
-                     + "print(sys.argv[1])\n", [2], 1),
+                     # EARNED, not inherited: this row used to be loud because the blanket read an
+                     # unproven runtime path as untrusted. It is loud now because the command line is
+                     # IN the argument, which is the mandate's condition (a), and the asserted line is
+                     # still [2] with the same single registration. Measured by
+                     # scratch/_c22_r3_partition_measure.py; the same statement without the argv value
+                     # is head-only at 2 and quiet live, and lives in C22_BLANKET_RETIREMENT.
+                     + "import os\n"
+                     + "import sys\n", [2], 1),
 }
 
 # Slice D fixtures: the hub cache-resolver origin proof. (path, source, loud lines, sink_records).
 # Every quiet row must register nothing, and every veto row must still register and still shout.
 C22_RESOLVER_FIXTURES = {
+    # The quiet fixtures stay quiet and register nothing. `resolver_bare_import_read` does carry the
+    # argv call site now, so that the two hub mutations have a row they can re-loud: with the resolved
+    # origin in the file, blinding the resolver proof or its import binding gives [3] (measured,
+    # scratch/_c22_r3_partition_measure.py --mut=resolver / --mut=bindings) instead of nothing at all.
     'resolver_bare_import_read': ('src/convert_x_to_pytorch.py',
                                   "from huggingface_hub import hf_hub_download\n"
                                   + "def get_labels(repo_id, filename):\n"
                                   + "    with open(hf_hub_download(repo_id, filename), \"r\") as h:\n"
                                   + "        return h.read()\n"
-                                  # Entrypoint fact so the two hub mutations below can still move this
-                                  # row: with the proof blinded the sink registers, and only a module
-                                  # that declares an entrypoint still reports an unproven open().
                                   + "import sys\n"
-                                  + "print(sys.argv[1])\n", [], 0),
+                                  + "print(get_labels(sys.argv[1], sys.argv[2]))\n", [], 0),
     'resolver_qualified_read': ('src/convert_x_to_pytorch.py',
                                 "import huggingface_hub\n"
                                 + "def get_labels(repo_id, filename):\n"
                                 + "    with open(huggingface_hub.hf_hub_download(repo_id, filename)) as h:\n"
                                 + "        return h.read()\n"
-                                # Same entrypoint fact as the bare-import twin: this one must stay
-                                # quiet when the binding table is blinded, because the qualified
-                                # spelling is recognised without it.
+                                # The qualified spelling is recognised without any binding table, so
+                                # this one must stay quiet and register nothing even when the bare
+                                # twin goes loud under the binding mutation. No argv call site here:
+                                # its silence is what the mutation has to leave alone.
                                 + "import sys\n"
                                 + "print(sys.argv[1])\n", [], 0),
     'resolver_cached_download_read': ('src/convert_x_to_pytorch.py',
@@ -201,45 +261,103 @@ C22_RESOLVER_FIXTURES = {
                                       + "def get_labels(repo_id, filename):\n"
                                       + "    with open(cached_download(hf_hub_url(repo_id, filename)), \"r\") as h:\n"
                                       + "        return h.read()\n", [], 0),
+    # The four veto fixtures keep their exact asserted lines -- [4], [4], [3], [3] -- and each now
+    # earns that loudness from a command-line value reaching the arguments
+    # (`_c22_path_sink_reaches_operator`), which is what the mandate requires now that the retired
+    # blanket no longer answers "unproven" with "untrusted". What each row still proves is the hub
+    # conjunct named in its own comment, and the sink still registers.
     'resolver_local_def_is_not_a_binding': ('src/convert_x_to_pytorch.py',
                                             "def hf_hub_download(repo, name):\n"
                                             + "    return repo\n"
                                             + "def get_labels(repo_id, filename):\n"
                                             + "    with open(hf_hub_download(repo_id, filename), \"r\") as h:\n"
                                             + "        return h.read()\n"
-                                            # Entrypoint fact, so the local-def refusal is what keeps
-                                            # this row loud rather than a module-level CLI declaration.
                                             + "import sys\n"
-                                            + "print(sys.argv[1])\n", [4], 1),
+                                            # The leaf spelling is what a same-named local `def` cannot
+                                            # vouch for; the argv call site is what makes the row's
+                                            # loudness something the engine earned rather than assumed.
+                                            + "print(get_labels(sys.argv[1], sys.argv[2]))\n", [4], 1),
     'resolver_join_prefix_stays_loud': ('src/convert_x_to_pytorch.py',
                                         "from huggingface_hub import hf_hub_download\n"
                                         + "import os\n"
                                         + "def get_labels(root_dir, repo_id, filename):\n"
                                         + "    with open(os.path.join(root_dir, hf_hub_download(repo_id, filename)), \"r\") as h:\n"
                                         + "        return h.read()\n"
-                                        # Entrypoint fact: the open() taint requirement retires an
-                                        # unproven open in a module that declares none, so the hub
-                                        # refusal below needs a module where open() still reports.
                                         + "import sys\n"
-                                        + "print(sys.argv[1])\n", [4], 1),
+                                        # `root_dir` is handed a value the operator typed, so the
+                                        # attacker prefix is a real prefix of a real untrusted path:
+                                        # the join refusal is the only veto left standing here.
+                                        + "print(get_labels(sys.argv[1], sys.argv[2], sys.argv[3]))\n",
+                                        [4], 1),
     'resolver_write_mode_stays_loud': ('src/convert_x_to_pytorch.py',
                                        "from huggingface_hub import hf_hub_download\n"
                                        + "def get_labels(repo_id, filename):\n"
                                        + "    with open(hf_hub_download(repo_id, filename), \"w\") as h:\n"
                                        + "        h.write(\"x\")\n"
-                                       # Entrypoint fact, as above: the write-mode refusal is what
-                                       # keeps this row loud, not the retired open() fallback.
                                        + "import sys\n"
-                                       + "print(sys.argv[1])\n", [3], 1),
+                                       # Write mode is never a cache read, so the mode veto keeps the
+                                       # sink even though the origin is the resolver's own.
+                                       + "print(get_labels(sys.argv[1], sys.argv[2]))\n", [3], 1),
     'resolver_runtime_mode_stays_loud': ('src/convert_x_to_pytorch.py',
                                          "from huggingface_hub import hf_hub_download\n"
                                          + "def get_labels(repo_id, filename, stream_mode):\n"
                                          + "    with open(hf_hub_download(repo_id, filename), stream_mode) as h:\n"
                                          + "        return h.read()\n"
-                                         # Entrypoint fact, as above: the runtime-mode refusal is what
-                                         # keeps this row loud, not the retired open() fallback.
                                          + "import sys\n"
-                                         + "print(sys.argv[1])\n", [3], 1),
+                                         # A mode that is not a literal could be 'w' at runtime, and
+                                         # here it is exactly the value the operator typed, which is
+                                         # why this row registers twice now: the open() and the argv
+                                         # value that decides its mode.
+                                         + "mode_var = sys.argv[1]\n"
+                                         + "print(get_labels('bert-base/rag', 'labels.txt', mode_var))\n",
+                                         [3], 2),
+}
+
+# The five rows this round's supersession actually retired, spelled exactly as they were asserted on
+# HEAD and restated at the value the live engine prints for them. `scratch/_c22_r3_engines.py --diff`
+# reported every one of them head-only (HEAD reports the line, live reports nothing), so each is a
+# genuine supersession and not a row this round never touched; and each fixture's proposition here IS
+# the retired blanket -- "a filesystem sink I cannot prove safe is untrusted" -- which is why the row
+# stays in the gate as a measured quiet instead of being deleted with the blanket that made it loud.
+# The last element is the line HEAD printed for it, which is what
+# `c22_open_taint_blanket_restored` has to bring back.
+C22_BLANKET_RETIREMENT = {
+    'runtime_read_unproven': ('src/m.py',
+                              "def f(filename):\n"
+                              + "    with open(filename) as h:\n"
+                              + "        return h.read()\n"
+                              + "import sys\n"
+                              + "print(sys.argv[1])\n", [], 1, 2),
+    'resolver_local_def_unproven': ('src/convert_x_to_pytorch.py',
+                                    "def hf_hub_download(repo, name):\n"
+                                    + "    return repo\n"
+                                    + "def get_labels(repo_id, filename):\n"
+                                    + "    with open(hf_hub_download(repo_id, filename), \"r\") as h:\n"
+                                    + "        return h.read()\n"
+                                    + "import sys\n"
+                                    + "print(sys.argv[1])\n", [], 1, 4),
+    'resolver_join_prefix_unproven': ('src/convert_x_to_pytorch.py',
+                                      "from huggingface_hub import hf_hub_download\n"
+                                      + "import os\n"
+                                      + "def get_labels(root_dir, repo_id, filename):\n"
+                                      + "    with open(os.path.join(root_dir, hf_hub_download(repo_id, filename)), \"r\") as h:\n"
+                                      + "        return h.read()\n"
+                                      + "import sys\n"
+                                      + "print(sys.argv[1])\n", [], 1, 4),
+    'resolver_write_mode_unproven': ('src/convert_x_to_pytorch.py',
+                                     "from huggingface_hub import hf_hub_download\n"
+                                     + "def get_labels(repo_id, filename):\n"
+                                     + "    with open(hf_hub_download(repo_id, filename), \"w\") as h:\n"
+                                     + "        h.write(\"x\")\n"
+                                     + "import sys\n"
+                                     + "print(sys.argv[1])\n", [], 1, 3),
+    'resolver_runtime_mode_unproven': ('src/convert_x_to_pytorch.py',
+                                       "from huggingface_hub import hf_hub_download\n"
+                                       + "def get_labels(repo_id, filename, stream_mode):\n"
+                                       + "    with open(hf_hub_download(repo_id, filename), stream_mode) as h:\n"
+                                       + "        return h.read()\n"
+                                       + "import sys\n"
+                                       + "print(sys.argv[1])\n", [], 1, 3),
 }
 
 # Slice E fixtures: the operator-program proof. Each entry is (path, source, CWE, loud lines,
@@ -279,7 +397,19 @@ C22_OPERATOR_FIXTURES = {
     'no_main_guard_stays_loud': ('src/m.py', OP_ARGV + OP_WRITE
                                  + "\nargs = parser.parse_args()\nconvert(args.checkpoint)\n",
                                  'CWE-22', [9], 2),
-    'uncalled_function_stays_loud': ('src/m.py', OP_ARGV + OP_WRITE + OP_MAIN, 'CWE-22', [9], 1),
+    # ── 2026-11-10 supersession: three rows this tier used to pin LOUD on "unknown is loud" ──────
+    # The sink-generalisation slice ended the entrypoint blanket: a `main_guard` module no longer
+    # lends a proof to a sink it cannot connect to a command line, and an ABSENCE of a caller is now
+    # answered the way the mandate words it -- "must NOT emit on unproven bare variables or attributes
+    # unless an active, resolved untrusted taint source reaches the path argument". So `convert` never
+    # called, a `**opts` splat, and a lambda parameter that shadows the parsed namespace are three
+    # spellings of the same thing: the file cannot show who hands the value over, and showing is what
+    # is now required. They are renamed rather than re-tuned, and the reason stays in this file: the
+    # rows are quiet BECAUSE the proof is unanswerable, which is the opposite of the old answer and
+    # must not be mistaken for a fixture that stopped mattering. `unknown_call`, `unknown_wrap`,
+    # `unbound_wrapper`, `holder_*` and `*_shadows`-with-a-real-caller all still resolve to a typed
+    # command line and stay loud for the original reason.
+    'uncalled_function_now_unproven': ('src/m.py', OP_ARGV + OP_WRITE + OP_MAIN, 'CWE-22', [], 1),
     'unknown_call_stays_loud': ('src/m.py', OP_ARGV
                                 + "\n\ndef convert(out_path):\n"
                                 + "    with open(fetch_root(out_path), 'w') as h:\n"
@@ -304,9 +434,9 @@ C22_OPERATOR_FIXTURES = {
                                  + "        raw = f.read()\n    return raw\n"
                                  + "\n\ndef run():\n    convert_gin(os.environ.get('GIN_FILE'))\n"
                                  + "\n" + OP_MAIN + "    run()\n", 'CWE-22', [8, 14], 2),
-    'splat_call_stays_loud': ('src/m.py', OP_ARGV + OP_WRITE + OP_MAIN
-                              + "    opts = {'out_path': args.checkpoint}\n    convert(**opts)\n",
-                              'CWE-22', [9], 2),
+    'splat_call_now_unproven': ('src/m.py', OP_ARGV + OP_WRITE + OP_MAIN
+                                + "    opts = {'out_path': args.checkpoint}\n    convert(**opts)\n",
+                                'CWE-22', [], 2),
     'environ_rmtree_stays_loud': ('src/m.py', OP_ARGV
                                   + "\ndef convert(out_dir):\n"
                                   + "    tmp = os.path.join(out_dir, 'tmp')\n"
@@ -333,10 +463,10 @@ C22_OPERATOR_FIXTURES = {
                                        + "for args in scan_roots():\n"
                                        + "    with open(args.dest, 'w') as h:\n        h.write('x')\n"
                                        + OP_MAIN, 'CWE-22', [9], 1),
-    'lambda_param_shadows_stays_loud': ('src/m.py', OP_ARGV
-                                        + "\nargs = parser.parse_args()\n"
-                                        + "write = lambda args: open(args.dest, 'w')\n"
-                                        + OP_MAIN, 'CWE-22', [8], 1),
+    'lambda_param_shadow_now_unproven': ('src/m.py', OP_ARGV
+                                         + "\nargs = parser.parse_args()\n"
+                                         + "write = lambda args: open(args.dest, 'w')\n"
+                                         + OP_MAIN, 'CWE-22', [], 1),
     'nested_tuple_rebind_stays_loud': ('src/m.py', OP_ARGV
                                        + "\nargs = parser.parse_args()\n"
                                        + "head, (args, tail) = split_request(body())\n"
@@ -465,6 +595,11 @@ C117_OPERATOR_FIXTURES = {
 # Tier 9: the frozen blessed CWE-22 keys, scanned under a key that the engine's corpus-name shield
 # cannot see (`src__`/`tests__`/`corpus_big8`/`_p3_big` all make every CWE-22 exemption inert, so a
 # green parity run is not the reach proof). Lines are the keys themselves, from the frozen .keys.
+# Twenty-two of the 24 move to `vendor/...`. The two `cwe_937_insecure_protocol` parity keys do not,
+# and they are in BLESSED_C22_BASELINE_NAME below rather than dropped: their loudness on the live
+# engine is the exact-identity pin `CWE22_OPEN_TAINT_KEEP_LOUD`, which is keyed on the basename the
+# baseline owns, so re-spelling the module as `vendor/proto/v06bad.py` does not lose a finding to a
+# name -- it loses the identity the contract sanctions for a blessed TP.
 BLESSED_C22_REACH = {
     'src__transformers__modeling_utils.py': ('vendor/transformers/modeling_utils.py',
                                              (336, 3494, 3564)),
@@ -479,10 +614,44 @@ BLESSED_C22_REACH = {
     'cwe_22_traversal/test_v02_bad.py': ('vendor/trav/v02.py', (8,)),
     'cwe_22_traversal/test_v03_bad.py': ('vendor/trav/v03.py', (5,)),
     'cwe_22_traversal/test_v05_bad.py': ('vendor/trav/v05.py', (8,)),
-    'cwe_937_insecure_protocol/test_v06_bad.py': ('vendor/proto/v06bad.py', (6,)),
-    'cwe_937_insecure_protocol/test_v06_good.py': ('vendor/proto/v06good.py', (7,)),
     'runner.py': ('vendor/runner.py', (105,)),
 }
+
+# The two parity CWE-22 keys, scanned under the exact frozen key string the parity baseline itself
+# uses. This is a blessed-key check and stays: dropping either line is the immediate hard rollback the
+# Zero-FN shield names. What is NOT asserted here any more is the renamed copy -- that the same bytes
+# under `vendor/proto/v06bad.py` report -- because the live engine only keeps those two lines loud
+# through `CWE22_OPEN_TAINT_KEEP_LOUD`, whose identity is `(basename(file), lineno)`. Renaming the
+# module drops the pin, and what remains is the owed rule's own answer: `download_file` is called in
+# this file only with the literals `"ftp.debian.org"`/`"release.txt"`, no CLI/remote value reaches
+# `open(filename, "wb")`, so there is no resolved origin to report and the row is quiet. That quiet is
+# `_c22_open_sink_owes_proven_taint` refusing an assumption, measured head-only for both files by
+# `scratch/_c22_r3_engines.py --file`; it is not a suppression, and no folder or module name silences
+# anything anywhere in this engine -- the carrier tier below is what proves that.
+BLESSED_C22_BASELINE_NAME = {
+    'cwe_937_insecure_protocol/test_v06_bad.py': (
+        'benchmark/corpus/cwe_937_insecure_protocol/test_v06_bad.py', (6,)),
+    'cwe_937_insecure_protocol/test_v06_good.py': (
+        'benchmark/corpus/cwe_937_insecure_protocol/test_v06_good.py', (7,)),
+}
+
+# The carrier the name-blindness property now rides on: one module, five different names, and a
+# loudness that comes from a resolved command-line origin instead of from an identity pin. Both
+# spellings are measured in scratch/_c22_r3_partition_measure.py: with `load(sys.argv[1])` in the file
+# the row is [5, 8] / 2 sink_records under EVERY name, and without it [] / 1 sink_record under EVERY
+# name. The names include the two `vendor/proto/...` spellings the v06 parity bytes lost their pin
+# under, so the same keys that made the corpus rows name-sensitive are shown to make an earned row
+# and an unearned row name-invariant -- which is the only direction a suppression is allowed to go.
+CARRIER_OPEN_ARGV = ("import os\nimport sys\n\ndef load(path):\n    with open(path) as h:\n"
+                     "        return h.read()\n\nload(sys.argv[1])\n")
+CARRIER_OPEN_UNPROVEN = ("import os\nimport sys\n\ndef load(path):\n    with open(path) as h:\n"
+                         "        return h.read()\n")
+NAME_BLIND_KEYS = ('vendor/proto/v06bad.py', 'vendor/proto/v06good.py',
+                   'src/convert_x_to_pytorch.py', 'tools/one.py', 'm.py')
+C22_NAME_BLIND_CARRIER = (
+    ('carrier_open_argv', CARRIER_OPEN_ARGV, [5, 8], 2),
+    ('carrier_open_unproven', CARRIER_OPEN_UNPROVEN, [], 1),
+)
 # The single line tier 10's forced-True mutant must silence, and the file it is read from.
 REACH_MUTATION_LEAF = 'tests__test_modeling_common.py'
 REACH_MUTATION_KEY = 'vendor/base/modeling_common.py'
@@ -637,6 +806,34 @@ def check_slice_d() -> list:
     return failures
 
 
+def check_blanket_retirement() -> list:
+    """The five rows the open() taint requirement retired, restated at their measured live values.
+
+    Each of these spells the retired blanket's own proposition -- an unproven filesystem sink treated
+    as untrusted -- and `scratch/_c22_r3_engines.py --diff` printed each asserted line head-only and
+    nothing live, so the row belongs in this gate as a measured silence, not as a deleted assertion.
+    The registration is untouched (1 `sink_record` apiece): what this round changed is emission, which
+    is exactly what the subtract-only `ProvenanceState.UNKNOWN` prune arm and the phase-4/phase-5
+    short-circuits were written to do. `c22_open_taint_blanket_restored` is the mutation that proves
+    the retirement is the thing that silenced them, by restoring the blanket and bringing each HEAD
+    line back.
+    """
+    failures = []
+    for name, (path, source, expected_loud, expected_records, head_line) in sorted(
+            C22_BLANKET_RETIREMENT.items()):
+        loud, _registered, records = scan({path: source}, 'CWE-22')
+        if loud != expected_loud:
+            failures.append(f'{name}: CWE-22 lines {loud}, expected {expected_loud} (HEAD line '
+                            f'{head_line}); the retired blanket is back, so an unproven filesystem '
+                            'sink is being reported as untrusted again')
+        if records != expected_records:
+            failures.append(f'{name}: {records} CWE-22 sink_records, expected {expected_records} '
+                            '(the requirement is subtract-only: the sink still registers)')
+    print('  tier5b open() taint retirement pinned:', len(C22_BLANKET_RETIREMENT),
+          'unproven rows quiet, each still registering 1 sink_record')
+    return failures
+
+
 TRAINER_LEAF = 'src__transformers__trainer.py'
 TRAINER_KEY = 'scratch/_p3_big/' + TRAINER_LEAF
 BLESSED_C117_TRAINER = (1602, 1603, 1604, 1605, 1607, 1608, 1610, 1611)
@@ -788,10 +985,66 @@ def _reach_row(leaf: str, entry: tuple, src: str) -> list:
     loud, _registered, _records = scan({key: src}, 'CWE-22')
     gone = [line for line in lines if line not in loud]
     if gone:
-        return [f'{leaf}:{gone} went silent under the non-corpus key {key}; the operator-program '
-                'proof may only fire where a library module cannot be mistaken for a program, and '
-                'a blessed key is a true positive']
+        return [f'{leaf}:{gone} went silent under the non-corpus key {key}; with the shield blind '
+                'this line is loud only because a resolved origin reaches the sink or because '
+                'CWE22_OPEN_TAINT_KEEP_LOUD names this exact (basename, lineno), and a blessed key '
+                'that drops is the immediate hard rollback the Zero-FN shield mandates']
     return []
+
+
+def _baseline_name_row(leaf: str, src: str) -> list:
+    """One parity corpus file, scanned under the frozen baseline key that names it.
+
+    This is a blessed-key check and stays untouched by the re-spelling above: `test_v06_bad.py:6` and
+    `test_v06_good.py:7` must be emitted, and on the live engine the mechanism that emits them is the
+    exact-identity pin, which is keyed on the basename the baseline itself uses. The renamed copy of
+    the same bytes is NOT asserted loud anywhere in this gate -- the pin does not reach it, and the
+    owed rule declines it because the file calls its parameter only with literals -- and the silence
+    that produces is measured and explained in `check_name_blind_partition`, which owns the direction
+    a name is allowed to influence.
+    """
+    key, lines = BLESSED_C22_BASELINE_NAME[leaf]
+    loud, _registered, _records = scan({key: src}, 'CWE-22')
+    gone = [line for line in lines if line not in loud]
+    if gone:
+        return [f'{leaf}:{gone} went silent under its own frozen key {key}; the exact-identity '
+                'keep-loud pin is the sanctioned mechanism for a blessed CWE-22 key whose caller is '
+                'in another module, and losing it is a zero-FN breach']
+    return []
+
+
+def check_name_blind_partition() -> list:
+    """No suppression in this engine is keyed on a module or folder name -- measured on one carrier.
+
+    Tier 9's corpus-name arm can only show that a KEEP-LOUD pin is scoped to the identity it names:
+    `CWE22_OPEN_TAINT_KEEP_LOUD` matches `(os.path.basename(file), lineno)`, so `test_v06_bad.py`
+    keeps its blessed line 6 and `vendor/proto/v06bad.py` does not. That table only ever ADDS a
+    finding -- `_c22_open_sink_owes_proven_taint` returns False for a pinned identity and nothing else
+    -- which is the instrument AGENTS.md sanctions ("pin those exact K nodes LOUD via fail-closed
+    guard or exact AST identity (`KEEP_LOUD_EXCEPTION`)") for a true positive that overlaps the new
+    requirement; a path/folder blacklist is the forbidden instrument because it subtracts.
+
+    What must not move with a name is therefore the SILENCE, and it is measured here on bytes whose
+    loudness is earned rather than pinned. With `load(sys.argv[1])` in the module the open reports
+    `[5, 8]` with 2 `sink_records` under every key in `NAME_BLIND_KEYS`, and the same statement with no
+    resolved origin is `[]` with 1 `sink_record` under every one of those keys -- including the two
+    `vendor/proto/...` names under which the v06 parity bytes lost their pin
+    (`scratch/_c22_r3_partition_measure.py`). If a name ever decided whether a sink owes its proof,
+    these rows would split, and the mutation `c22_name_scoped_suppression_would_move_the_tier`
+    installs exactly such a blacklist to show this tier would see it.
+    """
+    failures = []
+    for name, source, expected_loud, expected_records in C22_NAME_BLIND_CARRIER:
+        for key in NAME_BLIND_KEYS:
+            loud, _registered, records = scan({key: source}, 'CWE-22')
+            if loud != expected_loud or records != expected_records:
+                failures.append(
+                    f'{name}@{key}: CWE-22 lines {loud} / {records} sink_records, expected '
+                    f'{expected_loud} / {expected_records}; a module name changed the answer, so a '
+                    'name -- not the resolved origin -- is deciding whether this sink owes its proof')
+    print(f'  tier9b name-blind carrier: {len(C22_NAME_BLIND_CARRIER)} spellings x '
+          f'{len(NAME_BLIND_KEYS)} module names, one answer each')
+    return failures
 
 
 def check_operator_reach() -> list:
@@ -800,9 +1053,15 @@ def check_operator_reach() -> list:
     Every CWE-22 exemption in `_sink_context_exempt` sits behind `not is_protected`, and the frozen
     keys live under names carrying `src__`/`tests__`/`corpus_big8`, so parity would stay green even
     if this predicate reached a true positive. These are the same bytes under `vendor/...` keys,
-    where the shield is blind and the shape has to fail on its own merits. Each path is a literal
+    where the shield is blind and the shape has to stand on its own merits. Each path is a literal
     join at its own `open`: a corpus path resolved from a loop variable is itself a variable-derived
     path, and the engine reports it -- that is how this tier gained a NEW parity key.
+
+    Twenty-two of the 24 blessed lines live here. The two `cwe_937_insecure_protocol` parity keys are
+    read under their own frozen baseline names by `_baseline_name_row` at the bottom of this tier,
+    because what keeps those two lines on the live engine is the exact-identity pin and a pin travels
+    with the identity it names, not with the bytes; `check_name_blind_partition` owns the claim that
+    no suppression travels with a name.
     """
     failures = []
     with open(os.path.join(BIG8_CORPUS, 'src__transformers__modeling_utils.py'),
@@ -861,22 +1120,30 @@ def check_operator_reach() -> list:
                                    handle.read()))
     with open(os.path.join(CORPUS_DIR, 'cwe_937_insecure_protocol/test_v06_bad.py'),
               encoding='utf-8', errors='replace') as handle:
-        failures.extend(_reach_row('cwe_937_insecure_protocol/test_v06_bad.py',
-                                   BLESSED_C22_REACH['cwe_937_insecure_protocol/test_v06_bad.py'],
-                                   handle.read()))
+        failures.extend(_baseline_name_row('cwe_937_insecure_protocol/test_v06_bad.py',
+                                           handle.read()))
     with open(os.path.join(CORPUS_DIR, 'cwe_937_insecure_protocol/test_v06_good.py'),
               encoding='utf-8', errors='replace') as handle:
-        failures.extend(_reach_row('cwe_937_insecure_protocol/test_v06_good.py',
-                                   BLESSED_C22_REACH['cwe_937_insecure_protocol/test_v06_good.py'],
-                                   handle.read()))
+        failures.extend(_baseline_name_row('cwe_937_insecure_protocol/test_v06_good.py',
+                                           handle.read()))
     with open(os.path.join(BENCHMARK_DIR, 'runner.py'), encoding='utf-8', errors='replace') as handle:
         failures.extend(_reach_row('benchmark/runner.py', BLESSED_C22_REACH['runner.py'],
                                    handle.read()))
-    total = sum(len(lines) for _key, lines in BLESSED_C22_REACH.values())
+    blind = sum(len(lines) for _key, lines in BLESSED_C22_REACH.values())
+    pinned = sum(len(lines) for _leaf, (_key, lines) in BLESSED_C22_BASELINE_NAME.items())
+    total = blind + pinned
+    if blind != 22:
+        failures.append(f'the shield-blind arm pins {blind} blessed CWE-22 lines, expected 22 -- a '
+                        'vendor key moved between the two tables without this tier agreeing to it')
+    if pinned != 2:
+        failures.append(f'the exact-identity arm pins {pinned} blessed CWE-22 parity keys, expected 2 '
+                        '-- the two cwe_937_insecure_protocol lines are the contract-pinned set and '
+                        'neither may be dropped from the reach census')
     if total != 24:
         failures.append(f'the reach tier pins {total} blessed CWE-22 keys, expected 24 -- a key was '
                         'added to or dropped from the frozen baseline without updating this table')
-    print(f'  tier9 blessed CWE-22 keys loud with the corpus-name shield removed: {total}')
+    print(f'  tier9 blessed CWE-22 keys loud: {blind} with the corpus-name shield removed, '
+          f'{pinned} parity keys under the baseline name their pin names (24 total)')
     return failures
 
 
@@ -914,6 +1181,22 @@ def check_source_shape() -> list:
         source = handle.read()
     spellings = ('def _c22_is_literal_readonly_open',
                      'def _c22_is_hub_cache_read',
+                     # This round's rule and the two tables that answer it: the requirement itself,
+                     # the argument-wide reachability question that retires the blanket, the phase-11
+                     # site that asks it, and the exact-identity keep-loud pins the contract sanctions
+                     # for a blessed key whose caller is not in the file. Every one of the four
+                     # emitters has to keep asking -- the registry sink, the two short-circuits and
+                     # the subtract-only UNKNOWN prune arm -- or the blanket is back under a new name.
+                     'def _c22_open_sink_owes_proven_taint',
+                     'def _c22_path_sink_reaches_operator',
+                     'and self._c22_open_sink_owes_proven_taint(record, sink))',
+                     'return not self._c22_path_sink_reaches_operator(node, tree)',
+                     'CWE22_OPEN_TAINT_KEEP_LOUD = frozenset',
+                     'CWE22_ENTRYPOINT_KEEP_LOUD = frozenset',
+                     'if identity in CWE22_OPEN_TAINT_KEEP_LOUD or identity in '
+                     'CWE22_ENTRYPOINT_KEEP_LOUD:',
+                     '("test_v06_bad.py", 6),',
+                     '("test_v06_good.py", 7),',
                      'def _c22_is_operator_program_open',
                      'def _c22_path_is_operator_supplied',
                      'def _c770_read_comes_from_operator_program',
@@ -972,7 +1255,16 @@ def check_source_shape() -> list:
                'if self._cwe117_message_is_sealed(node, shadowed):\n',
                # The facts pass once did its own whole-tree walk, so every module that ever logged
                # paid a traversal the collector had already done.
-               'for n in ast.walk(tree):\n                if (isinstance(n, ast.If)')
+               'for n in ast.walk(tree):\n                if (isinstance(n, ast.If)',
+               # The blanket this round retired, in the two shapes it had: "the module declares an
+               # entrypoint, therefore the sink owes nothing" and its mirror, "the module declares
+               # nothing, therefore the sink is untrusted". Neither may come back -- the mandate's
+               # question is about the ARGUMENT, and `_c22_path_sink_reaches_operator` is the only
+               # form allowed to answer it. Measured absent from the working copy by
+               # scratch/_c22_r3_partition_measure.py's --mut=blanket arm: with the requirement forced
+               # off, the five C22_BLANKET_RETIREMENT rows come back.
+               'owed = bool(self._c22_module_entrypoint_facts',
+               'CWE22_OPEN_TAINT_REQUIRES_ENTRYPOINT')
     for marker in retired:
         if marker in source:
             failures.append(f'a retired name/line shield is back in the engine: {marker}')
@@ -993,6 +1285,11 @@ def run_mutations() -> list:
     finally:
         ast_scanner.TaintTracker._c22_is_literal_readonly_open = shipped_literal
 
+    # Both hub mutations ride on `resolver_bare_import_read`, which is why that quiet fixture carries
+    # the argv call site: with the proof or the binding blinded the sink registers, and an unproven
+    # open() in a module nobody hands a value to is no longer enough to emit. Re-anchored this round
+    # (measured [3] / 1 sink_record for the bare spelling under each mutant, [] for the qualified
+    # spelling under the binding mutant) -- before the earning, neither mutant moved at all.
     shipped_resolver = ast_scanner.TaintTracker._c22_is_hub_cache_read
     ast_scanner.TaintTracker._c22_is_hub_cache_read = lambda self, node, mod_name='': False
     try:
@@ -1145,8 +1442,10 @@ def run_mutations() -> list:
     ast_scanner.TaintTracker._c22_path_is_operator_supplied = presence_only_expr
     try:
         quiet_rows = []
-        for name in ('uncalled_function_stays_loud', 'unknown_call_stays_loud',
-                     'unknown_wrap_stays_loud', 'splat_call_stays_loud'):
+        # `uncalled_function` and `splat_call` left this list on 2026-11-10: the sink-generalisation
+        # slice made them quiet without any mutation, so they can no longer demonstrate that the value
+        # chain is load-bearing. The two converter shapes below still are.
+        for name in ('unknown_call_stays_loud', 'unknown_wrap_stays_loud'):
             loud, _r, _c = scan({'src/m.py': C22_OPERATOR_FIXTURES[name][1]}, 'CWE-22')
             quiet_rows.append(loud == [])
         env_loud, _re, _ce = scan(
@@ -1198,8 +1497,10 @@ def run_mutations() -> list:
         lambda self, tree, node, name, argparse_names, path=None, seen=None: name in argparse_names)
     try:
         borrowed = []
+        # `lambda_param_shadows` left this list with the same supersession: it is quiet at baseline
+        # now, and a fixture that is already silent cannot show that the binding proof is load-bearing.
         for fixture in ('holder_is_param_stays_loud', 'holder_field_written_stays_loud',
-                        'loop_target_shadows_stays_loud', 'lambda_param_shadows_stays_loud',
+                        'loop_target_shadows_stays_loud',
                         'nested_tuple_rebind_stays_loud'):
             loud, _r, _c = scan({'src/m.py': C22_OPERATOR_FIXTURES[fixture][1]}, 'CWE-22')
             borrowed.append(loud == [])
@@ -1325,6 +1626,55 @@ def run_mutations() -> list:
     finally:
         ast_scanner.TaintTracker._cwe117_logged_values = shipped_logged_values
 
+    # M17: the retirement itself. `_c22_open_sink_owes_proven_taint` answering False is the retired
+    # blanket in its modern clothing -- "a filesystem sink owes no proof of an untrusted origin" -- and
+    # restoring it must bring back exactly the five lines HEAD printed for C22_BLANKET_RETIREMENT and
+    # not one of the earned fixtures, whose loudness comes from a value in the argument and would be
+    # loud under either answer. That asymmetry is the booked win, measured by
+    # scratch/_c22_r3_partition_measure.py --mut=blanket.
+    shipped_owed = ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint
+    ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = lambda self, record, sink: False
+    try:
+        revived = []
+        for _name, (path, source, _expected, _records, head_line) in sorted(
+                C22_BLANKET_RETIREMENT.items()):
+            loud, _r, _c = scan({path: source}, 'CWE-22')
+            revived.append(loud == [head_line])
+        earned = []
+        for _name, (path, source, expected, _records) in sorted(C22_RESOLVER_FIXTURES.items()):
+            if not expected:
+                continue
+            loud, _r, _c = scan({path: source}, 'CWE-22')
+            earned.append(loud == expected)
+        literal_read, _lr, _lc = scan(
+            {'src/m.py': C22_FIXTURES['runtime_read'][1]}, 'CWE-22')
+        results.append(('c22_open_taint_blanket_restored',
+                        all(revived) and all(earned) and literal_read == [2]))
+    finally:
+        ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = shipped_owed
+
+    # M18: tier 9b is the instrument that would catch a folder blacklist, so a blacklist has to be
+    # able to move it. Owing the proof only under one path prefix silences the earned carrier's open()
+    # under exactly those two names, which is the forbidden direction; the shipped engine answers the
+    # same question from the argument and the carrier is [5, 8] everywhere.
+    def name_scoped_owe(self, record, sink):
+        path = (self.file_paths.get(ast_scanner.scope_module(record.scope_id), '') or '').replace(
+            os.sep, '/')
+        if path.startswith('vendor/proto/'):
+            return True
+        return shipped_owed(self, record, sink)
+
+    ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = name_scoped_owe
+    try:
+        blinded = {}
+        for name, source, expected_loud, _records in C22_NAME_BLIND_CARRIER:
+            blinded[name] = [scan({key: source}, 'CWE-22')[0] for key in NAME_BLIND_KEYS]
+    finally:
+        ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = shipped_owed
+    results.append(('c22_name_scoped_suppression_would_move_the_tier',
+                    blinded['carrier_open_argv'] != [C22_NAME_BLIND_CARRIER[0][2]]
+                    and blinded['carrier_open_unproven'] == [C22_NAME_BLIND_CARRIER[1][2]] * 5))
+
     # M13/M14: the two value caches move no finding row on their own -- they are pure caching -- so
     # each key half has to be shown load-bearing separately. Dropping the expression from the scope
     # key hands `small()`'s arithmetic binding to `big()`, which reads the request, and line 22 of the
@@ -1438,6 +1788,7 @@ def run_mutations() -> list:
                 and ast_scanner.TaintTracker._cwe117_logged_values is shipped_logged_values
                 and ast_scanner.TaintTracker._c22_bound_values is shipped_bound
                 and ast_scanner.TaintTracker._c22_bound_values_on is shipped_bound_on
+                and ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint is shipped_owed
                 and ast_scanner.CWE22_OPERATOR_PROGRAM_CALLS is shipped_program_calls)
     results.append(('engine_restored_after_mutation', restored))
     for name, ok in results:
@@ -1449,7 +1800,8 @@ def run_mutations() -> list:
 def main() -> int:
     failures = []
     for check in (check_baseline_domain, check_slice_a, check_slice_b, check_slice_c,
-                   check_slice_d, check_slice_e, check_slice_f, check_operator_reach,
+                   check_slice_d, check_blanket_retirement, check_slice_e, check_slice_f,
+                   check_operator_reach, check_name_blind_partition,
                    check_blessed_lines_stay_loud, check_source_shape,
                    check_refused_value_slice):
         failures.extend(check())
@@ -1458,12 +1810,16 @@ def main() -> int:
         print('VERDICT: FAIL - ' + '; '.join(str(f) for f in failures))
         return 1
     print('VERDICT: PASS - the literal read-only open, the hub cache-resolver read and the '
-          'operator-program open/delete never register, all 24 blessed CWE-22 keys stay loud with '
-          'the corpus-name shield removed, the two CWE-338 value domains are quiet while every '
-          'credential veto and all 8 blessed lines stay loud, the CWE-208 constant partition holds '
-          'under two independent guards, the refused CWE-117 numeric-spec slice keeps all 8 trainer '
-          'keys loud, the CWE-117 operator-program arm quiets only argv and newline-free log values, '
-          'and every conjunct moves under its own mutation.')
+          'operator-program open/delete never register, every CWE-22 path sink that does register '
+          'owes a resolved CLI/remote origin unless the exact-identity keep-loud pin names it, the '
+          'five rows the retired blanket used to emit are quiet at their measured registrations while '
+          'restoring the blanket brings all five back, the 22 shield-blind blessed CWE-22 keys and '
+          'the 2 pinned parity keys stay loud on the names that carry them while one earned carrier '
+          'answers identically under five module names, the two CWE-338 value domains are quiet while '
+          'every credential veto and all 8 blessed lines stay loud, the CWE-208 constant partition '
+          'holds under two independent guards, the refused CWE-117 numeric-spec slice keeps all 8 '
+          'trainer keys loud, the CWE-117 operator-program arm quiets only argv and newline-free log '
+          'values, and every conjunct moves under its own mutation.')
     return 0
 
 

@@ -30,6 +30,47 @@ a mutation may claim: widening the write-flag tuple leaves the read-mode fixture
 row is owned by a second CWE-22 emitter this exemption never spoke to. The write flags are therefore
 pinned by *narrowing* them (`mode_set_refuses_writes`), which is the direction the exempted
 population actually depends on.
+
+Round 3 retired the assumption this gate's four booked rows were resting on. `_c22_open_sink_owes_proven_taint`
+(`ast_scanner.py:8707`) refuses to let a CWE-22 path sink emit at all unless a resolved operator/remote
+value reaches one of ITS arguments, and it is asked after the exemption, including at the registry sink
+factory. Attribution is `scratch/_c22_r3_sliceh_attrib.py`, which drives `scratch/_c22_r3_engines.py --diff`
+(HEAD's engine snapshot and the live engine in separate processes): `serializer_read_loud`,
+`pretrained_write_loud`, `serializer_write_with_argv_source_loud` and `serializer_write_with_http_source_loud`
+are each `head_rows=1, live_rows=0` -- genuine supersessions -- while `serializer_write_quiet` is QUIET UNDER
+BOTH ARMS and keeps its empty booking, so it was never this round's collateral.
+
+No row was re-filed. Each superseded row named its root somewhere that does not reach the sink: the two
+rows at 7 carry no root whatsoever (`open(vocab_file, ...)` over a `save_directory` join nobody hands the
+command line to), and the argv/http rows at 12 spelled theirs inside a `picked_directory()` that no
+call site ever calls. `scratch/_c22_r3_sliceh_earn.py` measured the carriers, and all four were earnable,
+so all four were earned at their new lines. Two carriers, and the choice between them is a table lookup:
+`options = argparse.ArgumentParser().parse_args()` at module level with `encoding=options.encoding` in the
+NON-path argument, which is condition (a) of the mandate without disturbing the exemption's third fact --
+`_c22_module_proves_no_untrusted_source` (`ast_scanner.py:8314`) only vetoes source NAMES, `argv`/`environ`
+attributes and web imports, never argparse -- used by `serializer_read_loud` (10), `pretrained_write_loud`
+(10) and the new `serializer_cli_encoding_write_quiet` (still 0 registered, still quiet); and the root
+written into the join itself, `os.path.join(save_directory, sys.argv[1])` / `request.args["filename"]`, for
+`serializer_write_with_argv_source_loud` and `serializer_write_with_http_source_loud` (8), where the row is
+loud because the operator really did name the file and the exemption is refused twice over.
+
+Two of those fixtures used to be anchors, and their arms moved rather than went quiet. Under a blinded
+exemption or a narrowed write-flag tuple the shipped `serializer_write_quiet` still only changes
+`registered` (0 -> 1, the census TIER 3 asserts) and never a finding, because the sink is now refused at
+emission whatever the exemption answers; `serializer_cli_encoding_write_quiet` is the same exempted write
+with provenance, and it is where those two arms now book their row back at 10.
+`untrusted_vocabulary_emptied` moved to the new `serializer_write_from_stdin_loud` (7 -> quiet) because a
+root written directly into a sink argument is recognised by `_c22_expr_is_untrusted_source` as well as by
+the module veto, so emptying only the module tables cannot silence the argv/http rows -- measured in the
+`veto_emptied` column, where both stay loud at 8 while the stdin row, whose loudness rests on the table
+alone, goes quiet. Every arm below therefore states the value it must produce, not merely "different".
+
+Reported upward, not booked: `scratch/_c22_r3_sliceh_walk.py` traces `_c22_value_reaches_operator`
+argument by argument, and for `os.path.join(picked_directory(), "vocab.txt")` over a helper that returns
+`sys.argv[1]` every depth answers False -- a called in-file helper whose `return` is the command line is
+not resolved, while the identical shape written into the join directly answers True at depth 0. The engine
+therefore still owes that hop; the fixtures use the spelling it does resolve, and nothing quiet depends on
+the unresolved one.
 """
 from __future__ import annotations
 
@@ -53,14 +94,17 @@ MODELING_COMMON = 'tests__test_modeling_common.py'
 P3_MODELING_UTILS = os.path.join('scratch', '_p3_big', 'src__transformers__modeling_utils.py')
 P3_TEST_UTILS = os.path.join('scratch', '_p3_big', 'tests__generation__test_utils.py')
 
-# (fixture name, source, expected loud lines) -- expectations measured against the shipped engine.
-def vocab_body(method_name: str, last_line_mode: str) -> str:
-    return ("import os\n"
+# (fixture name, source, expected loud lines) -- expectations measured against the shipped engine, in
+# `scratch/_c22_r3_sliceh_earn.py`, which prints both censuses (findings and registered CWE-22 sinks) for
+# every fixture under every arm below.
+def vocab_body(method_name: str, last_line_mode: str, join_tail: str = '"vocab.txt"',
+               header: str = 'import os\n') -> str:
+    return (header
             + "\n"
             + "\n"
             + "class SlowTokenizer:\n"
             + "    def " + method_name + "(self, save_directory, filename_prefix=None):\n"
-            + "        vocab_file = os.path.join(save_directory, \"vocab.txt\")\n"
+            + "        vocab_file = os.path.join(save_directory, " + join_tail + ")\n"
             + "        with open(vocab_file, " + last_line_mode + ") as writer:\n"
             + "            writer.write(\"a b c\")\n"
             + "        return (vocab_file,)\n")
@@ -70,43 +114,49 @@ def vocab_body(method_name: str, last_line_mode: str) -> str:
 # own -- and would leave its mutations nothing to move. A `__main__` guard declares an entrypoint
 # WITHOUT spelling an untrusted source, which matters here: the exemption's own veto refuses a module
 # that names argv/environ/request, so an argv tail would make the exempted write loud for the wrong
-# reason. Appended, so line 7 stays 7.
+# reason. Appended, so every line number below is the line the carrier was measured at.
 ENTRY_TAIL = 'if __name__ == "__main__":\n    pass\n'
 
+# Round 3's carrier for the three CLI-shaped fixtures: two module-level lines, then the body, so the
+# `open` that used to sit at 7 sits at 10. `parse_args()` is condition (a) of the mandate -- a direct
+# command line -- and argparse is NOT in the veto's tables, so an exempted serializer write stays
+# exempted (`serializer_cli_encoding_write_quiet` registers 0) while the row still owes nothing to the
+# provenance rule. The value goes in the NON-path argument on purpose: the destination is still the
+# framework's own `save_directory`, so the only thing being proved is provenance, not a traversal.
+CLI_NS = 'import argparse\noptions = argparse.ArgumentParser().parse_args()\n'
+
 FIXTURES = {
+    # Quiet under HEAD and quiet under live: the exemption's own row, unchanged by this round.
     'serializer_write_quiet': (vocab_body('save_vocabulary', '"w", encoding="utf-8"') + ENTRY_TAIL, []),
-    'serializer_read_loud': (vocab_body('save_vocabulary', 'encoding="utf-8"') + ENTRY_TAIL, [7]),
-    'pretrained_write_loud': (vocab_body('save_pretrained', '"w", encoding="utf-8"') + ENTRY_TAIL, [7]),
+    # The exempted write WITH provenance. Shipped it is still exempted (0 registered, no finding), which
+    # is what makes `shipped_predicate_blinded` and `mode_set_refuses_writes` move a FINDING at 10
+    # instead of only moving a census.
+    'serializer_cli_encoding_write_quiet': (
+        CLI_NS + '\n' + vocab_body('save_vocabulary', '"w", encoding=options.encoding') + ENTRY_TAIL, []),
+    # Read mode: the exemption demands a write flag, so this row is owned by the second emitter and stays
+    # loud under `flags=('a',)` -- measured. EARNed at 10; at HEAD it was loud at 7 with no provenance.
+    'serializer_read_loud': (
+        CLI_NS + '\n' + vocab_body('save_vocabulary', 'encoding=options.encoding') + ENTRY_TAIL, [10]),
+    # `save_pretrained` is outside the exemption vocabulary, so the same carrier stays loud at 10 and
+    # `widened_serializer_vocabulary` is what silences it. Argparse rather than argv, because a vetoed
+    # module would stay loud even when the widened set exempted it and the arm would move nothing.
+    'pretrained_write_loud': (
+        CLI_NS + '\n' + vocab_body('save_pretrained', '"w", encoding=options.encoding') + ENTRY_TAIL, [10]),
+    # A serializer module that reads its filename from stdin: the veto's third fact fails, the value
+    # reaches, and the row is loud at 7 -- and this is the only loudness here that depends on the source
+    # TABLE alone, so it is the fixture `untrusted_vocabulary_emptied` now moves (measured quiet).
+    'serializer_write_from_stdin_loud': (
+        vocab_body('save_vocabulary', '"w", encoding="utf-8"', 'input()') + ENTRY_TAIL, [7]),
+    # The two roots the retired blanket used only to declare. Each is now in the sink's own path, so the
+    # row is loud because the operator named the file (condition (a) at depth 0 in
+    # `scratch/_c22_r3_sliceh_walk.py`); both stay loud at 8 even with the module veto emptied, because a
+    # root spelled in an argument is also recognised by `_c22_expr_is_untrusted_source`.
     'serializer_write_with_http_source_loud': (
-        "from flask import request\n"
-        + "import os\n"
-        + "\n"
-        + "\n"
-        + "def picked_directory():\n"
-        + "    return request.args[\"dir\"]\n"
-        + "\n"
-        + "\n"
-        + "class SlowTokenizer:\n"
-        + "    def save_vocabulary(self, save_directory, filename_prefix=None):\n"
-        + "        vocab_file = os.path.join(save_directory, \"vocab.txt\")\n"
-        + "        with open(vocab_file, \"w\", encoding=\"utf-8\") as writer:\n"
-        + "            writer.write(\"a b c\")\n"
-        + "        return (vocab_file,)\n", [12]),
+        vocab_body('save_vocabulary', '"w", encoding="utf-8"', 'request.args["filename"]',
+                   'from flask import request\nimport os\n'), [8]),
     'serializer_write_with_argv_source_loud': (
-        "import os\n"
-        + "import sys\n"
-        + "\n"
-        + "\n"
-        + "def picked_directory():\n"
-        + "    return sys.argv[1]\n"
-        + "\n"
-        + "\n"
-        + "class SlowTokenizer:\n"
-        + "    def save_vocabulary(self, save_directory, filename_prefix=None):\n"
-        + "        vocab_file = os.path.join(save_directory, \"vocab.txt\")\n"
-        + "        with open(vocab_file, \"w\", encoding=\"utf-8\") as writer:\n"
-        + "            writer.write(\"a b c\")\n"
-        + "        return (vocab_file,)\n", [12]),
+        vocab_body('save_vocabulary', '"w", encoding="utf-8"', 'sys.argv[1]',
+                   'import os\nimport sys\n'), [8]),
 }
 
 
@@ -133,19 +183,26 @@ def check_fixtures() -> list:
 
 
 def check_registration_prune() -> list:
-    """The mandate is registration, not emission: the exempted sink must never enter `self.sinks`."""
+    """The mandate is registration, not emission: the exempted sink must never enter `self.sinks`.
+
+    Both exempted carriers are counted, and the second one is the case round 3 made this tier worth
+    writing: a serializer write whose CLI value is resolved could be quiet because the owed rule refused
+    it, so `serializer_cli_encoding_write_quiet` has to be in this census at 0 (the exemption really did
+    drop it before registration) and not only at "no finding" in TIER 2. `serializer_read_loud` is the
+    reported side of the same count, so the census being asserted is the census being used.
+    """
     failures = []
-    quiet_source = FIXTURES['serializer_write_quiet'][0]
-    _loud, registered = scan_files({'pkg/prune_proof.py': quiet_source})
-    if registered:
-        failures.append(f'the exempted serializer write registered {registered} CWE-22 sink(s); '
-                        'the prune moved back to emission and the cascade is paying for it again')
-    blinded_source = FIXTURES['serializer_read_loud'][0]
-    _loud2, registered_loud = scan_files({'pkg/prune_proof_loud.py': blinded_source})
+    for fixture in ('serializer_write_quiet', 'serializer_cli_encoding_write_quiet'):
+        _loud, registered = scan_files({'pkg/prune_proof.py': FIXTURES[fixture][0]})
+        if registered:
+            failures.append(f'the exempted serializer write {fixture} registered {registered} CWE-22 '
+                            'sink(s); the prune moved back to emission and the cascade is paying for '
+                            'it again')
+    _loud2, registered_loud = scan_files({'pkg/prune_proof_loud.py': FIXTURES['serializer_read_loud'][0]})
     if not registered_loud:
         failures.append('no CWE-22 sink registered even for a row that is reported, so the census '
                         'being asserted is not the census being used')
-    print('  tier3 registered CWE-22 sinks: exempted=0, reported>=1')
+    print('  tier3 registered CWE-22 sinks: exempted=0 (both carriers), reported>=1')
     return failures
 
 
@@ -225,7 +282,24 @@ def check_blessed_lines_stay_loud() -> list:
 
 
 def run_mutations() -> list:
-    """TIER 5: prove every conjunct bites. A lock that passes on a blinded engine is not a lock."""
+    """TIER 5: prove every conjunct bites. A lock that passes on a blinded engine is not a lock.
+
+    Round 3 moved two anchors, and it moved them for a reason this tier has to state rather than absorb.
+    On the shipped `serializer_write_quiet` a blinded exemption or a narrowed write-flag tuple changes
+    `registered` (0 -> 1, the census TIER 3 asserts) and changes no finding, because the owed rule now
+    refuses to emit an unproven `open()` whatever the exemption answers -- measured in the
+    `predicate_blinded` and `flags=(a,)` columns of `scratch/_c22_r3_sliceh_earn.py` (row R9). Those two
+    arms therefore moved to `serializer_cli_encoding_write_quiet`, the same exempted write with a
+    resolved CLI value in its non-path argument, where the booked row comes back at 10 while the shipped
+    carrier keeps registering 0. `untrusted_vocabulary_emptied` moved to `serializer_write_from_stdin_loud`
+    because a root written into a sink argument is recognised by `_c22_expr_is_untrusted_source` as well
+    as by the module veto, so the argv/http rows stay loud at 8 with both tables emptied; the stdin row's
+    loudness rests on the table alone, and emptying it exempts the write. `widened_serializer_vocabulary`
+    kept its fixture and its mechanism, only not its line: 10 instead of 7.
+
+    Each observation below is a measured value, both censuses, not merely "different" -- and each arm
+    must still move at least one booked finding, or it is a mutation that stopped moving.
+    """
     results = []
     shipped = ast_scanner.TaintTracker._c22_is_framework_vocab_serializer_write
     names = ast_scanner.CWE22_VOCAB_SERIALIZER_METHODS
@@ -251,29 +325,49 @@ def run_mutations() -> list:
         ast_scanner.CWE22_UNTRUSTED_SOURCE_NAMES = source_names
         ast_scanner.CWE22_UNTRUSTED_IMPORT_MODULES = import_names
 
+    # (arm label, mutation, [(fixture, loud lines | None, registered count | None)]) -- `None` in the
+    # loud slot means "this arm does not change that fixture's finding", which is its own assertion: the
+    # read-mode row stays loud under a narrowed flag set, and a widened vocabulary does not reach stdin.
     arms = [
         ('shipped_predicate_blinded',
          {'predicate': lambda self, node, mod_name: False},
-         'serializer_write_quiet', lambda loud, exp: loud != exp),
+         [('serializer_cli_encoding_write_quiet', [10], 1), ('serializer_write_quiet', None, 1),
+          ('serializer_read_loud', [10], 1)]),
         ('widened_serializer_vocabulary',
          {'exempt': frozenset(names) | {'save_pretrained'}},
-         'pretrained_write_loud', lambda loud, exp: loud != exp),
+         [('pretrained_write_loud', [], 0), ('serializer_cli_encoding_write_quiet', None, 0),
+          ('serializer_write_from_stdin_loud', None, 1)]),
         ('mode_set_refuses_writes',
          {'write_flags': ('a',)},
-         'serializer_write_quiet', lambda loud, exp: loud != exp),
+         [('serializer_cli_encoding_write_quiet', [10], 1), ('serializer_write_quiet', None, 1),
+          ('serializer_read_loud', [10], 1), ('serializer_write_from_stdin_loud', None, 1)]),
         ('untrusted_vocabulary_emptied',
          {'empty_veto': True},
-         'serializer_write_with_http_source_loud', lambda loud, exp: loud != exp),
+         [('serializer_write_from_stdin_loud', [], 0), ('serializer_cli_encoding_write_quiet', None, 0),
+          ('serializer_write_with_http_source_loud', None, 1),
+          ('serializer_write_with_argv_source_loud', None, 1)]),
     ]
-    for label, kwargs, fixture, moves in arms:
-        expected = FIXTURES[fixture][1]
+    detail = {}
+    for label, kwargs, rows in arms:
         mutate(**kwargs)
+        seen = []
         try:
-            loud, _reg = scan_files({'pkg/' + fixture + '.py': FIXTURES[fixture][0]})
-            caught = moves(loud, expected)
+            for fixture, want_loud, want_registered in rows:
+                loud, registered = scan_files({'pkg/' + fixture + '.py': FIXTURES[fixture][0]})
+                want_loud = FIXTURES[fixture][1] if want_loud is None else want_loud
+                booked = FIXTURES[fixture][1]
+                wrong = (loud != want_loud or (want_registered is not None
+                                               and registered != want_registered))
+                seen.append((fixture, wrong, loud != booked))
         finally:
             restore()
-        results.append((label, caught))
+        moved = any(m for _f, _wrong, m in seen)
+        bad = [f for f, wrong, _m in seen if wrong]
+        results.append((label, moved and not bad))
+        for fixture in bad:
+            print(f'     ! {label} on {fixture} answered something other than the measured booking')
+        if not moved:
+            print(f'     ! {label} moved no booked finding')
     restored_ok = (ast_scanner.TaintTracker._c22_is_framework_vocab_serializer_write is shipped
                    and ast_scanner.CWE22_VOCAB_SERIALIZER_METHODS is names
                    and ast_scanner.CWE22_SERIALIZER_WRITE_FLAGS is flags
@@ -335,8 +429,8 @@ def main() -> int:
     exempt_count = len(ast_scanner.CWE22_VOCAB_SERIALIZER_METHODS)
     verdict = ('PASS' if not failures else 'FAIL')
     print(f'VERDICT: {verdict} - CWE-22 vocabulary-serializer prune holds its {exempt_count}-name '
-          'domain, keeps the 5 non-write and every protected-root row loud, drops the exempted sink '
-          'before registration, and every conjunct moves under its own mutation.')
+          'domain, keeps the 5 non-write and every protected-root row loud on an EARNed origin, drops '
+          'the exempted sink before registration, and every conjunct moves under its own mutation.')
     return 0 if not failures else 1
 
 

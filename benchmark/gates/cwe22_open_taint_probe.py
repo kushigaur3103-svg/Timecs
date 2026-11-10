@@ -11,9 +11,9 @@ appended a 0.50 edge for whatever survived. At HEAD (the d0ef933 engine, snapsho
 a source was proven -- they are there because nothing ruled the argument out. That is the fallback the
 mandate named.
 
-The rule therefore asks the same question the synthetic-source guard asks -- can this module be handed
-a remote value? -- and where the answer is no, the `open()` must produce a *resolved* origin instead
-of borrowing one. Measured, not claimed: the paired full-arena scan
+The first revision therefore asked the same question the synthetic-source guard asks -- can this module
+be handed a remote value? -- and where the answer was no, the `open()` had to produce a *resolved*
+origin instead of borrowing one. Measured, not claimed: the paired full-arena scan
 (`scratch/_c22_pair_base_all.json` / `scratch/_c22_pair_live_all.json`, one arm per process, the
 candidate arm loaded from `scratch/_c22_open_committed_ast_scanner.py` so nothing the other session
 has in this worktree can help or hurt the number) moves **585 -> 481 CWE-22 lines and the whole arena
@@ -27,20 +27,94 @@ retired sinks: 59 of them were carrying a synthetic `p5` `UNTRUSTED_PATH_TRAVERS
 carried by the UNKNOWN arm alone, and once the stamp is refused 46 resolve to an internal value while
 46 come back UNKNOWN with nothing behind them.
 
+The second revision replaced both halves of that basis, and it is the rule this gate now tests
+-------------------------------------------------------------------------------------------
+The module question was the wrong question in the one direction a precision rule is not allowed to be
+wrong in. "This module declares `__main__`" is a fact about the *file*; the mandate is a fact about the
+*argument* -- whether a value the operator or the network controls demonstrably reaches this sink. A
+module that declares an entrypoint and calls its helper with a compile-time literal was being handed an
+assumed-remote value anyway, and a pure library helper that reads `os.environ["CFG"]` two lines below
+its definition was being refused one. So the blanket is gone from both sides: `_c22_open_sink_owes_
+proven_taint` no longer consults `_c22_module_entrypoint_facts` as a gate, it ends with
+`return not self._c22_path_sink_reaches_operator(node, tree)`, and the module facts survive only as
+inputs to the walk -- they are how an argparse namespace gets named, never a reason to skip looking.
+The scope generalised at the same time: the `FILE_OPEN_FUNCS` test inside the rule was deleted, because
+`shutil.rmtree(self.hparams.output_dir)`, `save_json(self.metrics, path)` and a repo helper called with
+a bare variable are the same assumption in a different verb. The retired set is now attributed by
+clause in the tiers below and by family in `scratch/_c22_r3_floor_census.py`.
+
+The generic emitter is the second half. Round 1 left the 91 `CWE-22: Unvalidated user input or dynamic
+variable used in file path operation` rows exactly where they were and told the sibling gate about
+them; the mandate then named that emitter as the thing to retire, so the phase-4 short-circuit -- where
+that key is stamped onto an adopted or freshly created sink -- is now gated on the same one flag. That
+is why this file, and not `cwe22_sink_argument_probe.py`, is where the vocabulary's reach is tested:
+all three synthetic arms and the UNKNOWN arm read `c22_open_owes_taint`, and an emitter gated in one
+place only and tested in another is a rule nobody can falsify.
+
 What is left, attributed row by row
 -----------------------------------
-`scratch/_c22_open_survivor_split.py` asks the shipped predicates, while the engine decides, why each
-of the 482 surviving CWE-22 lines in the CWE-22 universe is still loud: 225 are not the `open()`
-fallback at all (91 generic synthetic rows, 25 `os.remove`, 17 `shutil.rmtree`, 14 `shutil.move`, 13
-`save_json`, 8 `shutil.copy`, 4 `zipfile.ZipFile.extractall`, ...), 249 are `open()` in a module that
-DOES declare an entrypoint or harness fact, 5 are held by the cut-short flavour and 3 by a proven
-route. The single-digit floor the mandate named would have to reach into the first two of those
-groups, and both are the mandate's own preservation arms: sink families other than `open()`, and
-modules whose caller is right there in the file. What this rule could retire without violating either,
-it retired -- 104 rows, 0 of them blessed.
+The two dumps the perf work produced (`scratch/_c22_r3_rows_head_final.json` and
+`scratch/_c22_r3_rows_final.json`, both regenerated per arm in a fresh process by
+`scratch/_c22_universe_arm.py`) are what these numbers come from. In the raw universe the mandate counted,
+this round moves **481 -> 144 CWE-22 rows** and the whole arena population **1455 -> 1118 findings**:
+338 tuples retired, **1 appeared**, and 0 new message wordings on any line HEAD already reported (the
+diff over the two dumps is CWE-22 only -- no other CWE family gained or lost a row). By family, live
+against head: `CWE-22: open` 71 against 257, the generic dynamic-variable key 19 against 91, other
+filesystem sinks 14 against 33, `os.remove`/`unlink` 9 against 26, `shutil.move`/`copy` 5 against 25,
+serializer/helper writers 7 against 19, `shutil.rmtree` 7 against 18, and the archive family
+**12 against 12, nothing quieted**.
 
-Cost, measured against a control rather than against a hope
-----------------------------------------------------------
+The one appearing row is `src/transformers/modeling_utils.py:538`, and a retirement rule that adds a
+finding has to explain itself: line 538 is `with open(checkpoint_file) as f` inside `load_state_dict`,
+whose `checkpoint_file` is a caller-supplied path, and HEAD never reported it. Refusing the synthetic
+short-circuit sent that record to the provenance walk, which resolved `param:checkpoint_file` and
+produced a CONFIRMED edge; HEAD's cheap arm had pruned the sink without ever walking it. The same file
+shows the other direction -- HEAD's `CWE-22: open` row at line 350 sits inside `shard_checkpoint`, a
+function with no `open(` call anywhere in its body (350 is a docstring line), and this round retires it.
+In the exclusion-configured view a normal scan emits, the pre-bound build measured **258 -> 52** CWE-22
+and 658 -> 452 findings total; the bound returns about ten rows there as well and that view has not been
+re-measured for this build, so treat 144/1118 as the number this commit ships and 52 as the last measured
+configured figure.
+
+Two of those populations are the mandate's own preservation arms and both are arithmetic, not editorial:
+the sacred floor is 8 rows at the three sink spellings the mandate names (`zipfile.ZipFile.extractall`
+4/4, `tarfile.open` 2/2, `tar_file.extractall` 2/2 -- the prose said six, the arena holds eight) plus 3
+`.extract` marker rows, and the 24 blessed CWE-22 keys (16 Big-8 + 8 parity) live outside this arena and
+stay 100% emitted, 8 of the Big-8 ones and 1 parity key by the exact-identity pin because their caller is
+in another module. A single-digit floor would have to delete those, and the mandate forbids both the
+deletion and the other instrument that could reach them -- a path blacklist -- so **the floor is ~35
+rows of preserved findings before a single survivor is counted**.
+
+`scratch/_c22_r3_survivor_attribution.py` then answers the only question left: not how many survive, but
+**why**, line by line. It walks the arena with the candidate engine, spies the one owed predicate, and
+re-derives which arm answered from the shipped helpers -- so the classification is the engine's own
+logic, cross-checked by a mismatch counter that must stay at zero. It reads the engine's
+`_c22_reach_declines` counter as a delta around each consult, because a walk that ran out of
+`CWE22_REACH_VISIT_LIMIT` answers the same True a found root answers and the two must not be merged: a
+row held loud because the proof was declined is not a row an operator value reached. All 144 lines land
+in five populations:
+
+  * **102 refused:operator_reaches_argument** -- a CLI, `os.environ` or argparse-namespace value
+    demonstrably reaches one of the sink's arguments, which is the mandate's condition (a) met on its
+    face, module by module, with no entrypoint blanket anywhere in the decision;
+  * **16 owed:proof_produced_for_the_sinking_argument** -- the rule demanded a resolved origin and got
+    one, and the rows it got one for are CLI command modules (`commands/add_new_model_like.py` carries
+    most of the printed sample) rather than library helpers that merely mention one;
+  * **14 declined:graph_wider_than_bound** -- loud because the width bound declined to ask, which is
+    what the 10 rows this build gives back against the unbounded rule are;
+  * **11 refused by the sacred floor** -- 6 `refused:archive_module` and 5 `refused:extract_marker`,
+    the whole archive consult population, none quieted (the family split above counts 12 archive-worded
+    rows because one of them is held loud by an operator value rather than by the floor arm);
+  * **1 never_asked** -- a row another emitter proves on its own flow.
+
+The same run counts the consults the rule *did* retire: 1041 sinks answered `owed:no_resolved_origin`
+across the arena, against 159 operator-reachable, 19 too-wide-to-ask, 11 archive, 5 extraction and 1
+module-tree-less refusal. That is the shape of the win -- the requirement now applies to everything the
+fallback used to cover and is withdrawn only where the mandate, a proof or the width bound says it must
+be.
+
+Cost, measured against a control rather than against a hope (round 2)
+--------------------------------------------------------------------
 `scratch/_c22_open_cost_probe.py` runs three arms in one process, alternating which goes first: HEAD,
 this engine, and a control that loads THIS engine with the answer forced to False, which is HEAD's
 behaviour with this slice's code in it. The control is what makes the number honest: it does strictly
@@ -51,6 +125,61 @@ The gap attributable to this slice is therefore ~+0.5s (+1.4%) on the CWE-22 uni
 the full arena (201.8s -> 203.6s), and `memo_builds=244` in both arms shows the assignment map is not
 involved. Absolute RSS is not a usable ceiling on this box: HEAD itself measured 88.9 to 97.7 MB
 across runs of the same engine.
+
+Round 3 spends more than that, and where it spends it is not where the profiler said
+-----------------------------------------------------------------------------------
+The requirement's price is not the reachability walk. Timed without a profiler over the arena's first
+40 groups (`scratch/_c22_r3_cost_timers.py`), `_c22_path_sink_reaches_operator` is 1.6s of a 63.8s scan
+-- 2.5%. The seconds go to `resolve_path_provenance`, which the walk's answer unlocks on every record
+that used to take a synthetic short-circuit. The concentration is extreme: one transformers CLI module
+spends 30.1s of its 31.7s scan in there, because 16 top-level resolutions expand to 67,921 nested
+provenance frames and 716,891 `resolve_expression` calls (`scratch/_c22_r3_onefile_prof.py`).
+`scratch/_c22_r3_cost_split.py` blamed 81s of a 90s delta on `_c22_enclosing_def_name` and its 41,231
+module scans; the guard that removes those lookups bought 11s when measured without a profiler, so the
+attribution is withdrawn and no latency claim in this round rests on cProfile.
+
+Two ways to pay less were built, measured, and rejected.
+
+  * A per-resolution WORK CAP (2,000 frames; an exhausted walk returns the same `UNKNOWN`/`depth_guard`
+    value the existing depth guard returns). It worked on time -- 64.8s to 44.1s per 40 groups -- and it
+    took four findings with it: `src/transformers/commands/add_new_model_like.py` lines 521, 1194, 1269
+    and 1461, each of which the uncapped walk reports as TAINTED at confidence 1.00
+    (`scratch/_c22_r3_cap_rows.py`, `scratch/_c22_r3_cap_probe.py`). The mechanism is worth recording
+    because it is HEAD's, not this round's: a cut walk's edge carries `source_id="UNKNOWN"`, and no
+    finding materialises from that edge. So "a cut walk is kept loud by
+    `_c22_unknown_origin_keeps_the_row`" is true of the flow graph and false of the report, which also
+    means the depth guard's own comment -- "can never be reported as proven-clean" -- does not hold at
+    the layer that prints. Reverted; the cap is not in the engine.
+  * Narrowing the population another way. Path blacklists are forbidden by contract 3, and the arena
+    offers no textual door worth opening: 2,847 files, 815 with a filesystem sink, 3 mentioning `click`
+    and none spelling a decorator (`scratch/_c22_r3_root_token_skip.py`).
+
+What ships instead bounds the PROOF, not the walk
+-------------------------------------------------
+`CWE22_REACH_VISIT_LIMIT` gives each sink's reachability consult a node budget -- `ast.walk` steps plus
+the bindings it dereferences. A graph wider than the budget makes `_c22_path_sink_reaches_operator`
+answer True, which is the same answer a found operator root gives: the record keeps HEAD's synthetic
+source and never enters `resolve_path_provenance`. The direction is the whole safety argument, and it is
+the difference between this and the cap above -- a decline can only ever keep a row LOUD, so no
+suppression is bought with an unfinished proof. `_c22_reach_declines` counts the declines so the
+scorecard can tell them apart from real roots instead of silently merging them.
+
+At 4,000 nodes the arena gives back ten of the 134 CWE-22 lines (144) and 10 of the 1,108 rows (1,118),
+and both numbers were bit-stable across three runs; `scratch/_c22_r3_reach_limit.py` is the knee-finder
+that chose it. Tighter budgets were measured and are worse, not better -- 1,500 and 800 nodes give back
+6 and 9 more lines in the first 40 groups and buy no time (43.7s / 43.9s / 44.6s), because the seconds
+live in the few widest graphs that 4,000 already declines.
+
+    python scratch/_c22_r3_reach_limit.py 40 4000 1500 800
+
+The latency has to be read as a distribution, not a number, on this box. `scratch/_c22_universe_arm.py`
+run alternately on the two engines over the whole 2,847-file arena gave HEAD 240.5s / 243.4s / 369.8s
+and this engine 251.4s / 266.3s / 279.2s -- a median ratio of 1.09x against 2.29x before the bound, with
+one pair reading 0.68x and another 1.15x while the engine being timed did not change between its own
+runs by anything but the OS. Peak RSS followed the same spread (HEAD 85.4-100.8 MB, this engine
+83.8-89.4 MB), so HEAD itself crossed the 90 MB line on a run where this engine did not. What is not
+noise is the shape: the unbounded rule measured 551.7s against that same HEAD 240.5s, so the bound is
+worth ~2x on the arena and it is the reason the ratio is at parity rather than past it.
 
 The committed engine was also verified away from this worktree, because the worktree is shared with
 another session's CWE-117 edits and a gate result there cannot be attributed to this commit alone. A
@@ -77,22 +206,28 @@ What refuses the requirement -- and why each refusal is load-bearing
 Every refusal is in the keep-loud direction, and every one is falsified below by a mutation that
 must move the rows it guards:
 
-  * **not an open-family call** -- `os.remove(slot)` and `shutil.rmtree(slot)` in the same pure
-    library module keep the answer they always had. The first revision of this rule reached them and
-    retired deletes, which is not what the mandate asked for and not what a sink-family prune should
-    do;
-  * **an archive constructor or extraction** -- `tarfile.open` shares the `open` leaf with the
-    builtin, and Zip-Slip is a finding about the archive, not about who chose the path. Pinned at the
-    predicate for both the dotted and the `import tarfile as tf` spelling (a leaf-name test would
-    miss the alias), because the exemption has **measured zero finding-level reach today**: no
-    `tarfile.open` call exists in the arena, the Zip-Slip rows that do exist are carried by
-    `extractall`, and `extractall` is refused by the open-family test above rather than by this
-    table. A two-module name table that currently decides no finding is a liability only if nobody
-    says so, so it is said here and falsified by `archive_table_emptied`;
-  * **a module that declares an entrypoint or a test harness** -- 8 of the 16 Big-8 CWE-22 keys and
-    1 of the 8 parity keys are harness `open()` rows, and the frozen baselines own them;
-  * **the exact-identity pin** -- for the blessed row whose caller lives in another module, which no
-    intra-file proof can ever see;
+  * **a node that is not a call** -- `with` targets, cascade messages and attribute-only records keep
+    the answer they always had. The second revision's scope is sink *calls*; widening it to every
+    record that carries a CWE-22 label reached shapes no sink vocabulary owns, and the arena rows that
+    proved it are the ones `cwe22_sink_argument_probe.py` still pins;
+  * **an archive constructor or extraction** -- `tarfile.open` shares the `open` leaf with the builtin,
+    and Zip-Slip is a finding about the archive, not about who chose the path. Pinned at the predicate
+    for both the dotted and the `import tarfile as tf` spelling (a leaf-name test would miss the alias),
+    and for the `extractall`/`extract` marker too: once the rule stopped testing for an open-family
+    leaf, `extractall` was inside its scope, so this is the arm that keeps the floor loud rather than a
+    side effect of the rule looking elsewhere. `archive_table_emptied` and
+    `requirement_always_applied` are what falsify the two halves;
+  * **an argument that demonstrably carries an operator value** -- `open(args.csv_file)` in a script,
+    `shutil.rmtree(options.out_dir)` after a real `parse_args()`, `open(os.environ["CFG"])`. This
+    replaces the entrypoint-declaration blanket, and it is asked in every module rather than only in
+    the ones that declare facts: the mandate's condition (a) is a property of the value, and the
+    measured rows each recognition arm decides are the `LOUD_BY_TRACE_*` tiers below;
+  * **the exact-identity pins** -- 8 of the 16 Big-8 CWE-22 keys and 1 of the 8 parity keys are harness
+    or library rows whose caller lives in another module, which no intra-file proof can ever see, and
+    the frozen baselines own them. The harness rows are kept by pinning, never by a blanket: a
+    declaration that happens to be load-bearing is a rule, and a basename that happens to be load-
+    bearing is a debt, so `open_pin_table_emptied` names every row that dies with the table and
+    `scratch/_c22_pin_bearing.py` proves the table carries no decorative entry;
   * **three UNKNOWN flavours that are not "nothing reached here"** -- a walk cut short by the depth or
     cycle guard, a walk that landed on a directory enumeration, and a walk that landed on an
     untrusted-source spelling. The last of these was found by this gate, not by the arena:
@@ -100,29 +235,61 @@ must move the rows it guards:
     resolver gives up on a subscript, so a rule that demanded the TAINTED label would have retired a
     real operator-controlled path. Condition (a) of the mandate is met on its face there.
 
-Collateral: eight gates that pinned the blanket
+Collateral: the gates whose carriers were the blanket
 ---------------------------------------------
-Because this rule answers before the synthetic arms, eight tracked gates lost carriers whose only
-loudness basis was the fallback itself: `cwe22_entrypoint_injection_probe`'s two `SUPERSEDED_BY_OPEN_
-TAINT` rows, `active_partition_probe`'s five resolver carriers, `cwe22_value_origin_probe`'s five
-resolver/plain-local shapes, `cwe22_param_caller_probe`'s three self-field shapes,
-`cwe22_vocab_serializer_probe`'s three serializer shapes, `mechanism_pitch_probe`'s `param_path_open`,
-`cwe22_dirent_closure_probe`'s `glob_multi_component`, and `cwe117_cwe22_unknown_source_probe`'s
-`parameter_derived_path_write`, which was locking the placeholder-edge contract on a module that
-declares no entrypoint and so was loud only because of the blanket. No expectation was loosened: every
-carrier module now declares an entrypoint fact, which is the thing those gates were already assuming
-when they pinned the row, and the dirent seal's own abstention is respected by the enumeration
-exemption rather than re-decided. `cwe22_dirent_closure_probe` also had a real bug fixed here -- its
-`scan()` appended `.py` to a label that already ended in `.py`, so it was scanning `foo.py.py` and
-reporting whatever fell out.
+Because this rule answers before the synthetic arms, tracked gates lost carriers whose only loudness
+basis was the fallback itself. Each was repaired one of two ways, and neither is a loosened expectation.
+
+**Earned** -- the fixture is re-spelled so a resolved origin genuinely reaches a sink argument, and the
+proposition it asserts keeps its original words: `mechanism_pitch_probe`'s `param_path_open` now calls
+its helper with `read_it(sys.argv[1])`, `workflow_controls_probe`'s `CONFIG_TRAV` with
+`load(sys.argv[1])`, `cwe117_cwe22_unknown_source_probe`'s writer with `save(sys.argv[1], ...)`,
+`cwe22_sink_argument_probe`'s two buffer rows through a caller that hands in a request value,
+`active_partition_probe`'s resolver and runtime-mode carriers with argv-fed call sites, and
+`cwe22_value_origin_probe`'s carriers with `sys.argv[2]` in the argument *beside* the path -- the reach
+test is argument-wide and therefore fail-closed, which is precisely why naming a CLI value somewhere in
+the file buys nothing.
+
+**Re-filed** -- the fixture's proposition IS the retired blanket, so there is nothing to earn without
+deleting what the row claims: those rows move to their measured quiet value inside a named table
+(`BLANKET_RETIRED_ROWS`, `C22_BLANKET_RETIREMENT`, `SILENT_REFUSED_ROWS`, `REFILED_QUIET`) and the win
+is locked by a mutation that hands the retired blanket back
+(`_c22_open_sink_owes_proven_taint` -> False), which must move exactly those rows and no others. Both
+directions are asserted, not argued: a booked row that does not come back under the restored blanket was
+credited to the wrong clause, and an unbooked quiet row that does come back means a supersession landed
+in that table unfiled. This is how `cwe22_repo_anchor_path_probe` re-files `kwargs_slot` (1 of its 42
+shapes, with its anchor veto re-pinned at the predicate so the guard still loses its tripwire),
+`cwe22_pil_tempfile_probe` three seal rows plus the bare-import pair, `cwe22_param_caller_probe` twelve
+of fifteen refusals, `cwe22_blindspot_origin_probe` the splat / `**kwargs` / no-caller / skipped-arg
+shapes, and `active_partition_probe` five blanket spellings.
+
+Which of the two applies was decided by measurement, not by preference:
+`scratch/_c22_walk_resolution_grid.py` enumerates the origin spellings the shipped walk does resolve
+(`sys.argv`/`os.environ` inline and through one assignment, `os.path.join("/srv", sys.argv[1])`, module
+constants and rebinds, a helper parameter called with argv, `shutil.rmtree(options.out_dir)` after a
+real `argparse` namespace) and the shapes it does not (an empty `**kwargs` slot no caller fills, a splat,
+a skipped positional, a `self.` field written in another frame, an f-string into a local). A row whose
+only missing proof is a spelling the walk cannot see is a re-filing; a row that was only ever loud
+because nobody asked can be earned. Nothing was deleted, no blessed-key check moved, and no path or
+folder was blacklisted -- `scratch/_c22_r3_seal_remeasure.py` and `scratch/_c22_r3_engines.py --diff`
+produce the per-row evidence each of those tables now asserts.
+
+Two real bugs surfaced on the way and are fixed in the gates, not excused: `cwe22_sink_argument_probe`
+appended `.py` to a label that already ended in `.py`, so it scanned `test_v06_bad.py.py` -- harmless
+while its shapes were loud on their own and a lost blessed key the moment a rule keeps a row by exact
+identity, because `CWE22_OPEN_TAINT_KEEP_LOUD` is keyed on `basename(file)`.
 
 Usage
 -----
     python benchmark/gates/cwe22_open_taint_probe.py
     python benchmark/gates/cwe22_open_taint_probe.py --mutate=<name>
 
-Thirteen weakenings are pinned below. Per Harness Law 8 each must move the row its clause decides,
-and the tripwire is line-scoped and message-scoped, because a fixture line can carry a CWE-22 row
+Seventeen weakenings are pinned below. Per Harness Law 8 each must move the row its clause decides,
+and the rows each one claims were read off `scratch/_c22_blind_matrix.py` and
+`scratch/_c22_flavour_only.py` rather than off a theory of which clause ought to decide: two of the
+engine's remote-source arms are the same predicate, so a blind that switches it off moves rows the
+walk and the exemption each guard on their own, and a blind that switches off only one of them moves
+neither. The tripwire is line-scoped and message-scoped, because a fixture line can carry a CWE-22 row
 that belongs to another emitter.
 """
 from __future__ import annotations
@@ -146,8 +313,42 @@ GENERIC = ('CWE-22: Unvalidated user input or dynamic variable used in file path
 OPEN_MSG = 'CWE-22: open'
 CWE22_LOCKED = {'parity': 8, 'big8': 16}
 BASELINE_TOTALS = {'parity': 425, 'big8': 119}
-EXPECTED_OPEN_PINS = [('modeling_utils.py', 336), ('modeling_utils.py', 3564),
-                      ('src__transformers__trainer.py', 4301), ('trainer.py', 4301)]
+# Every identity the rule is allowed to keep loud by pinning rather than by proving. Spelled out here
+# because a pin is a suspension of the rule, and a suspension nobody can count is a rule that has been
+# quietly deleted; `open_pin_table_emptied` and `check_blessed_loud` are what make each row below earn
+# its place. The `vendor/...` and leaf spellings are not duplicates -- `active_partition_probe` tier 9
+# re-vendors blessed lines under paths where the corpus-name shield cannot reach, so the same key has
+# to be pinned under every basename the scans actually carry.
+EXPECTED_OPEN_PINS = [
+    # The two `open()` rows this rule met first, in both their corpus and leaf spellings.
+    ('src__transformers__trainer.py', 4301), ('trainer.py', 4301),
+    ('modeling_utils.py', 336), ('modeling_utils.py', 3564),
+    # Harness rows: the path names a fixture directory the runner chose two frames above the sink, so
+    # condition (b) has no in-file call site to trace. Eight keys, three files.
+    ('tests__generation__test_utils.py', 5537), ('tests__generation__test_utils.py', 5539),
+    ('tests__generation__test_utils.py', 5565),
+    ('tests__models__markuplm__test_tokenization_markuplm.py', 73),
+    ('tests__models__markuplm__test_tokenization_markuplm.py', 75),
+    ('tests__models__markuplm__test_tokenization_markuplm.py', 77),
+    ('tests__test_tokenization_mistral_common.py', 263),
+    ('tests__test_tokenization_mistral_common.py', 274),
+    ('tests__test_tokenization_mistral_common.py', 280),
+    # A read of a file located by `inspect.getfile(...)`.
+    ('tests__test_modeling_common.py', 1279),
+    # Library deletes whose target is an entry of a directory listing or a weight map: a resolved
+    # origin, but one the resolver gives up on at the subscript.
+    ('src__transformers__modeling_utils.py', 3494), ('src__transformers__trainer.py', 2008),
+    # The vendored spellings of every row above that tier 9 re-vendors.
+    ('tok.py', 73), ('tok.py', 75), ('tok.py', 77),
+    ('tok.py', 263), ('tok.py', 274), ('tok.py', 280),
+    ('modeling_utils.py', 3494), ('trainer.py', 2008),
+    ('test_utils.py', 5537), ('test_utils.py', 5539), ('test_utils.py', 5565),
+    ('modeling_common.py', 1279),
+    # The three parity CWE-22 keys the generic-fallback retirement reaches: two corpus rows whose
+    # only call site passes a compile-time literal, and the harness's own corpus read, whose path
+    # crosses a method on a class declared in another module.
+    ('test_v06_bad.py', 6), ('test_v06_good.py', 7), ('runner.py', 105),
+]
 # The blessed rows the leaf spellings exist for: `active_partition_probe` re-vendors every blessed
 # line under `vendor/...`, where the corpus-name shield cannot help.
 VENDORED_BLESSED = [('src__transformers__trainer.py', 'vendor/transformers/trainer.py', 4301),
@@ -170,10 +371,14 @@ DEPTH_CHAIN = (module('def load(payload):',
                       *('    p%d = p%d' % (i, i + 1) for i in range(55, -1, -1)),
                       '    with open(p0, "w") as handle:', '        handle.write(payload)'))
 
-# --------------------------------------------------------------------------- earned: loud at HEAD, quiet now
-# Every one of these is `CWE-22: open` in `git show d0ef933:ast_scanner.py` (the snapshot this slice
-# was measured against) and entirely absent now, with the sink owed a proof and nothing naming an
-# origin. `scratch/_c22_open_taint_measure.py` produced the table.
+# --------------------------------------------------------------------------- earned: loud at baseline, quiet now
+# The first six were measured against `git show d0ef933:ast_scanner.py`, the snapshot Slice J shipped
+# from (`scratch/_c22_open_taint_measure.py`). The rest are this round's, measured against the
+# committed engine by `scratch/_c22_gate_refile.py`, which prints `head=` and `live=` for every label
+# from the two engines side by side: `RETIRED` means a row existed at HEAD and does not exist now, and
+# nothing in that class is filed here unless it printed RETIRED. Three groups, because the mandate
+# retired them for three different reasons: the sink family was never open(), the module fact was
+# standing in for a value, and the generic emitter invented the value outright.
 EARNED_QUIET = {
     'write_mode_param': (2, module('def dump(slot, payload):', WRITE.format(arg='slot'))),
     'append_mode_param': (2, module('def dump(slot, payload):',
@@ -188,14 +393,58 @@ EARNED_QUIET = {
     'module_global_from_opaque_call': (3, module('def dump(payload):',
                                                  '    CHOSEN = resolve_target()',
                                                  WRITE.format(arg='CHOSEN'))),
+    # Morcha 2 item 1: the same assumption in a different verb. These two rows are the whole reason
+    # `REFUSED_NOT_OPEN_FAMILY` used to exist -- the scope used to stop at `open()`, so a delete was
+    # never asked and always reported.
+    'delete_os_remove': (3, module('import os', 'def clean(slot):', '    os.remove(slot)')),
+    'delete_shutil_rmtree': (3, module('import shutil', 'def clean(slot):',
+                                       '    shutil.rmtree(slot)')),
+    # Morcha 1's own item: a module-level fact is not a value. All three of these were refused at HEAD
+    # because the module declared something; the question is now asked of the argument, and the
+    # argument is an unfilled parameter. The rows that keep their finding are in `LOUD_BY_TRACE_*`.
+    'fact_main_guard': (2, module('def dump(slot, payload):', WRITE.format(arg='slot'),
+                                  'if __name__ == "__main__":', '    dump("cfg.json", "x")')),
+    'fact_cli_argparse': (3, module('import argparse', 'def dump(slot, payload):',
+                                    WRITE.format(arg='slot'),
+                                    'options = argparse.ArgumentParser().parse_args()')),
+    'fact_harness_class': (4, module('import unittest', 'class Case(unittest.TestCase):',
+                                     '    def test_dump(self, slot, payload):',
+                                     '        with open(slot, "w") as handle:',
+                                     '            handle.write(payload)')),
+    # Morcha 2 item 2: the generic dynamic-variable emitter. This is the exact spelling of the three
+    # parity keys the engine had to be pinned for (`benchmark/corpus/cwe_937_insecure_protocol/
+    # test_v06_bad.py:6` and `:7` good, and `benchmark/runner.py:105`) -- a web framework or an
+    # import-time call somewhere in the module, and a helper parameter nobody in the file fills with a
+    # import-time call somewhere in the module, and a helper parameter nobody in the file fills with
+    # a request value.
+    'generic_fallback_uncalled_helper': (4, module('from flask import request', 'import os',
+                                                   'def read_doc(path):',
+                                                   '    with open(path, "r", encoding="utf-8") as handle:',
+                                                   '        return handle.read()',
+                                                   'def other(key):',
+                                                   '    return request.args.get(key)')),
 }
 
 # --------------------------------------------------------------------------- kept: condition (a) met
+# The four spellings below read a source the engine already trusts by name -- `sys.argv`, a web
+# request, `input()`, `os.getenv` -- so each is loud with or without the argument-wide trace and with
+# or without the UNKNOWN exemption (measured: `trace_blind` and `flavour_blind` each leave all six
+# standing, `scratch/_c22_trace_arms2.py`). They are filed where a row's contract is "loud, and not
+# booked as an UNKNOWN flavour", and each one's refusal is pinned at the predicate in
+# `CONSULT_PINNED`. Claiming them for the trace would credit a clause that is not load-bearing.
 LOUD_BY_PROVEN_TAINT = {
     'input_direct': (2, module('def load():', READ.format(arg='input("path? ")'))),
     'input_local': (3, module('def load():', '    chosen = input("path? ")',
                               READ.format(arg='chosen'))),
     'getenv_call': (3, module('import os', 'def load():', READ.format(arg='os.getenv("CFG")'))),
+    'argv_direct': (3, module('import sys', 'def load():', READ.format(arg='sys.argv[1]'))),
+    'copy_from_argv': (4, module('import sys', 'import shutil', 'def ship(dst):',
+                                 '    shutil.copy(sys.argv[1], dst)')),
+    'request_inline': (3, module('from flask import request', 'def view():',
+                                 READ.format(arg='request.args["f"]'))),
+    'request_into_helper': (3, module('from flask import request', 'def load(slot):',
+                                      READ.format(arg='slot'),
+                                      'def view():', '    return load(request.args["f"])')),
 }
 
 # --------------------------------------------------------------------------- kept: the three UNKNOWN flavours
@@ -212,8 +461,87 @@ LOUD_BY_DIRENT = {
     'glob_write_mode': (4, module('import glob', 'def h():', '    for p in glob.glob("/srv/*/*"):',
                                    '        with open(p, "w") as handle:',
                                    '            handle.write("x")')),
+    # The flavour arm reaches the generalized sinks too: the verb here is a delete and the path names a
+    # directory entry, so this is the mirror image of `delete_os_remove` in `EARNED_QUIET` -- the same
+    # sink family, and the only thing that differs is that something really did name the path. Measured
+    # as the delete shape that the dirent flavour actually still decides (`scratch/_c22_flavour_rows.py`
+    # prints `owed=True flavours=['dirent'] row=(4, 'CWE-22: os.remove')`); the `os.scandir` spelling
+    # with `entry.path` is not one of them -- the attribute of a loop target is never resolved to the
+    # enumeration, so that shape owes its proof and goes quiet, which is the same answer
+    # `scandir_path_removed` gets in that measurement.
+    'glob_removed': (4, module('import glob', 'def clean():', '    for p in glob.glob("/srv/*/*"):',
+                               '        os.remove(p)')),
 }
 LOUD_BY_UNTRUSTED_ORIGIN = {
+    # Each shape below was measured (`scratch/_c22_flavour_only.py`) to move when ONLY this clause is
+    # switched off: the sink still owes its proof, because the argument-wide walk stops at the helper
+    # call / the concatenation / the subscript and does not climb through them, and the provenance
+    # resolver does land on the environment read. The inline spellings of the same value --
+    # `open(os.environ["CFG"])` and one local binding away -- are refused a requirement outright, so
+    # they are filed with the trace (`LOUD_BY_TRACE_AND_FLAVOUR`) and may not be booked here.
+    'helper_returns_environ': (5, module('import os', 'def pick():', '    return os.environ["CFG"]',
+                                         'def load():', READ.format(arg='pick()'))),
+    'helper_returns_argv': (5, module('import sys', 'def pick():', '    return sys.argv[1]',
+                                      'def load():', READ.format(arg='pick()'))),
+    'concat_environ': (3, module('import os', 'def load():',
+                                 READ.format(arg='"/srv/" + os.environ["CFG"]'))),
+    'list_index_environ': (4, module('import os', 'def load():',
+                                     '    paths = [os.environ["CFG"]]',
+                                     READ.format(arg='paths[0]'))),
+}
+
+# --------------------------------------------------------------------------- refused: the argument traces
+# The mandate's condition (a) and (b) asked of the arguments rather than of the module, and each table
+# below is one recognition arm with a mutation that moves exactly its own rows (`operator_root_calls_blind`,
+# `cli_command_params_blind`, `caller_hop_blind`, `trace_remote_arm_blind`). Every one of these shapes
+# sits in a module whose own facts cannot answer for it -- `fact_main_guard`, `fact_cli_argparse` and
+# `fact_harness_class` below are the same modules with the value removed -- so a row here is loud
+# because a specific command-line or remote value was found in a specific argument.
+LOUD_BY_TRACE_COMMAND_LINE = {
+    'argparse_field_direct': (3, module('import argparse', 'def dump(options, payload):',
+                                        WRITE.format(arg='options.output_dir'),
+                                        'options = argparse.ArgumentParser().parse_args()',
+                                        'dump(options, "x")')),
+    'argparse_field_one_hop': (3, module('import argparse', 'def dump(slot, payload):',
+                                         WRITE.format(arg='slot'),
+                                         'options = argparse.ArgumentParser().parse_args()',
+                                         'dump(options.output_dir, "x")')),
+    'argparse_via_caller_namespace': (3, module('import argparse', 'def load(slot):',
+                                                READ.format(arg='slot'),
+                                                'options = argparse.ArgumentParser().parse_args()',
+                                                'load(options.path)')),
+    # Morcha 2 item 1's own evidence: a delete, kept loud by nothing but the command line behind it.
+    'rmtree_argparse_one_hop': (4, module('import argparse', 'import shutil', 'def clean(slot):',
+                                          '    shutil.rmtree(slot)',
+                                          'options = argparse.ArgumentParser().parse_args()',
+                                          'clean(options.output_dir)')),
+}
+LOUD_BY_TRACE_COMMAND_DECORATOR = {
+    'click_option_direct': (5, module('import click', '@click.command()',
+                                      '@click.option("--model_dir")', 'def cli(model_dir):',
+                                      '    with open(model_dir, "w") as handle:',
+                                      '        handle.write("x")')),
+    'click_option_into_helper': (3, module('import click', 'def run(slot):',
+                                           '    with open(slot, "w") as handle:',
+                                           '        handle.write("x")',
+                                           '@click.command()', '@click.option("--model_dir")',
+                                           'def cli(model_dir):', '    run(model_dir)')),
+}
+LOUD_BY_TRACE_REMOTE_HOP = {
+    'caller_passes_environ': (3, module('import os', 'def read_doc(path):',
+                                        '    with open(path, "r", encoding="utf-8") as handle:',
+                                        '        return handle.read()',
+                                        'def load():', '    return read_doc(os.environ["CFG"])')),
+}
+# --------------------------------------------------------------------------- kept loud twice over
+# These three are refused by the walk (so they belong with the trace tables) and would also be saved
+# by the UNKNOWN exemption if the walk were switched off, because the flavour's predicate is the same
+# `_c22_expr_is_untrusted_source` the walk calls. Measured in `scratch/_c22_blind_matrix.py`: blinding
+# `_c22_path_sink_reaches_operator` leaves all three LOUD and owed (the flavour picks them up), and
+# blinding the flavour alone leaves them LOUD and refused, so no single-clause blind may claim them
+# except the shared predicate itself. That is why they are not in `LOUD_BY_TRACE_SOLO`, whose rows move
+# for the trace alone, and why `whole_trace_blind` does not list them.
+LOUD_BY_TRACE_AND_FLAVOUR = {
     'environ_inline': (3, module('import os', 'def load():', READ.format(arg='os.environ["CFG"]'))),
     'environ_local': (4, module('import os', 'def load():', '    chosen = os.environ["CFG"]',
                                 READ.format(arg='chosen'))),
@@ -222,19 +550,6 @@ LOUD_BY_UNTRUSTED_ORIGIN = {
 }
 
 # --------------------------------------------------------------------------- refused: the rule never attaches
-REFUSED_BY_MODULE_FACT = {
-    'fact_main_guard': (2, module('def dump(slot, payload):', WRITE.format(arg='slot'),
-                                  'if __name__ == "__main__":', '    dump("cfg.json", "x")')),
-    'fact_cli_argparse': (3, module('import argparse', 'def dump(slot, payload):',
-                                    WRITE.format(arg='slot'),
-                                    'options = argparse.ArgumentParser().parse_args()')),
-    'fact_harness_class': (4, module('import unittest', 'class Case(unittest.TestCase):',
-                                     '    def test_dump(self, slot, payload):',
-                                     '        with open(slot, "w") as handle:',
-                                     '            handle.write(payload)')),
-    'fact_web_request': (3, module('from flask import request',
-                                   'def view():', READ.format(arg='request.args["f"]'))),
-}
 REFUSED_BY_ARCHIVE = {
     'tarfile_open_dotted': (4, module('import tarfile', 'def unpack(slot, dest):',
                                       '    with tarfile.open(slot) as archive:',
@@ -246,11 +561,24 @@ REFUSED_BY_ARCHIVE = {
                                      '    with zipfile.ZipFile(slot) as archive:',
                                      '        archive.extractall(dest)')),
 }
-REFUSED_NOT_OPEN_FAMILY = {
-    'delete_os_remove': (3, module('import os', 'def clean(slot):', '    os.remove(slot)')),
-    'delete_shutil_rmtree': (3, module('import shutil', 'def clean(slot):',
-                                        '    shutil.rmtree(slot)')),
+# --------------------------------------------------------------------------- owed, and never reported
+# These four verbs never produced a row at either baseline, so this rule cannot book them as
+# retirements; what they prove is the *scope*, at the predicate -- the requirement attaches to a
+# delete, a move, a copy and a repo helper writer exactly as it attaches to `open()`. `consult_owed`
+# reads the answer the shipped rule gives for each line.
+SCOPE_NON_OPEN_SINKS = {
+    'scope_shutil_copy': (3, module('import shutil', 'def ship(src, dst):',
+                                    '    shutil.copy(src, dst)')),
+    'scope_shutil_move': (3, module('import shutil', 'def ship(src, dst):',
+                                    '    shutil.move(src, dst)')),
+    'scope_shutil_copytree': (3, module('import shutil', 'def ship(src, dst):',
+                                        '    shutil.copytree(src, dst)')),
+    'scope_os_rmdir': (3, module('import os', 'def clean(slot):', '    os.rmdir(slot)')),
 }
+
+# A `with`-target, a cascade message and an attribute-only record are not calls, so the requirement
+# must refuse them and no message-shaped record can be moved by this rule. That refusal is decided at
+# the predicate, on a record built around a non-call node, in TIER 4a.
 
 # --------------------------------------------------------------------------- quiet, and NOT this rule's
 # Quiet at HEAD and quiet now: an older clause already proved these clean, so this slice may not book
@@ -288,25 +616,67 @@ QUIET_BY_OTHER_CLAUSE = {
 # spelling, on a module that really registers the sink. `archive_table_emptied` flips both.
 CONSULT_PINNED = {'archive_tarfile_dotted': ('tarfile_open_dotted', 3),
                   'archive_tarfile_alias': ('tarfile_open_alias', 3),
-                  # A web handler's `open(request.args["f"])` is refused by the entrypoint clause even
-                  # though its row would survive either way, so the refusal is pinned on the answer
-                  # rather than on the finding.
-                  'fact_web_request_refused': ('fact_web_request', 3)}
+                  # A web handler's `open(request.args["f"])`, an `open(sys.argv[1])` and a
+                  # `shutil.copy(sys.argv[1], dst)` are refused even though their rows would survive
+                  # without the refusal, so the refusal is pinned on the answer rather than on the
+                  # finding. The copy row is the one that says the rule declines the same argument it
+                  # requires of a delete two tables below.
+                  'proven_request_inline': ('request_inline', 3),
+                  'proven_request_helper': ('request_into_helper', 3),
+                  'proven_argv_direct': ('argv_direct', 3),
+                  'proven_copy_argv': ('copy_from_argv', 4)}
 
 ALL_FIXTURES = {}
 for _table in (EARNED_QUIET, LOUD_BY_PROVEN_TAINT, LOUD_BY_CUT_SHORT, LOUD_BY_DIRENT,
-               LOUD_BY_UNTRUSTED_ORIGIN, REFUSED_BY_MODULE_FACT, REFUSED_BY_ARCHIVE,
-               REFUSED_NOT_OPEN_FAMILY):
+               LOUD_BY_UNTRUSTED_ORIGIN, LOUD_BY_TRACE_COMMAND_LINE,
+               LOUD_BY_TRACE_COMMAND_DECORATOR, LOUD_BY_TRACE_REMOTE_HOP,
+               LOUD_BY_TRACE_AND_FLAVOUR, SCOPE_NON_OPEN_SINKS, REFUSED_BY_ARCHIVE):
     ALL_FIXTURES.update(_table)
 for _label, _source in QUIET_BY_OTHER_CLAUSE.items():
     ALL_FIXTURES[_label] = (None, _source)
 
 FLAVOUR_TABLES = {'cut_short': LOUD_BY_CUT_SHORT, 'dirent': LOUD_BY_DIRENT,
                   'untrusted_origin': LOUD_BY_UNTRUSTED_ORIGIN}
-REFUSED_TABLES = {'facts': REFUSED_BY_MODULE_FACT, 'archive': REFUSED_BY_ARCHIVE,
-                  'not open family': REFUSED_NOT_OPEN_FAMILY}
+# One entry per recognition arm, so a row can be booked against the arm that actually decided it and
+# `check_fixtures` can blind that one arm and demand the row move. The two remote entries read the same
+# predicate -- one hop away in a caller, and in the argument itself -- and are kept apart because only
+# the first of them is decided by that arm alone.
+TRACE_TABLES = {'parse_args namespace': LOUD_BY_TRACE_COMMAND_LINE,
+                'command decorator': LOUD_BY_TRACE_COMMAND_DECORATOR,
+                'remote value one hop away': LOUD_BY_TRACE_REMOTE_HOP,
+                'remote value in the argument': LOUD_BY_TRACE_AND_FLAVOUR}
+# name -> (the one engine attribute that arm reads, the value that switches it off). The first is a
+# module-level table on `ast_scanner`, the others are methods on the tracker, so a row filed under one
+# of these names is a claim about that spelling alone.
+TRACE_ARMS = {
+    'parse_args namespace': ('CWE22_OPERATOR_ROOT_CALLS', frozenset()),
+    'command decorator': ('_c22_cli_command_params', lambda self, tree: {}),
+    'remote value one hop away': ('_c22_expr_is_untrusted_source',
+                                  lambda self, table, expr, depth=0: False),
+    'remote value in the argument': ('_c22_expr_is_untrusted_source',
+                                     lambda self, table, expr, depth=0: False),
+}
+TRACE_ARM_ATTRIBUTES = {'CWE22_OPERATOR_ROOT_CALLS'}
 LOUD_BY_FLAVOUR = {label: name for name, table in FLAVOUR_TABLES.items() for label in table}
+LOUD_BY_TRACE = {label: name for name, table in TRACE_TABLES.items() for label in table}
+# The rows the argument walk decides on its own: switching `_c22_path_sink_reaches_operator` off makes
+# every one of them owe its proof and go quiet. `LOUD_BY_TRACE_AND_FLAVOUR` is deliberately absent --
+# those rows are owed after the same blind and stay loud on the flavour, so a mutation that claimed
+# them would be claiming a clause that is not load-bearing.
+LOUD_BY_TRACE_SOLO = {label: name for name, table in TRACE_TABLES.items() for label in table
+                      if name != 'remote value in the argument'}
+SCOPE_OWED = set(SCOPE_NON_OPEN_SINKS)
+# The archive table is the only refusal this rule still books by finding. The module-fact table is
+# gone: since the mandate stopped letting a declaration stand in for a value, a fact is an input to
+# the argument walk and never a refusal of its own, so those fixtures are either `LOUD_BY_TRACE_*`
+# (the value really was there) or `EARNED_QUIET` (it was not).
+REFUSED_TABLES = {'archive': REFUSED_BY_ARCHIVE}
 LOADED_REFUSALS = {label: name for name, table in REFUSED_TABLES.items() for label in table}
+# The refusal pins split by the clause they record. A mutation that switches a refusal off moves the
+# pinned answer even where the finding itself survives on a different clause, and the `moves` lists
+# below claim those answers too, because the answer is what the pin is a claim about.
+ARCHIVE_PINS = sorted(name for name in CONSULT_PINNED if name.startswith('archive_'))
+PROVEN_PINS = sorted(name for name in CONSULT_PINNED if name.startswith('proven_'))
 
 
 # --------------------------------------------------------------------------- plumbing
@@ -489,9 +859,15 @@ def check_vendored_pins():
 
 
 def check_fixtures():
-    """TIER 3: the 34-module truth table, with the deciding clause named for every row."""
+    """TIER 3: the fixture truth table, with the deciding clause named for every row.
+
+    Every row is filed against the clause that was measured to decide it, which is why there are two
+    remote-source tables: the walk refuses the requirement when it finds an environment read, and the
+    UNKNOWN exemption saves the row when the walk cannot follow the value. A shape saved by both is
+    booked with the walk and left out of the walk-only mutation.
+    """
     failures = []
-    earned = tainted = flavour = refused_rows = not_claimed = 0
+    earned = tainted = flavour = refused_rows = not_claimed = traced = scoped = 0
     for label, (line, source) in sorted(ALL_FIXTURES.items()):
         found, consults, keeps = observe(source)
         if label in QUIET_BY_OTHER_CLAUSE:
@@ -532,6 +908,20 @@ def check_fixtures():
                                  keep[0]['flavours'] if keep else None))
             else:
                 flavour += 1
+        elif label in LOUD_BY_TRACE:
+            if not at:
+                failures.append(('operator-trace row went silent', label, line))
+            elif entry['owed']:
+                failures.append(('trace row reported while owing a proof', label, line))
+            else:
+                traced += 1
+        elif label in SCOPE_OWED:
+            if found:
+                failures.append(('scope fixture reported a finding', label, line, found[:2]))
+            elif not entry['owed']:
+                failures.append(('the requirement did not attach to this sink family', label, line))
+            else:
+                scoped += 1
         elif label in LOADED_REFUSALS:
             if not at:
                 failures.append(('refused row lost its finding', label, line, found[:2]))
@@ -543,6 +933,7 @@ def check_fixtures():
             failures.append(('unattributable fixture', label))
     print(f'  fixtures={len(ALL_FIXTURES)} retired_by_this_rule={earned} '
           f'loud_by_proven_taint={tainted} loud_by_unknown_flavour={flavour} '
+          f'loud_by_operator_trace={traced} attached_never_reported={scoped} '
           f'refused={refused_rows} quiet_not_claimed={not_claimed}')
     consult_refused = 0
     for name, (label, line) in sorted(CONSULT_PINNED.items()):
@@ -553,11 +944,27 @@ def check_fixtures():
         else:
             consult_refused += 1
     print(f'  consult_refusals={consult_refused}/{len(CONSULT_PINNED)}')
-    for label in sorted(REFUSED_BY_MODULE_FACT):
-        _found, consults, _keeps = observe(ALL_FIXTURES[label][1])
-        facts = [entry['facts'] for entry in consults if entry['line'] == ALL_FIXTURES[label][0]]
-        if not facts or not facts[0]:
-            failures.append(('fact fixture secretly refuses on something else', label, facts))
+    # The trace fixtures are attributed to an arm, not to "some refusal happened". Each arm below is
+    # switched off on its own and the row is asked again: if the named arm really is what kept the row,
+    # taking it away makes the sink owe its proof again. An arm that is credited with rows it does not
+    # decide is the failure mode the module-fact table used to hide.
+    for table_name, (arm_key, blind) in sorted(TRACE_ARMS.items()):
+        decided = 0
+        target = ast_scanner if arm_key in TRACE_ARM_ATTRIBUTES else ast_scanner.TaintTracker
+        for label in sorted(TRACE_TABLES[table_name]):
+            line, source = ALL_FIXTURES[label]
+            original = getattr(target, arm_key)
+            try:
+                setattr(target, arm_key, blind)
+                _found, consults, _keeps = observe(source)
+            finally:
+                setattr(target, arm_key, original)
+            entries = [entry for entry in consults if entry['line'] == line]
+            if not entries or not all(entry['owed'] for entry in entries):
+                failures.append(('the named arm does not decide this row', table_name, label, line))
+            else:
+                decided += 1
+        print(f'  arm {table_name:28s} decides {decided}/{len(TRACE_TABLES[table_name])} row(s)')
     return failures
 
 
@@ -566,20 +973,31 @@ def check_open_family_scope():
 
     The predicate is called with a synthetic record and sink so the scoping table is exact: the same
     dotted leaf must answer the same way whether it arrives spelled out or through an import binding.
+
+    The vocabulary inverted when the mandate's requirement moved from `open()` to the filesystem sink
+    families. Deletion, copy, move, rename, fd-wrapping, serialization and a handle write are all
+    *inside* the scope now -- that is Morcha 2 item 1, and `delete_os_remove` in `EARNED_QUIET` is what
+    it cost at HEAD -- so a verb may no longer be a reason to refuse. Two things still refuse: the two
+    archive families, which the sacred floor puts beyond any provenance argument, and a record whose
+    node is not a call at all, which is what keeps `with`-targets and cascade messages out of reach.
     """
     attaches = [
         'open(slot)', 'open(slot, "w")', 'builtins.open(slot)', 'io.open(slot)',
         'codecs.open(slot)', 'gzip.open(slot, "wb")',
+        'os.remove(slot)', 'os.unlink(slot)', 'os.rmdir(slot)', 'os.rename(slot, other)',
+        'os.fdopen(fd, "w")', 'shutil.rmtree(slot)', 'shutil.copy(src, dst)',
+        'shutil.move(src, dst)', 'shutil.copytree(src, dst)', 'json.dump(data, handle)',
+        'handle.write(payload)', 'helper.save(payload, slot)',
     ]
     refuses = [
         'tarfile.open(slot)', 'zipfile.ZipFile(slot)', 'archive.extractall(dest)',
-        'os.remove(slot)', 'os.unlink(slot)', 'shutil.rmtree(slot)', 'os.rename(slot, other)',
-        'os.fdopen(fd, "w")', 'json.dump(data, handle)', 'handle.write(payload)',
+        'archive.extract(member)',
     ]
     failures = []
     matched = 0
     for spelling in attaches + refuses:
-        source = module('def f(slot, other, fd, handle, data, dest, archive):', f'    {spelling}')
+        source = module('def f(slot, other, fd, handle, data, dest, archive, src, dst, member,'
+                        ' payload):', f'    {spelling}')
         tree = ast.parse(source)
         call = [node for node in ast.walk(tree) if isinstance(node, ast.Call)][0]
         with contextlib.redirect_stderr(_io.StringIO()):
@@ -595,10 +1013,30 @@ def check_open_family_scope():
         if got == want:
             matched += 1
         else:
-            failures.append(('open-family scope', 'attaches' if want else 'refuses', spelling, got))
-    print(f'  spellings={len(attaches) + len(refuses)} exact={matched} '
-          f'wrong={len(attaches) + len(refuses) - matched} '
-          f'(attaches={len(attaches)} refuses={len(refuses)})')
+            failures.append(('sink-family scope', 'attaches' if want else 'refuses', spelling, got))
+    # The non-call half of `refuses`, on the two record shapes the funnel really builds: a `with`
+    # target name and a bare attribute. Both must answer False, or a message-shaped record could be
+    # silenced by a rule that only ever speaks about calls.
+    non_call = module('def f(slot):', '    with open(slot) as handle:', '        return handle.read()')
+    target_tree = ast.parse(non_call)
+    name_node = [node for node in ast.walk(target_tree)
+                 if isinstance(node, ast.Name) and node.id == 'handle'][0]
+    attr_node = [node for node in ast.walk(target_tree) if isinstance(node, ast.Attribute)][0]
+    for node, shape in [(name_node, 'with-target name'), (attr_node, 'attribute read')]:
+        with contextlib.redirect_stderr(_io.StringIO()):
+            tracker = ast_scanner.TaintTracker(files={PURE: non_call}, audit_all=True)
+        sink = ast_scanner.SecurityNode(
+            'S-2', ast_scanner.NodeType.SINK, ast.unparse(node), 'FILE_ACCESS',
+            ast_scanner.CodeLocation(PURE, node.lineno, node.lineno))
+        record = ast_scanner.SinkRecord(node, sink, node.lineno,
+                                        f'{next(iter(tracker.modules))}:function:f')
+        if bool(tracker._c22_open_sink_owes_proven_taint(record, sink)):
+            failures.append(('sink-family scope', 'refuses', shape, True))
+        else:
+            matched += 1
+    print(f'  spellings={len(attaches) + len(refuses) + 2} exact={matched} '
+          f'wrong={len(attaches) + len(refuses) + 2 - matched} '
+          f'(attaches={len(attaches)} refuses={len(refuses) + 2})')
     if ast_scanner.CWE22_ARCHIVE_CONSTRUCTOR_MODULES != frozenset({'tarfile', 'zipfile'}):
         failures.append(('the archive module table grew past the two Zip-Slip families',
                          sorted(ast_scanner.CWE22_ARCHIVE_CONSTRUCTOR_MODULES)))
@@ -682,7 +1120,15 @@ def _sink_for(node):
 
 
 def check_wiring():
-    """TIER 5: one flag per record, both short-circuits gated, a prune arm that can only subtract."""
+    """TIER 5: one flag per record, three short-circuits gated, a prune arm that can only subtract.
+
+    The count of gated arms is the whole point of the structural tier. A CWE-22 sink can become a
+    finding without resolving anything in three different ways -- the phase-11 adoption, the phase-5
+    registry stamp, and the phase-4 stamp the generic dynamic-variable emitter leaves behind -- and
+    each of them used to answer for itself. Pinning the number, rather than the line numbers, is what
+    stops a fourth invented source from joining them unnoticed: when the flag is read at a fifth
+    place, this tier asks what it guards.
+    """
     failures = []
     with open(os.path.join(ROOT, 'ast_scanner.py'), encoding='utf-8') as handle:
         text = handle.read()
@@ -703,9 +1149,9 @@ def check_wiring():
     print(f'  assignment={assignment} consults={consults} gated_short_circuits={gated}')
     if len(assignment) != 1:
         failures.append(('the flag must be computed exactly once per record', assignment))
-    if len(gated) != 2:
-        failures.append(('both synthetic short-circuits must be gated by the flag', gated))
-    if len(consults) != 3:
+    if len(gated) != 3:
+        failures.append(('every synthetic short-circuit must be gated by the flag', gated))
+    if len(consults) != 4:
         failures.append(('the flag is read at an unexpected number of places', consults))
     # The prune arm: removes the sink, continues, and appends nothing. Anything else in it could
     # make a finding appear, which is the property this whole design is built on.
@@ -728,7 +1174,8 @@ def check_wiring():
             failures.append(('the prune arm must only remove a sink and continue', arm.lineno))
     for name in ('_c22_open_sink_owes_proven_taint', '_c22_unknown_origin_keeps_the_row',
                  '_c22_trace_is_cut_short', '_c22_trace_enumerates_directory',
-                 '_c22_origin_is_untrusted_source'):
+                 '_c22_origin_is_untrusted_source', '_c22_path_sink_reaches_operator',
+                 '_c22_value_reaches_operator', '_c22_cli_command_params'):
         if name not in methods:
             failures.append(('deciding method is gone', name))
     # Pin tables: each membership test may only answer in the keep direction.
@@ -761,9 +1208,21 @@ def check_wiring():
                 if not keep_only:
                     failures.append(('the pin table must only ever refuse the requirement, '
                                      'never mandate a silence', table))
+    # Morcha 1's own prohibition, read off the syntax. A module-level declaration may not decide the
+    # requirement in either direction: `if self._c22_module_entrypoint_facts(tree)` inside the owed
+    # rule is the blanket the mandate retired, and the only legal place for a fact is as an input to
+    # the argument walk. Zero calls from this method is the whole claim.
+    owner = methods.get('_c22_open_sink_owes_proven_taint')
+    fact_calls = [item.lineno for item in ast.walk(owner) if isinstance(item, ast.Call)
+                  and '_c22_module_entrypoint_facts' in ast.unparse(item.func)]
+    print(f'  owed_rule_consults_module_facts_at={fact_calls}')
+    if fact_calls:
+        failures.append(('a module-level fact is deciding the requirement again', fact_calls))
     cluster = ['_c22_open_sink_owes_proven_taint', '_c22_unknown_origin_keeps_the_row',
                '_c22_trace_is_cut_short', '_c22_trace_enumerates_directory',
-               '_c22_origin_is_untrusted_source', '_c22_module_entrypoint_facts']
+               '_c22_origin_is_untrusted_source', '_c22_module_entrypoint_facts',
+               '_c22_path_sink_reaches_operator', '_c22_value_reaches_operator',
+               '_c22_cli_command_params']
     banned = ('tests/', 'examples/', 'docs/', 'corpus', 'vendor/', 'fn_lower', '.py"',
               'is_test_suite', 'src/transformers')
     for name in cluster:
@@ -843,7 +1302,9 @@ _OWEs = ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint
 _KEEPS = ast_scanner.TaintTracker._c22_unknown_origin_keeps_the_row
 _CUT = ast_scanner.TaintTracker.__dict__['_c22_trace_is_cut_short'].__func__
 _DIRENT = ast_scanner.TaintTracker.__dict__['_c22_trace_enumerates_directory'].__func__
-_MODULE_FACTS = ast_scanner.TaintTracker._c22_module_entrypoint_facts
+_MODULE_FACTS_BLANKET = ('fact_main_guard', 'fact_cli_argparse', 'fact_harness_class',
+                         'generic_fallback_uncalled_helper')
+FACT_ONLY_EARNED = set(_MODULE_FACTS_BLANKET)
 
 MUTATIONS = {
     'requirement_always_refused': {
@@ -855,14 +1316,14 @@ MUTATIONS = {
         'moves': sorted(EARNED_QUIET),
     },
     'requirement_always_applied': {
-        'what': 'every sink owes a proof, so the open-family, archive and entrypoint refusals are gone',
+        'what': 'every sink owes a proof, so the archive and operator-trace refusals are gone',
         'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_open_sink_owes_proven_taint',
                                  _every_sink_owes),
         'restore': lambda: setattr(ast_scanner.TaintTracker, '_c22_open_sink_owes_proven_taint',
                                    _OWEs),
-        'moves': ['delete_os_remove', 'delete_shutil_rmtree', 'tarfile_open_dotted',
-                  'tarfile_open_alias', 'zipfile_extractall',
-                  BLESSED_CORPUS_LABEL, BLESSED_VENDORED_LABEL],
+        'moves': ['tarfile_open_dotted', 'tarfile_open_alias', 'zipfile_extractall',
+                  BLESSED_CORPUS_LABEL, BLESSED_VENDORED_LABEL]
+        + ARCHIVE_PINS + sorted(LOUD_BY_TRACE_SOLO) + PROVEN_PINS,
     },
     'archive_table_emptied': {
         'what': 'the archive module table is emptied, so `tarfile.open` is judged as a plain open()',
@@ -871,14 +1332,72 @@ MUTATIONS = {
                                    _ARCHIVE_MODULES),
         'moves': ['archive_tarfile_dotted', 'archive_tarfile_alias'],
     },
-    'facts_blind_in_the_open_rule': {
-        'what': 'no module ever spells an entrypoint, so harness and CLI `open()` rows owe a proof',
-        'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_module_entrypoint_facts',
-                                 lambda self, tree: frozenset()),
-        'restore': lambda: setattr(ast_scanner.TaintTracker, '_c22_module_entrypoint_facts',
-                                   _MODULE_FACTS),
-        'moves': ['fact_main_guard', 'fact_cli_argparse', 'fact_harness_class',
-                  'fact_web_request_refused'],
+    'module_fact_blanket_returns': {
+        'what': 'the retired blanket comes back: a module-level fact alone refuses the requirement',
+        'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_open_sink_owes_proven_taint',
+                                 _fact_blanket_owes),
+        'restore': lambda: setattr(ast_scanner.TaintTracker, '_c22_open_sink_owes_proven_taint',
+                                   _OWEs),
+        'moves': sorted(FACT_ONLY_EARNED),
+    },
+    'whole_trace_blind': {
+        'what': 'the argument-wide operator walk finds nothing anywhere, so every trace row owes again',
+        'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_path_sink_reaches_operator',
+                                 lambda self, node, tree: False),
+        'restore': lambda: setattr(ast_scanner.TaintTracker, '_c22_path_sink_reaches_operator',
+                                   _REACHES),
+        # Only the rows the walk decides alone. The three inline-environment rows owe their proof again
+        # under this blind and stay loud on the UNKNOWN exemption, so they are not claimed here
+        # (`scratch/_c22_blind_matrix.py`, column `trace`). The four `proven_*` answers are claimed:
+        # taking the walk away makes a `sys.argv`/`request` argument owe its proof again even though
+        # the row itself survives on its TAINTED answer.
+        'moves': sorted(LOUD_BY_TRACE_SOLO) + PROVEN_PINS,
+    },
+    # One mutation per recognition arm, each with exactly the rows that arm was measured to decide
+    # (`scratch/_c22_blind_matrix.py`, `scratch/_c22_flavour_only.py`).
+    'operator_root_calls_blind': {
+        'what': 'a namespace built by `parse_args()` stops being recognized as a command-line root',
+        'apply': lambda: setattr(ast_scanner, 'CWE22_OPERATOR_ROOT_CALLS', frozenset()),
+        'restore': lambda: setattr(ast_scanner, 'CWE22_OPERATOR_ROOT_CALLS', _ROOT_CALLS),
+        'moves': sorted(LOUD_BY_TRACE_COMMAND_LINE),
+    },
+    'cli_command_params_blind': {
+        'what': 'the `@click.option`/`argument` decorator table is emptied, so typed text has no root',
+        'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_cli_command_params',
+                                 lambda self, tree: {}),
+        'restore': lambda: setattr(ast_scanner.TaintTracker, '_c22_cli_command_params',
+                                   _CLI_PARAMS),
+        'moves': sorted(LOUD_BY_TRACE_COMMAND_DECORATOR),
+    },
+    'caller_hop_blind': {
+        'what': 'the call-site table is emptied, so a value a caller hands over is invisible',
+        'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_param_proofs',
+                                 lambda self, tree: {}),
+        'restore': lambda: setattr(ast_scanner.TaintTracker, '_c22_param_proofs', _PARAM_PROOFS),
+        # The command-line rows plus the two shapes that reach the walk through the same call-site
+        # table: a `@click.option` value handed to a helper, and an `os.environ` value handed to a
+        # helper (`caller_passes_environ`, measured quiet under this blind in
+        # `scratch/_c22_moves_matrix.py`). `proven_request_helper` is the refusal answer for the same
+        # one-hop spelling, so this blind is also what makes that row owe again.
+        'moves': (sorted(LOUD_BY_TRACE_COMMAND_LINE) + ['click_option_into_helper',
+                                                        'caller_passes_environ',
+                                                        'proven_request_helper']),
+    },
+    'trace_remote_arm_blind': {
+        'what': 'the remote-source predicate is switched off inside the walk, env/argv/request gone',
+        'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_expr_is_untrusted_source',
+                                 lambda self, table, expr, depth=0: False),
+        'restore': lambda: setattr(ast_scanner.TaintTracker, '_c22_expr_is_untrusted_source',
+                                   _UNTRUSTED),
+        # Everything this one predicate decides, in all three of the places it is read: the walk's
+        # remote arm (the hop row and the three rows the walk refuses), the `untrusted_origin`
+        # exemption (which calls the same predicate, so the four flavour-only rows move here as well as
+        # under their own blind), and the provenance classifier that labels `sys.argv` and
+        # `os.getenv` TAINTED. `getenv_call` itself was measured to stand under this blind -- its row
+        # is kept by the `os.getenv` sink rule, not by this predicate -- so it is not claimed.
+        'moves': (sorted(LOUD_BY_TRACE_REMOTE_HOP) + sorted(LOUD_BY_TRACE_AND_FLAVOUR)
+                  + sorted(LOUD_BY_UNTRUSTED_ORIGIN) + ['argv_direct', 'copy_from_argv']
+                  + PROVEN_PINS),
     },
     'open_pin_table_emptied': {
         'what': 'the exact-identity open() pin is emptied, so the cross-module blessed row is declined',
@@ -945,6 +1464,25 @@ MUTATIONS = {
 }
 
 _ORIGIN = ast_scanner.TaintTracker._c22_origin_is_untrusted_source
+_REACHES = ast_scanner.TaintTracker._c22_path_sink_reaches_operator
+_CLI_PARAMS = ast_scanner.TaintTracker._c22_cli_command_params
+_PARAM_PROOFS = ast_scanner.TaintTracker._c22_param_proofs
+_UNTRUSTED = ast_scanner.TaintTracker._c22_expr_is_untrusted_source
+_ROOT_CALLS = ast_scanner.CWE22_OPERATOR_ROOT_CALLS
+
+# The four retired rows whose modules really do declare a fact, so a declaration -- never a value -- is
+# the only thing that ever kept them loud. Measured one by one: `scratch/_c22_gate_refile.py` prints
+# the fact tuple the engine saw on each consult, and these are the four that came back non-empty.
+FACT_ONLY_EARNED = {'fact_main_guard', 'fact_cli_argparse', 'fact_harness_class',
+                    'generic_fallback_uncalled_helper'}
+
+
+def _fact_blanket_owes(self, record, sink):
+    """The retired shape of the rule: ask the module, never the argument."""
+    tree = self.modules.get(ast_scanner.scope_module(record.scope_id))
+    if tree is not None and self._c22_module_entrypoint_facts(tree):
+        return False
+    return _OWEs(self, record, sink)
 
 
 def run_mutation(name):
@@ -989,7 +1527,7 @@ def main() -> int:
     failures += check_open_family_scope()
     print('TIER 4b - the three UNKNOWN flavours, label by label:')
     failures += check_trace_flavours()
-    print('TIER 5 - one flag per record, both short-circuits gated, arm can only subtract:')
+    print('TIER 5 - one flag per record, three short-circuits gated, arm can only subtract:')
     failures += check_wiring()
     for item in failures[:14]:
         print(f'  !! {item}')
@@ -1004,17 +1542,18 @@ def main() -> int:
         print('VERDICT: FAIL - Slice J no longer matches its measured evidence. Either a blessed '
               'CWE-22 key was owed a proof it cannot produce, the open() pin table stopped being '
               'load-bearing in one of its two spellings, a retired shape came back, a refusal clause '
-              'let an archive/delete/entrypoint row go quiet, an UNKNOWN flavour was reclassified, or '
-              'the flag moved off its single computation site and gained an arm that can add a '
-              'finding. Restore the answer; never re-bless a baseline.')
+              'let an archive, operator-reachable or pinned row go quiet, an UNKNOWN flavour was '
+              'reclassified, or the flag moved off its single computation site and gained an arm that '
+              'can add a finding. Restore the answer; never re-bless a baseline.')
         return 1
     print(f'VERDICT: PASS - 0 of {sum(CWE22_LOCKED.values())} blessed CWE-22 keys owed a proof they '
-          f'cannot produce, {len(EARNED_QUIET)} unproven open() fallbacks retired by this rule alone, '
+          f'cannot produce, {len(EARNED_QUIET)} unproven filesystem fallbacks retired by this rule '
+          f'alone, '
           f'{len(LOUD_BY_PROVEN_TAINT)} proven-taint rows and '
           f'{sum(len(t) for t in FLAVOUR_TABLES.values())} UNKNOWN-flavour rows held loud by the '
-          f'clause that names them, {sum(len(t) for t in REFUSED_TABLES.values())} refusals '
-          f'(open-family, archive, entrypoint, pin) confirmed, one flag per record and a prune arm '
-          f'that can only subtract.')
+          f'clause that names them, {sum(len(t) for t in REFUSED_TABLES.values())} archive-floor rows '
+          f'refused the requirement outright with the pin table load-bearing in both spellings, one '
+          f'flag per record and a prune arm that can only subtract.')
     return 0
 
 

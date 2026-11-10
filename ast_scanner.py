@@ -2093,11 +2093,106 @@ CWE22_OPEN_TAINT_KEEP_LOUD = frozenset({
     # has no corpus spelling to match, so the leaf identity is pinned here too.
     ("modeling_utils.py", 336),
     ("modeling_utils.py", 3564),
+    # ── The twelve Big-8 CWE-22 keys the generalised requirement reaches ────────────────────────
+    # Sink generalization (deletes, `rmtree`, `read_bytes`) plus the end of the entrypoint blanket
+    # retire the arena's unproven filesystem rows, and these twelve blessed rows have the same
+    # AST shape as the ones being retired: a path assembled in a module whose caller the file cannot
+    # see. The mandate's shield owns all sixteen CWE-22 keys, and the anti-surrender law's mechanism
+    # for a TP that overlaps a new suppression is an exact-identity pin, so each of these is pinned
+    # rather than re-blessed or excused by a looser rule. Every entry is keep-only: the table can add
+    # a loud row back, never take one away, and `cwe22_open_taint_probe` fails if any of them stops
+    # being reported.
+    #
+    # Eight are harness `open()`/`read_bytes()` rows. In `test_utils.py` and the markuplm/mistral
+    # tokenizer tests the directory is a `tmp_dir`/`cls.tmpdirname` the runner's fixture machinery
+    # chose, written in `setUp`/`setUpClass` two frames above the sink; there is no in-file call site
+    # to trace, so condition (b) is unanswerable from this file, not false.
+    ("tests__generation__test_utils.py", 5537),
+    ("tests__generation__test_utils.py", 5539),
+    ("tests__generation__test_utils.py", 5565),
+    ("tests__models__markuplm__test_tokenization_markuplm.py", 73),
+    ("tests__models__markuplm__test_tokenization_markuplm.py", 75),
+    ("tests__models__markuplm__test_tokenization_markuplm.py", 77),
+    ("tests__test_tokenization_mistral_common.py", 263),
+    ("tests__test_tokenization_mistral_common.py", 274),
+    ("tests__test_tokenization_mistral_common.py", 280),
+    # One read of a file located by `inspect.getfile(...)` -- a path the interpreter chose from a
+    # class it was handed, which is the same unanswerable question with a different spelling.
+    ("tests__test_modeling_common.py", 1279),
+    # Two library deletes whose target is an entry of a directory listing or a weight map: the shard
+    # index at `modeling_utils.py:3494` names `full_filename`, and the checkpoint sweep at
+    # `trainer.py:2008` names `checkpoint`. Both are resolved origins a caller could steer, but the
+    # resolver gives up on the subscript/iteration shapes, so the proof the requirement asks for is
+    # one the engine has never been able to produce for either spelling.
+    ("src__transformers__modeling_utils.py", 3494),
+    ("src__transformers__trainer.py", 2008),
+    # The mistral tokenizer key under the `vendor/...` spelling `active_partition_probe` tier 9
+    # re-vendors it with: `vendor/mistral/tok.py` carries no `tests__` token, so the corpus-name
+    # shield is inert there and the leaf identity has to be pinned for the same three lines.
+    ("tok.py", 263),
+    ("tok.py", 274),
+    ("tok.py", 280),
+    # The same reasoning for the other five vendored copies tier 9 owns: the pin has to be spelled
+    # with the basename the scan actually carries, and `vendor/markuplm/tok.py`, `vendor/transformers/
+    # modeling_utils.py`, `vendor/transformers/trainer.py`, `vendor/generation/test_utils.py` and
+    # `vendor/base/modeling_common.py` all lose the `tests__`/`src__` token that the corpus keys have.
+    ("tok.py", 73),
+    ("tok.py", 75),
+    ("tok.py", 77),
+    ("modeling_utils.py", 3494),
+    ("trainer.py", 2008),
+    ("test_utils.py", 5537),
+    ("test_utils.py", 5539),
+    ("test_utils.py", 5565),
+    ("modeling_common.py", 1279),
+    # ── The three parity CWE-22 keys the generic-fallback retirement reaches ──────────────────
+    # These are the rows the phase-4 arm used to report on an invented source, and the two grounds
+    # the mandate lets a blessed row keep are both unanswerable here rather than false, so the pin --
+    # not a looser rule -- is what holds them. Each is one of the eight CWE-22 keys the frozen parity
+    # baseline owns, and the shield is contractual: dropping one is a hard rollback, so the
+    # anti-surrender mechanism (exact AST identity, keep-only) is the only legal instrument.
+    #
+    # The two `cwe_937_insecure_protocol` corpus rows are called at import with a compile-time
+    # literal -- `download_file("ftp.debian.org", "release.txt")` -- so the operator never typed the
+    # name and no CLI root exists to trace. The engine already says a literal leaf names a file and
+    # not a place (`_c22_literal_names_whole_location`), which is exactly why this rule refuses to
+    # read it as an origin; the bless, not the dataflow, is what keeps the row.
+    ("test_v06_bad.py", 6),
+    ("test_v06_good.py", 7),
+    # The harness's own read of a corpus file: `abs_path = case.get_absolute_path()` crosses a method
+    # on a class declared in another module, and the command line that really did choose the root
+    # (`argparse` at runner.py:280 under a `__main__` guard at 298) is three objects away from the
+    # sink, in a scope the intra-file caller hop cannot climb.
+    ("runner.py", 105),
 })
 # Archive constructors are exempt from the open() taint requirement: `tarfile.open` shares the `open`
 # leaf, and a Zip-Slip extraction is a finding about the archive, not about who chose the path. Both
 # the dotted and the import-resolved spelling are tested, so `import tarfile as tf` cannot slip past.
 CWE22_ARCHIVE_CONSTRUCTOR_MODULES = frozenset({"tarfile", "zipfile"})
+# An interactive prompt is a command line read one value at a time: `click.prompt("path")` and
+# `click.confirm(...)` return text the operator typed at the same terminal that started the program,
+# so a path built from them is the mandate's condition (a) in a different spelling. Listed apart from
+# `CWE22_OPERATOR_ROOT_CALLS` because those parse the whole command line into a namespace while these
+# return a single value, and the trust being extended is the namespace-free one.
+CWE22_OPERATOR_INTERACTIVE_CALLS = frozenset({"prompt", "confirm", "prompt_pass", "get_current_context"})
+# The click/typer decorators that bind a parameter to typed text. Only consulted in a module that
+# imports one of `CWE22_CLI_ENTRYPOINT_MODULES`, so `@retry(argument)`-style decorators in a library
+# cannot mint operator trust; a `command`/`group` decorator marks the entrypoint itself and its
+# options are the `option`/`argument` ones.
+CWE22_CLI_DECORATOR_LEAVES = frozenset({"option", "argument", "command", "group"})
+# Nodes the reachability walk may examine for one sink before it declines to answer. Declining is not
+# a verdict about the file: `_c22_path_sink_reaches_operator` reports True, which sends the record down
+# HEAD's own path (synthetic source, LOUD, no provenance walk). The direction is deliberate -- the only
+# thing a wide graph can buy this round is a suppression, and a suppression has to be PROVEN, so a walk
+# that stops early can cost a retirement and cannot manufacture one. The limit exists because the arena's
+# seconds are not spread evenly: 16 resolutions in one transformers CLI module expand to 67,921 nested
+# `resolve_path_provenance` frames and 30.1s of its 31.7s scan (`scratch/_c22_r3_onefile_prof.py`) while
+# the arena's whole suppression population answers in tens of frames
+# (`scratch/_c22_r3_prov_split.py`). Tighter budgets were measured and cost rows without buying time: 1,500 and 800 nodes
+# give back 6 and 9 more CWE-22 lines in the arena's first 40 groups for 43.9s and 44.6s against 4,000's
+# 43.7s (`scratch/_c22_r3_reach_limit.py`), because the seconds live in the handful of widest graphs that
+# 4,000 already declines. Varied by scratch harnesses through this module global.
+CWE22_REACH_VISIT_LIMIT = 4000
 # A name read out of a directory is a RESOLVED origin, not a bare variable: whoever can create a file
 # in that directory chooses the string. The dirent-closure seal abstained from pruning these shapes
 # (`cwe22_dirent_closure_probe`, DIRENT_SEAL='abstained') because a multi-component glob is not a
@@ -8475,6 +8570,16 @@ class TaintTracker:
                 return True
             if _c22_dotted_source_is_untrusted(expr.func):
                 return True
+            if isinstance(expr.func, ast.Attribute) and self._c22_expr_is_untrusted_source(
+                    table, expr.func.value, depth + 1):
+                # `request.args.get("d")` and `request.args["d"]` are one source in two spellings, and
+                # the dotted table is built for the stdlib roots -- `os.environ.get` works because its
+                # whole prefix is in `CWE22_UNTRUSTED_SOURCE_SPOTS`, while `request.args.get` never
+                # matches, because the web sources live in the NAME table, which only the
+                # Name/Attribute/Subscript arm reads. So a call asks its receiver. Without this hop a
+                # method-call read of a request object is "unproven", and a rule that refuses a proof
+                # on that basis retires a real remote path.
+                return True
             return any(self._c22_expr_is_untrusted_source(table, a, depth + 1)
                        for a in list(expr.args) + [kw.value for kw in expr.keywords])
         if isinstance(expr, (ast.Name, ast.Attribute, ast.Subscript)):
@@ -8539,24 +8644,35 @@ class TaintTracker:
         return self._c22_callers_pass_untrusted_value(tree, fname)
 
     def _c22_open_sink_owes_proven_taint(self, record, sink) -> bool:
-        """Must this `open()` produce a resolved untrusted origin before it may report?
+        """Must this filesystem sink produce a resolved untrusted origin before it may report?
 
         Two mechanisms reported `open(<bare variable>)` with no taint whatsoever. Phase 11 adopts the
         registry sink and stamps a synthetic `UNTRUSTED_PATH_TRAVERSAL`, and its only gate was
         `_is_safe_path` -- so "not provably safe" was being used as "untrusted". The funnel's
         `ProvenanceState.UNKNOWN` arm then appends a 0.50 edge for whatever is left. Both are
-        assumptions about a caller, which is the same question the synthetic-source guard asks: can
-        this module be handed a remote value? A module that declares no entrypoint and no harness
-        cannot, so its `open()` owes a proof instead of borrowing one.
+        assumptions about a caller, which is the same question the synthetic-source guard asks. The
+        answer this rule accepts is not "the module declares an entrypoint" but "a value the operator
+        or the network controls demonstrably reaches one of these arguments" -- a declaration is a
+        fact about the file, and the mandate is a fact about the argument.
 
-        Four things refuse the requirement, every one in the keep-loud direction:
-          * a node that is not an open-family call, so deletes, writes through other APIs and the
-            cascade's own shapes are untouched;
+        The name is this rule's origin, not its scope. The scope is every CWE-22 path sink the funnel
+        reaches, because the fallback was never specific to `open()`: `shutil.rmtree(self.hparams.
+        output_dir)`, `save_json(self.metrics, path)` and a repo helper called with a bare variable
+        are the same assumption in a different verb, and the arena's surviving rows are mostly those
+        verbs. Four things refuse the requirement, every one in the keep-loud direction:
+          * a node that is not a call, so `with`-target shapes, cascade messages and attribute-only
+            records are untouched;
           * an archive constructor or extraction -- `tarfile.open` shares the `open` leaf, and
-            Zip-Slip is a finding about the archive regardless of who chose the path;
-          * a module that declares an entrypoint or a test harness, which is where the frozen Big-8
-            and parity keys live (8 of the 16 Big-8 CWE-22 keys are harness `open()` rows);
-          * the exact-identity keep-loud pin, for the blessed row whose caller is in another module.
+            Zip-Slip is a finding about the archive regardless of who chose the path. This is the
+            sacred floor: it stays 100% loud and no argument about provenance is allowed to reach it;
+          * a path that demonstrably carries an operator value (see
+            `_c22_path_sink_reaches_operator`): a script that opens `args.csv_file` is exactly the
+            shape the mandate wants kept, and the module-level fact alone is not what keeps it -- the
+            value reaching this argument is, which is why the question is asked in every module. A
+            binding graph too wide to walk inside `CWE22_REACH_VISIT_LIMIT` answers the same way, on
+            purpose: a decline leaves the record loud, so the bound can cost a retirement and cannot
+            buy a suppression;
+          * the exact-identity keep-loud pin, for blessed rows whose caller is in another module.
         """
         node = record.node
         if not isinstance(node, ast.Call):
@@ -8565,8 +8681,6 @@ class TaintTracker:
         names = {dotted_name(node.func) or "",
                  self.resolve_canonical_name(node.func, record.scope_id) or ""}
         names.discard("")
-        if not any(n in FILE_OPEN_FUNCS or n.rsplit(".", 1)[-1] in FILE_OPEN_FUNCS for n in names):
-            return False
         if any(part in CWE22_ARCHIVE_CONSTRUCTOR_MODULES for n in names for part in n.split(".")):
             return False
         marker = f"{sink.symbol or ''} {sink.metadata.get('operation') or ''}"
@@ -8584,7 +8698,187 @@ class TaintTracker:
         tree = self.modules.get(mod_name)
         if tree is None:
             return False
-        return not self._c22_module_entrypoint_facts(tree)
+        # The reachability question is asked of every module, not only of the ones that declare an
+        # entrypoint. The facts used to be a gate in front of it -- "a module that declares nothing
+        # cannot be handed a value, so do not look" -- and that gate was wrong in the one direction
+        # this rule is not allowed to be wrong in: `import os` plus
+        # `read_doc(os.environ["CFG"])` two lines below the helper is a resolved origin with no
+        # module-level fact anywhere in sight, and the sink line went quiet while only the call site
+        # stayed loud. The facts are inputs to the walk (they are how an argparse namespace is named),
+        # never a reason to skip it.
+        return not self._c22_path_sink_reaches_operator(node, tree)
+
+    def _c22_path_sink_reaches_operator(self, node, tree) -> bool:
+        """Can an operator-controlled value reach THIS sink call through its arguments?
+
+        The mandate's two halves, asked of the arguments rather than of the module: (a) a direct
+        command-line or remote root, and (b) a parameter that a caller in this file actually hands
+        such a value to. The test is argument-wide, not first-argument-only, because a two-path sink
+        (`shutil.move(src, dst)`) has no single "the path argument", and because an argument-wide
+        test can only ever keep a row loud, never silence one -- the fail-closed direction.
+
+        What counts as an operator value is decided by the engine's own predicates, not by a spelling
+        invented here: `_c22_expr_is_untrusted_source` for the remote sources it already knows
+        (`sys.argv`, `os.environ`, `sys.stdin`, `input()`, a web request), the argparse/click
+        namespace facts for the command line, and `_c22_bound_values` for the hop from a parameter
+        back to what the file's call sites pass it.
+        """
+        table = self._memo_assignment_map(tree)
+        _guarded, argparse_names = self._c22_operator_facts_on(tree)
+        command_params = self._c22_cli_command_params(tree)
+        # Every parameter name any command in this file is handed. It is a superset of the names the
+        # holders test below can answer True for, so it can only ever decline a lookup whose answer was
+        # already False: no name that could be a root loses its chance to be recognised as one. The
+        # lookup it declines is `_c22_enclosing_def_name`, which scans the module's whole node list,
+        # and the arena asked it 41,231 times per 20 groups (`scratch/_c22_r3_reach_counts.py`) to
+        # service 3 files that declare a command at all (`scratch/_c22_r3_root_token_skip.py` counts
+        # them) -- the empty table had already answered every one of those questions.
+        cli_param_names = (frozenset().union(*command_params.values())
+                           if command_params else frozenset())
+        owner = (self._c22_enclosing_def_name(tree, node.lineno) if cli_param_names else "")
+        budget = [CWE22_REACH_VISIT_LIMIT]
+        for arg in list(node.args) + [kw.value for kw in node.keywords]:
+            if self._c22_value_reaches_operator(tree, table, arg, argparse_names,
+                                                command_params, owner, cli_param_names,
+                                                budget=budget):
+                if budget[0] <= 0:
+                    # Telemetry, not a verdict: `True` covers "found a root" and "too wide to ask"
+                    # because both leave the record on HEAD's path, and the arena scorecard has to be
+                    # able to tell them apart. Nothing reads this inside the engine.
+                    self._c22_reach_declines = getattr(self, "_c22_reach_declines", 0) + 1
+                return True
+        return False
+
+    def _c22_value_reaches_operator(self, tree, table, expr, argparse_names, command_params,
+                                    owner: str, cli_param_names=None,
+                                    depth: int = 0, seen=None, budget=None) -> bool:
+        """Is there a command-line or remote root anywhere in this value's chain?
+
+        Unknown is silent here and that is correct, because this predicate only ever REFUSES the
+        proof requirement: failing to find a root sends the row to the provenance walk, which is the
+        arm that can still keep it loud. Every branch is bounded (depth 6, an identity set against
+        cycles, and `budget` for width) and each of the three ways a root is recognised is a presence
+        fact about this file. A command-decorated parameter counts as a root in whatever function the
+        reference sits in, so a `@click.option` value handed to a helper is still recognised two hops
+        out.
+
+        `budget` is the width bound and it answers in the same direction as a found root -- True --
+        because both of those outcomes leave the record exactly where HEAD left it. The outcome that
+        needs proof is False, and False is only ever returned from a walk that finished.
+        """
+        if expr is None or depth > 6:
+            return False
+        if budget is not None:
+            budget[0] -= 1
+            if budget[0] <= 0:
+                return True
+        seen = seen or frozenset()
+        if id(expr) in seen:
+            return False
+        seen = seen | {id(expr)}
+        if self._c22_expr_is_untrusted_source(table, expr):
+            return True
+        for n in ast.walk(expr):
+            if budget is not None:
+                budget[0] -= 1
+                if budget[0] <= 0:
+                    return True
+            if isinstance(n, ast.Call):
+                leaf = (n.func.attr if isinstance(n.func, ast.Attribute)
+                        else n.func.id if isinstance(n.func, ast.Name) else "")
+                if leaf in CWE22_OPERATOR_ROOT_CALLS or leaf in CWE22_OPERATOR_INTERACTIVE_CALLS:
+                    return True
+                continue
+            if argparse_names and isinstance(n, (ast.Name, ast.Attribute, ast.Subscript)):
+                base = n.id if isinstance(n, ast.Name) else (dotted_name(n.value) or "")
+                if base in argparse_names and self._c22_is_namespace_root(
+                        tree, n, base, argparse_names,
+                        dotted_name(n) if isinstance(n, ast.Attribute) else None):
+                    return True
+            if isinstance(n, ast.Name):
+                # A command-decorated parameter is judged in the scope that holds the reference, which
+                # is not always the scope that holds the sink: `run(model_dir)` hands a `@click.option`
+                # value to a helper, and the `Name` in that call site belongs to the command function.
+                # Asking only the sink's own function made that hop invisible, so the value stopped
+                # being a root exactly where the mandate's condition (a) still holds.
+                if command_params:
+                    # Both holders are looked up only for a name some command in this file is actually
+                    # handed. For any other name every table entry fails the membership test, so the
+                    # two lookups below would have answered False -- the precheck removes the work,
+                    # never a root. `None` is the legacy entry (a caller that has not computed the
+                    # set), and it derives it rather than skipping the test.
+                    names = (frozenset().union(*command_params.values())
+                             if cli_param_names is None else cli_param_names)
+                    if n.id in names:
+                        if (n.id in command_params.get(owner or "", frozenset())
+                                or n.id in command_params.get(
+                                    self._c22_enclosing_def_name(
+                                        tree, getattr(n, "lineno", 0)) or "", frozenset())):
+                            return True
+                found = self._c22_bound_values(tree, n, n.id)
+                if found:
+                    if budget is not None:
+                        # `ast.walk` counts the syntax; this counts the bindings, which is where the
+                        # arena's width actually lives (one Name can carry dozens of assignments).
+                        budget[0] -= 1 + len(found[1])
+                        if budget[0] <= 0:
+                            return True
+                    for cand in found[1]:
+                        if self._c22_value_reaches_operator(tree, table, cand, argparse_names,
+                                                            command_params, owner,
+                                                            cli_param_names,
+                                                            depth=depth + 1, seen=seen,
+                                                            budget=budget):
+                            return True
+        return False
+
+    def _c22_cli_command_params(self, tree) -> dict:
+        """function name -> the parameters a click/typer decorator fills from the command line.
+
+        `@click.option("--model_dir", "model_dir")` and `@click.argument("input_file")` bind a
+        parameter to a value the operator typed, and no call site in the file ever passes it: the CLI
+        framework does. Reading such a parameter is condition (a) of the mandate, so the decorator has
+        to be a fact the rule can see. Two presences are required, never a name match alone: the
+        module must import a command-line library (`CWE22_CLI_ENTRYPOINT_MODULES`), and the decorator
+        must be a `click`/`typer` spelling whose leaf is an option or argument. Only names that really
+        are parameters of that function are recorded, so a decorator cannot launder a local variable.
+        """
+        cached = tree.__dict__.get("_c22_cli_command_params")
+        if cached is not None:
+            return cached
+        imported = set()
+        for n in self._module_nodes(tree):
+            if isinstance(n, ast.Import):
+                imported.update((a.name or "").split(".")[0] for a in n.names)
+            elif isinstance(n, ast.ImportFrom) and n.module:
+                imported.add(n.module.split(".")[0])
+        tables = {}
+        if imported & CWE22_CLI_ENTRYPOINT_MODULES:
+            for n in self._module_nodes(tree):
+                if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                params = {a.arg for a in list(n.args.args) + list(n.args.kwonlyargs)}
+                held = set()
+                for dec in n.decorator_list:
+                    call = dec if isinstance(dec, ast.Call) else None
+                    if call is None:
+                        continue
+                    leaf = (call.func.attr if isinstance(call.func, ast.Attribute)
+                            else call.func.id if isinstance(call.func, ast.Name) else "")
+                    if leaf not in CWE22_CLI_DECORATOR_LEAVES:
+                        continue
+                    given = [a.value for a in call.args if isinstance(a, ast.Constant)
+                             and isinstance(a.value, str)]
+                    if not given:
+                        continue
+                    last = given[-1]
+                    name = last.lstrip("-").replace("-", "_")
+                    if name in params:
+                        held.add(name)
+                if held:
+                    tables[n.name] = frozenset(held)
+        tree.__dict__["_c22_cli_command_params"] = tables
+        return tables
 
     @staticmethod
     def _c22_trace_is_cut_short(source_trace) -> bool:
@@ -29538,8 +29832,11 @@ class TaintTracker:
             # One answer per record, asked before any collector's synthetic source can attach an
             # edge. It does not resolve anything here: an owed sink simply loses its right to
             # short-circuit, so the cheap prunes below still run first and only a survivor pays for
-            # the provenance walk. The requirement is then enforced at the two places an unproven
-            # `open()` used to become a finding -- the synthetic short-circuits and the UNKNOWN arm.
+            # the provenance walk. The requirement is then enforced at the three places an unproven
+            # path sink used to become a finding -- the phase-11 and phase-5 synthetic short-circuits,
+            # the phase-4 short-circuit the generic dynamic-variable emitter lands on, and the
+            # UNKNOWN arm. All three read this one flag, so no emitter can register a CWE-22 sink
+            # that escapes the answer.
             c22_open_owes_taint = (
                 (cwe == "CWE-22" or stype in ("PATH_TRAVERSAL", "FILE_ACCESS") or op == "FILE_ACCESS")
                 and target_expr is not None
@@ -29687,7 +29984,14 @@ class TaintTracker:
                 continue
 
             p4_source_id = sink.metadata.get("p4_source_id")
-            if p4_source_id:
+            if p4_source_id and not c22_open_owes_taint:
+                # The generic fallback emitter (`_collect_cwe22_parameter_path_sinks`) reports by
+                # adopting or creating a sink and stamping this key, so this arm -- not the phase-11
+                # one -- is where `CWE-22: Unvalidated user input or dynamic variable used in file
+                # path operation` became a finding with no taint origin at all. The sink stays
+                # registered; only the invented source loses its right to short-circuit, so the
+                # provenance walk below decides, and a row whose origin really does resolve to
+                # something untrusted keeps reporting with the same message it always had.
                 self.edges.append(DataFlowEdge(
                     source_id=p4_source_id,
                     target_id=sink.id,

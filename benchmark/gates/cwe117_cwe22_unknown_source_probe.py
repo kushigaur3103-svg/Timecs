@@ -20,16 +20,25 @@ argparse/dataclasses" costs 4 (`src__transformers__trainer.py` 736, 1604, 1609, 
 `f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}"`, is character-identical to an
 example-script false positive, so no expression-shape rule can separate the two populations.
 
-One fixture spelling here is collateral from `cwe22_open_taint_probe`, and the repair is a module fact,
-not a loosened assertion: `parameter_derived_path_write` used to be loud because the engine stamped a
-placeholder onto `open(<param derived>)` in *any* module, which is exactly the blanket that rule
-retired for modules that declare no entrypoint. The fixture now spells a `__main__` guard, so the
-placeholder is still injected - by the entrypoint-aware collector, on a module that earns it - and the
-three things this probe actually checks about the case (reported at line 4, edge id
-`UNTRUSTED_PATH_TRAVERSAL`, zero registered sources) are unchanged. Measured in
-`scratch/_c22_placeholder_collateral.py`: the `argv`/`argparse` spellings move the row to another line
-and onto the generic synthetic message, so they would have changed the contract instead of the ground
-for it.
+One fixture spelling here is collateral from `cwe22_open_taint_probe`. This file used to call its repair "a
+module fact, not a loosened assertion", and to support that with a measurement in
+`scratch/_c22_placeholder_collapse.py` saying the `argv`/`argparse` spellings move the row off line 4 and
+onto the generic synthetic message, so using one would have changed the contract rather than the ground for
+it. Measurement has since falsified that: the row moved a line in that script because every candidate there
+concatenates a *second* `import os` on top of `BASE`, and the round-3 rule asks its question of the
+**argument** (`_c22_open_sink_owes_proven_taint`), so a `__main__` guard that hands `save` nothing but
+literals no longer buys the placeholder at all - `scratch/_c22_r3_engines.py --diff` on that fixture returns
+its CWE-22 row as head-only, a booked supersession. The ground the rule does accept is now spelled in the
+fixture: `save(sys.argv[1], "weights.bin")`, one hop the walk resolves exactly as measured by
+`open_helper_param` and `save_json_via_local` in `scratch/_c22_walk_resolution_grid.py`. What did not move is
+the contract, which is the only thing a placeholder probe may lock: the same three assertions - reported at
+line 4, carried by a `UNTRUSTED_PATH_TRAVERSAL` edge whose `source_id` is not a node in `tracker.sources`, in
+a module registering **zero** sources - hold verbatim, because naming argv as a call argument gives the
+placeholder a reason to be stamped, not a second route in; `argparse` under the guard is still silent
+(`scratch/_c22_placeholder_collateral2.py`, which prices each candidate against all three assertions).
+`scratch/_c22_r3_misc_carrier_grid.py` re-reads this fixture out of this file and shows the row travelling
+with `_c22_path_sink_reaches_operator` alone: blind that walk and line 4 goes quiet, restore the retired
+blanket and it comes back.
 
 This file asserts the contract on sources parsed in memory, never on files it opens: the parity gate
 scans this directory, and every content-read of a path assembled at runtime inside it is reported as
@@ -77,13 +86,16 @@ PLACEHOLDER_CASES = [
         '    logger.info(f"  Total batch size = {total}")\n'),
      'CWE-117', 5, 'UNKNOWN'),
     ('parameter_derived_path_write', (
-        'import os\n'
+        # The argv read is an ARGUMENT to the helper, which is what the round-3 owed rule accepts:
+        # `save(sys.argv[1], ...)` is how the walk carries an operator value into `target` on line 4,
+        # and the `__main__` guard around it keeps the shape of a training-script entrypoint.
+        'import os, sys\n'
         'def save(output_dir, name):\n'
         '    target = os.path.join(output_dir, name)\n'
         '    with open(target, "w", encoding="utf-8") as fh:\n'
         '        fh.write("x")\n'
         'if __name__ == "__main__":\n'
-        '    save("out", "weights.bin")\n'),
+        '    save(sys.argv[1], "weights.bin")\n'),
      'CWE-22', 4, 'UNTRUSTED_PATH_TRAVERSAL'),
 ]
 

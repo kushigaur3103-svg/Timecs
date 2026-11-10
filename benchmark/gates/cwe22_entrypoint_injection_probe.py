@@ -66,7 +66,85 @@ caller in *another* module chose. Cross-module callers are invisible to this rul
 its size rows. TIER 2 checks that the table is not decoration: the two lines must be **asked**,
 answered True, and the ground must be the pin. TIER 5 checks structurally that the only thing the
 table can do is `return True` -- a keep-loud table, never a silence table -- and
-`keep_loud_table_emptied` proves dropping it moves both keys.
+`keep_loud_table_emptied` proves dropping it moves both keys. Since round 3 the structural check is
+per SITE rather than per count: the two deciding predicates must each hold exactly one `If` whose whole
+body is `return True` (the source is owed) or `return False` (no proof is owed), and any other reader of
+the table is only legal if its membership test sits on the keep side of a discard -- `not in` the table,
+an empty `else`, and a body that can only drop the record. `sites_outside_deciding` is printed with the
+measured number, and it is `0` for the engine as it stands.
+
+Round 3: the eleven rows the successor open()-taint rule took from this gate
+---------------------------------------------------------------------------
+`_c22_open_sink_owes_proven_taint` asks the provenance question of the SINK ARGUMENT rather than of the
+module -- may this filesystem path sink report only if a resolved untrusted origin reaches one of its
+arguments? -- and it answers in the four places a CWE-22 path row is emitted (the phase-11 registry
+sink, the phase-5 and phase-4 short-circuits, and the subtract-only `ProvenanceState.UNKNOWN` prune
+arm). Eleven of this gate's rows went quiet. Every one of them is attributed before being touched, with
+`scratch/_c22_r3_engines.py --diff` (HEAD's snapshot and the live engine in separate processes), and
+every one lands in the head-only column: `scratch/_c22_r3_entrypoint_lost_rows.py` writes the capture of
+all eleven -- eight carriers, three refusals, `head_rows>0 live_rows=0` for each -- to
+`scratch/_c22_r3_entrypoint_lost_rows.txt`, and `scratch/_c22_r3_fact_attributions.txt` holds the same
+question asked of all thirteen fact fixtures. A row quiet under BOTH arms would not be this round's
+collateral and none of those expectations was touched; the one such row this round came near is filed
+inside the capture, the read-mode `open(options.path)` of a genuinely declared `parse_args()` namespace,
+`head_rows=0 live_rows=0`.
+
+Eight of them are `LOUD_BY_FACT` carriers, and their proposition was never the retired blanket: it is
+that the classifier declares a module fact and the collector therefore injects a synthetic source. That
+is still exactly what happens -- the guard is still consulted once per carrier and still answers True
+(kept at 13 in TIER 3) -- but a fact alone no longer buys the report, so each carrier was re-spelled to
+name an origin the walk resolves: a command line this file parses, a value read off a request, or an
+`input()` the script asks for. Two properties decided the spelling, both measured in
+`scratch/_c22_r3_entrypoint_candidates.py`, `scratch/_c22_r3_entrypoint_method_grid.py` and the
+before/after fact-set table of `scratch/_c22_r3_entrypoint_fact_sets.py`: no line number moved, no
+carrier's own fact was replaced, `facts_blind_main_guard` and `facts_blind_import_time_execution` still
+move their rows -- which is why those two carriers take an `argparse` root and not an `argv` one, since
+`argv_read` plus the reach arm would have kept the guard True after the fact was dropped and turned the
+mutation into a MISSED. Seven of the eight gained no fact at all; `fact_route_decorator_only` gains
+`web_name` alongside `route_decorator`, the same web family and a fact no mutation pins, and it is the
+one place where the repair had to say which fact it was willing to spend. `self.read(<root>)` does not
+resolve a method parameter while `Case().read(<root>)` does, which is why the two harness carriers
+construct their driver instead of calling through `self`.
+
+Three more are the Lever-2 refusals `operator_namespace`, `unimported_tempfile` and
+`rmtree_operator_root`, and those ARE the blanket: their booked reason was "this base is not provably
+safe, so it stays loud". They are re-filed, not deleted -- `LEVER2_REFUSED_RETIRED_BY_OPEN_TAINT`, with
+TIER 4c printing `blanket_brought_back=3/3` and `open_taint_blanket_restored` as the falsification, so
+the win is pinned to the clause that earned it and cannot be re-tuned into the proven tables. Each was
+scrutinised for a root the walk is supposed to recognise and none declares one: `options` is never bound
+in either carrier, and `mkdtemp()` is spelled with no `tempfile.` receiver, which
+`_c22_path_is_proven_temp_root` refuses by design because a bare name could be anybody's function. The
+counterpart table `LEVER2_REFUSED_WITH_ROOT_DECLARED` is the other half of that claim: the same three
+shapes WITH a declared `parse_args()` namespace or a `sys.argv` root must stay loud, or the win would be
+a hole rather than a refinement. One shape is filed as neither: an `import argparse` module that binds
+`options = argparse.ArgumentParser().parse_args()` and then reads `open(options.path)` is quiet at HEAD
+too (`head_rows=0 live_rows=0`), which is a pre-existing gap in the read-mode `open()` sink and not this
+round's collateral -- the write-mode spelling is what the walk sees, and it is pinned loud.
+
+Two consequences for the machinery, recorded because they are the interesting part. First, a booked win
+cannot be pinned by message: at HEAD those five rows report under the registry's `CWE-22: open` /
+`CWE-22: shutil.rmtree`, not under the synthetic source's generic message, so `BLANKET_BOOKED_ROWS` and
+`pinned_state` assert presence for exactly those labels and stay message-scoped everywhere else. Second,
+four arms that weaken the classifier (`guard_removed`, `import_time_accepts_any_binding`,
+`route_decorator_reads_any_attribute`, `harness_base_plain_mixin`) had gone MISSED, because the guard
+now sits BEHIND the provenance requirement and restoring it alone cannot bring a row back -- not because
+the clause is decorative. They run with the successor's answer forced to HEAD's (`_OPEN_TAINT_BLANKET_
+CONTEXT`), which keeps their baselines quiet and their weakened rows movable, and falsifies their own
+clause instead of the neighbour's. Nothing in this section lowered a floor: TIER 1 and TIER 2 are the
+same claim, all 24 blessed CWE-22 keys are still emitted and 0 declined, no path or folder blacklist
+exists, no baseline was re-blessed, and every declined-source, fact-recognition, pin-table and blessed-
+reach assertion is still pinned.
+
+Where each surviving row is still pinned, clause by clause: the eight `EARNED_QUIET` modules to the
+guard's declined answer (TIER 3 asserts the line is empty AND that `ground_of` reads `declined`, so a
+quiet row nobody was asked about cannot be booked here), the two `SUPERSEDED_BY_OPEN_TAINT` carriers to
+that same declined answer plus the successor's retire, the thirteen `LOUD_BY_FACT` carriers to the fact
+ground of `_c22_module_entrypoint_facts` (consult count exactly one, generic message present,
+`guard_always_false` and the two fact-blind arms still moving), the two `LOUD_BY_REACH` carriers to
+`_c22_callers_pass_untrusted_value` with a control that fails if a reach fixture secretly carries a
+fact, the three remaining Lever-2 refusals to the roots they actually spell, the three re-filed ones to
+the restored blanket, and the 24 blessed keys plus the two `modeling_utils.py` pins to TIER 1, TIER 2
+and `keep_loud_table_emptied` -- unchanged, unlowered, still emitted, still zero declined.
 
 Collateral: the four gates that pinned the blanket
 --------------------------------------------------
@@ -85,10 +163,12 @@ Usage
     python benchmark/gates/cwe22_entrypoint_injection_probe.py
     python benchmark/gates/cwe22_entrypoint_injection_probe.py --mutate=<name>
 
-Eleven weakenings are pinned below, each one clause of the shipped classifier or one arm of the
-deciding predicate. Per Harness Law 8 each must move the row its clause decides, and the tripwire is
-line-scoped and message-scoped (the synthetic source's own message), because a fixture module can
-carry other CWE-22 rows that belong to other clauses.
+Twelve weakenings are pinned below, each one clause of the shipped classifier, one arm of the deciding
+predicate, or -- since round 3 -- the successor's provenance answer itself. Per Harness Law 8 each must
+move the row its clause decides, and the tripwire is line-scoped and message-scoped (the synthetic
+source's own message), because a fixture module can carry other CWE-22 rows that belong to other
+clauses. The five rows booked as the successor's win are the exception and are pinned by presence
+instead, because HEAD carries them under a registry message this gate does not own.
 """
 from __future__ import annotations
 
@@ -162,6 +242,8 @@ EARNED_QUIET = {
 # (`cwe22_open_taint_probe`) then retired the unproven `open()` fallback in modules that declare no
 # entrypoint, which is exactly these two shapes, so the whole row is now quiet. This gate still owns
 # the half it always owned: the guard declined the synthetic source, and the generic message is gone.
+# Round 3 added the falsification that names the successor rather than this guard: both labels are in
+# `BLANKET_BOOKED_ROWS`, which `open_taint_blanket_restored` moves by putting HEAD's answer back.
 SUPERSEDED_BY_OPEN_TAINT = {
     'library_write_mode_open': (2, 'def dump_state(state_slot, payload):\n'
                                   + '    with open(state_slot, "w") as handle:\n'
@@ -171,10 +253,44 @@ SUPERSEDED_BY_OPEN_TAINT = {
 }
 
 # Loud now, loud at HEAD, and loud because the MODULE spells an entrypoint: one fixture per fact.
+#
+# 2026-11-10, and eight of these thirteen had to be re-spelled to keep that sentence true. The
+# successor rule (`_c22_open_sink_owes_proven_taint`, filed by `cwe22_open_taint_probe`) asks the
+# provenance question of the ARGUMENT rather than of the module, so a fact is now a reason to LOOK and
+# no longer a reason to REPORT: `scratch/_c22_r3_fact_attributions.txt` runs
+# `scratch/_c22_r3_engines.py --diff` over all thirteen and the eight carriers below were loud at HEAD
+# and are quiet live, which is a supersession, not a broken fixture. The repair is EARN, not re-file:
+# what these fixtures assert is that the classifier declares a module fact and the collector injects a
+# synthetic source, and a carrier that ALSO names its own command-line or remote value still proves
+# exactly that (`scratch/_c22_r3_entrypoint_candidates.py`, `scratch/_c22_r3_entrypoint_method_grid.py`
+# are the measurements behind each spelling). Two constraints decided every choice:
+#
+#   * the fact set must stay the fixture's own fact. `facts_blind_main_guard` and
+#     `facts_blind_import_time_execution` are only falsifications if the row goes quiet when that one
+#     fact is dropped, so a carrier may not smuggle in a second fact to buy its origin. An
+#     `argparse.ArgumentParser().parse_args()` INLINE in the argument, or `flask.request.args[...]` in a
+#     module that already imports `flask`, resolve to an operator root and add nothing to the fact set
+#     (measured: `main_guard_inline_parse`, `import_time_namespace`, `flask_dotted`). The one carrier
+#     that does spend a second fact is named in the Round 3 section above, with the measurement.
+#   * the origin must not be one the REACH arm also recognises, for those same two fixtures. That is
+#     why `fact_main_guard` parses a command line instead of reading `sys.argv`: with `argv_read` also
+#     present, `_c22_callers_pass_untrusted_value` would keep the guard True after the fact is dropped
+#     and the mutation would report MISSED. `fact_pytest_import`/`fact_harness_class`/
+#     `fact_tester_mixin_base`/`fact_top_level_test_def` are free to use `input()` or a request value,
+#     because no mutation pins the harness/web facts they carry.
+#
+# One hop the walk does NOT take, and it is recorded rather than papered over: `self.read(<root>)`
+# inside the same class does not resolve a method parameter, while `Case().read(<root>)` does (the
+# `self_call` and `method_then_def_call` rows of `scratch/_c22_r3_entrypoint_method_grid.py`). Every
+# harness carrier below therefore names its caller as a construction, which is what the engine can see
+# and what a real driver does.
 LOUD_BY_FACT = {
+    # `main_guard`, and nothing else: the guard is the fact and the parsed namespace is the origin.
     'fact_main_guard': (2, HELPER + 'if __name__ == "__main__":\n'
-                        + '    load_config("cfg.json")\n'),
-    'fact_import_time_call': (2, HELPER + 'print(load_config(cfg_argument))\n'),
+                        + '    load_config(argparse.ArgumentParser().parse_args().cfg)\n'),
+    'fact_import_time_call': (2, HELPER
+                              + 'options = argparse.ArgumentParser().parse_args()\n'
+                              + 'print(load_config(options.cfg))\n'),
     'fact_cli_argparse': (3, 'import argparse\n' + HELPER
                           + 'def run():\n'
                           + '    options = argparse.ArgumentParser().parse_args()\n'
@@ -188,29 +304,37 @@ LOUD_BY_FACT = {
     'fact_web_read_off_request': (2, 'def view(request):\n'
                                   + '    with open(request.args["f"]) as handle:\n'
                                   + '        return handle.read()\n'),
+    # the dotted `flask.request` read is a remote value AND adds no second fact to a `web_module` file.
     'fact_flask_import': (3, 'import flask\n' + HELPER + 'def run():\n'
-                          + '    return load_config(cfg_argument)\n'),
+                          + '    return load_config(flask.request.args["cfg"])\n'),
     'fact_route_decorator_only': (2, 'def read_upload(cfg_slot):\n'
                                   + '    with open(cfg_slot) as handle:\n'
                                   + '        return handle.read()\n'
                                   + 'class Api:\n'
                                   + '    @app.get("/f")\n'
                                   + '    def handler(self):\n'
-                                  + '        return read_upload(name_argument)\n'),
-    'fact_pytest_import': (3, 'import pytest\n' + HELPER),
+                                  + '        return read_upload(request.args["cfg"])\n'),
+    'fact_pytest_import': (3, 'import pytest\n' + HELPER + 'def run():\n'
+                           + '    return load_config(input("which config?"))\n'),
     'fact_harness_class': (4, 'import unittest\n'
                           + 'class Case(unittest.TestCase):\n'
                           + '    def test_read(self, cfg_slot):\n'
                           + '        with open(cfg_slot) as handle:\n'
-                          + '            return handle.read()\n'),
+                          + '            return handle.read()\n'
+                          + 'def drive():\n'
+                          + '    return Case().test_read(input("which config?"))\n'),
     'fact_tester_mixin_base': (5, 'class TokenizerTesterMixin:\n'
                                + '    pass\n'
                                + 'class Case(TokenizerTesterMixin):\n'
                                + '    def read(self, cfg_slot):\n'
                                + '        with open(cfg_slot) as handle:\n'
-                               + '            return handle.read()\n'),
+                               + '            return handle.read()\n'
+                               + 'def drive():\n'
+                               + '    return Case().read(input("which config?"))\n'),
     'fact_top_level_test_def': (2, HELPER + 'def test_read(cfg_slot):\n'
-                                + '    return load_config(cfg_slot)\n'),
+                                + '    return load_config(cfg_slot)\n'
+                                + 'def suite():\n'
+                                + '    return test_read(input("which config?"))\n'),
 }
 
 # Loud now with NO module fact at all: the only ground left is that a call this file can see hands an
@@ -245,11 +369,66 @@ JOIN_BASE_PROVEN = {
     'abspath_literal': 'import os\nopen(os.path.join(os.path.abspath("/opt/models"), "a.json"))\n',
     'path_cwd': 'import pathlib\nopen(str(pathlib.Path.cwd()) + "/index.json")\n',
 }
+# The refusals that still buy a report: a base the lever cannot prove safe AND that spells a root the
+# successor rule does recognise -- a remote read, a `sys.argv` read. Three more shapes used to sit in
+# these two tables; they are re-filed below, with the measurement, because their only loudness basis
+# was the blanket.
 JOIN_BASE_REFUSED = {
-    'operator_namespace': 'import os\nopen(os.path.join(options.storage_location, "a.json"))\n',
     'request_root': 'import os\nopen(os.path.join(request.root, "a.json"))\n',
-    'unimported_tempfile': 'import os\nopen(os.path.join(mkdtemp(), "a.json"))\n',
 }
+CLEANUP_TEMP_REFUSED = {
+    'rmtree_from_argv': 'import shutil\nshutil.rmtree(sys.argv[1])\n',
+    'remove_from_request': 'import os\nos.remove(request.args["f"])\n',
+}
+# ── 2026-11-10 re-filed: three refusals whose silence IS the mandate ─────────────────────────────
+# These three joined the refusal tables on the argument that a base this rule cannot PROVE safe must
+# stay loud -- "the engine cannot prove this safe" bought the report. `_c22_open_sink_owes_proven_taint`
+# retired that blanket in exactly the direction the mandate words it: a path sink is owed a RESOLVED
+# operator or remote origin, and an origin is a fact about the argument, not about the file. So the
+# question the re-file has to answer is whether each carrier declares a root at all. It does not, and
+# `scratch/_c22_r3_entrypoint_blanket_arm.py` measures the difference instead of asserting it: under
+# the shipped rule all three are quiet, under a restored blanket (the predicate forced to `False`,
+# which is HEAD's answer) every one comes back -- `operator_namespace` and `unimported_tempfile` as
+# `CWE-22: open`, `rmtree_operator_root` as `CWE-22: shutil.rmtree`. `scratch/_c22_r3_engines.py
+# --diff` puts the same three rows in the head-only column, so they are supersessions of this round and
+# not rows that were already silent.
+#
+# The refusals that stay in the tables above stay because their root really is spelled in the file:
+# `request.root` is a remote read, `sys.argv[1]` and `request.args["f"]` are the two roots the mandate
+# names. The third table below is the honest half of the re-file: the same three shapes WITH a root
+# declared, which must remain loud, because otherwise the win silently becomes a hole. Measured, not
+# assumed -- and one shape is deliberately absent from it, because it is quiet under both arms and so
+# belongs to no round. An `import argparse` module that binds
+# `options = argparse.ArgumentParser().parse_args()` and then reads `open(options.path)` reports
+# nothing at HEAD either (`scratch/_c22_r3_engines.py --diff`: `head_rows=0 live_rows=0`), which is a
+# pre-existing gap in the read-mode `open()` sink, not this round's collateral and not this table's
+# evidence. The write-mode spelling below is what the walk does see.
+LEVER2_REFUSED_RETIRED_BY_OPEN_TAINT = {
+    'operator_namespace': 'import os\nopen(os.path.join(options.storage_location, "a.json"))\n',
+    'unimported_tempfile': 'import os\nopen(os.path.join(mkdtemp(), "a.json"))\n',
+    'rmtree_operator_root': 'import shutil\nshutil.rmtree(options.storage_location)\n',
+}
+LEVER2_REFUSED_WITH_ROOT_DECLARED = {
+    'operator_namespace_declared': ('import argparse\noptions = argparse.ArgumentParser().parse_args()\n'
+                                    'open(options.storage_location, "w")\n'),
+    'tempfile_leaf_with_argv_root': ('import os\nopen(os.path.join(mkdtemp(sys.argv[1]), "a.json"))\n'),
+    'rmtree_operator_namespace_declared': ('import argparse, shutil\n'
+                                          'options = argparse.ArgumentParser().parse_args()\n'
+                                          'shutil.rmtree(options.out_dir)\n'),
+}
+
+# Every row this gate books as the successor rule's win, by SOURCE alone. `SUPERSEDED_BY_OPEN_TAINT`
+# and `LEVER2_REFUSED_RETIRED_BY_OPEN_TAINT` are asserted quiet, so the falsification that owns them
+# cannot be message-scoped the way TIER 3's is: at HEAD `library_write_mode_open` and the three
+# refusals report under the registry's own `CWE-22: open` / `CWE-22: shutil.rmtree`, and only the
+# generic synthetic rows carry the message `pinned_state` normally looks for. For a booked win the
+# question is simply whether the line is reported at all, and `scratch/_c22_r3_entrypoint_blanket_arm.py`
+# prints the message each one comes back with under the restored blanket, so the message is recorded
+# even though it is not the assertion.
+BLANKET_BOOKED_ROWS = {label: source for label, (_line, source)
+                       in SUPERSEDED_BY_OPEN_TAINT.items()}
+BLANKET_BOOKED_ROWS.update(LEVER2_REFUSED_RETIRED_BY_OPEN_TAINT)
+
 # Quiet, and NOT booked as this lever's: a path built only out of literals has no caller in it at
 # all, so the collector's literal skip owns those rows. They sit here so no later revision can claim
 # them, the way the sibling gate files its inherited rows.
@@ -262,11 +441,6 @@ CLEANUP_TEMP_PROVEN = {
                        'shutil.rmtree(os.path.join(tempfile.mkdtemp(), "sub"))\n'),
     'remove_named_temp': ('import os, tempfile\n'
                           'os.remove(tempfile.NamedTemporaryFile(delete=False).name)\n'),
-}
-CLEANUP_TEMP_REFUSED = {
-    'rmtree_from_argv': 'import shutil\nshutil.rmtree(sys.argv[1])\n',
-    'remove_from_request': 'import os\nos.remove(request.args["f"])\n',
-    'rmtree_operator_root': 'import shutil\nshutil.rmtree(options.storage_location)\n',
 }
 
 
@@ -580,6 +754,23 @@ def check_untrusted_expressions():
     return failures
 
 
+def blanket_restored(sources):
+    """Ask HEAD's question of each shape: does the retired blanket bring the row back?
+
+    `_c22_open_sink_owes_proven_taint` answering False for every record is the old behaviour -- "not
+    provably safe" stood in for "untrusted" -- and it is the only thing these rows can be booked
+    against. Patched in memory, scanned, restored in the `finally`; the same arm `open_taint_blanket_
+    restored` runs as a falsification.
+    """
+    original = ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint
+    ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = (
+        lambda self, record, sink: False)
+    try:
+        return {label: bool(scan_module(source)) for label, source in sources.items()}
+    finally:
+        ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = original
+
+
 def check_join_origins():
     """TIER 4c: Lever 2's own shapes, asserted as findings -- zero reach, measured, not assumed.
 
@@ -589,11 +780,20 @@ def check_join_origins():
     `_c22_cleanup_is_temp_teardown`) already cover the whole lever, so a second prover would move zero
     rows and hide a rule nobody can demonstrate. The third table is the honest remainder: shapes that
     are quiet for a reason this lever does not own, filed so no later revision can book them.
+
+    Two more tables joined on 2026-11-10, for the three refusals the successor rule retired. They split
+    the claim the original tables made -- "unproven means loud" -- into the two halves the mandate
+    keeps: `LEVER2_REFUSED_RETIRED_BY_OPEN_TAINT` is quiet now, and is booked against the blanket by
+    `blanket_brought_back` measured right here (plus `open_taint_blanket_restored` as a falsification),
+    so nobody can re-tune it into the proven tables; `LEVER2_REFUSED_WITH_ROOT_DECLARED` is the same
+    three shapes with the root the walk is told to look for, and it MUST stay loud, because a win that
+    quiets a declared `parse_args()` namespace as readily as an unbound `options` is a hole, not a win.
     """
     failures = []
     quiet = loud = not_claimed = 0
     for table, owns_silence in ((JOIN_BASE_PROVEN, True), (CLEANUP_TEMP_PROVEN, True),
-                                (JOIN_BASE_REFUSED, False), (CLEANUP_TEMP_REFUSED, False)):
+                                (JOIN_BASE_REFUSED, False), (CLEANUP_TEMP_REFUSED, False),
+                                (LEVER2_REFUSED_WITH_ROOT_DECLARED, False)):
         for label, source in sorted(table.items()):
             found = scan_module(source)
             if owns_silence and found:
@@ -608,8 +808,24 @@ def check_join_origins():
             failures.append(('literal-only path is no longer quiet', label, found[:1]))
         else:
             not_claimed += 1
+    retired = {}
+    for label, source in sorted(LEVER2_REFUSED_RETIRED_BY_OPEN_TAINT.items()):
+        found = scan_module(source)
+        if found:
+            failures.append(('re-filed refusal reported again without the blanket', label, found[:1]))
+        else:
+            retired[label] = source
+    brought = blanket_restored(retired)
+    for label, is_loud in sorted(brought.items()):
+        if not is_loud:
+            failures.append(('re-filed row does not come back under the retired blanket', label))
+    print(f'  refiled_by_open_taint={len(LEVER2_REFUSED_RETIRED_BY_OPEN_TAINT)} '
+          f'quiet_as_booked={len(retired)} blanket_brought_back='
+          f'{sum(1 for is_loud in brought.values() if is_loud)}'
+          f'/{len(LEVER2_REFUSED_RETIRED_BY_OPEN_TAINT)}')
     tables = (JOIN_BASE_PROVEN, JOIN_BASE_REFUSED, CLEANUP_TEMP_PROVEN, CLEANUP_TEMP_REFUSED,
-              JOIN_BASE_QUIET_NOT_CLAIMED)
+              JOIN_BASE_QUIET_NOT_CLAIMED, LEVER2_REFUSED_RETIRED_BY_OPEN_TAINT,
+              LEVER2_REFUSED_WITH_ROOT_DECLARED)
     print(f'  shapes={sum(len(table) for table in tables)} quiet={quiet} loud={loud} '
           f'quiet_not_claimed={not_claimed}')
     return failures
@@ -662,15 +878,47 @@ def check_wiring():
                 if isinstance(node, ast.Name) and node.id == 'CWE22_ENTRYPOINT_KEEP_LOUD']
     consulted = [lineno for lineno in pin_uses if lineno not in pin_defs]
     print(f'  pin_table_text_lines={pin_lines} pin_defs={pin_defs} consulted_from={consulted}')
-    # Two consults since the open() taint requirement shipped: the synthetic-source guard answers
-    # `return True` (the source is owed) and `_c22_open_sink_owes_proven_taint` answers `return False`
-    # (no proof is owed). Both are the keep-loud direction for their own question, and a third
-    # consult would mean some new rule is reading the pin without this gate knowing.
+    # Two deciding rules consult the table today: the synthetic-source guard answers `return True` (the
+    # source is owed) and `_c22_open_sink_owes_proven_taint` answers `return False` (no proof is owed).
+    # Both are the keep-loud direction for their own question. The claim this tier pins is not the
+    # count -- it is that every reader of the table can only keep a row -- so the sites that sit inside
+    # those two predicates are checked as returns and any other site is checked as a shape.
     keep_direction = {'_c22_synthetic_param_source_is_founded': True,
                       '_c22_open_sink_owes_proven_taint': False}
-    if len(pin_defs) != 1 or len(consulted) != len(keep_direction):
+    owners = [methods.get(name) for name in keep_direction]
+    inside = [lineno for lineno in consulted
+              if any(node is not None and node.lineno <= lineno <= node.end_lineno
+                     for node in owners)]
+    outside = [lineno for lineno in consulted if lineno not in inside]
+    if len(pin_defs) != 1 or len(inside) != len(keep_direction):
         failures.append(('the pin table must be defined once and consulted once per deciding rule',
-                         (pin_defs, consulted)))
+                         (pin_defs, inside)))
+    # A third site is possible: the phase-11 registry emitter can read the same table as a final
+    # `if (basename, lineno) not in CWE22_ENTRYPOINT_KEEP_LOUD: drop the record / continue`. Counting
+    # sites would call that a violation and ignoring it would call a silence table legal, so every
+    # site outside the deciding predicates is checked for the SHAPE instead -- the membership test on
+    # the keep side, an empty `orelse`, and a body that only discards. `sites_outside_deciding` is the
+    # measured number, and it is zero today: the engine's deciding predicates are the only readers.
+    for lineno in outside:
+        arms = [item for item in ast.walk(tree) if isinstance(item, ast.If)
+                and 'CWE22_ENTRYPOINT_KEEP_LOUD' in ast.unparse(item.test)
+                and item.lineno <= lineno <= item.end_lineno]
+        if len(arms) != 1:
+            failures.append(('a pin consult outside the deciding rules is not exactly one If',
+                             (lineno, len(arms))))
+            continue
+        test = arms[0].test
+        only_keep = (isinstance(test, ast.Compare) and len(test.ops) == 1
+                     and isinstance(test.ops[0], ast.NotIn)
+                     and 'CWE22_ENTRYPOINT_KEEP_LOUD' in ast.unparse(test.comparators[0])
+                     and not arms[0].orelse
+                     and any(isinstance(node, ast.Continue) for node in ast.walk(arms[0])))
+        print(f'  outside_deciding_site={lineno}: membership_only_drops={only_keep}')
+        if not only_keep:
+            failures.append(('the pin table must only ever keep a row, never silence one',
+                             ('site outside the deciding rules', lineno)))
+    print(f'  consulted_sites={len(consulted)} inside_deciding_rules={len(inside)} '
+          f'sites_outside_deciding={len(outside)}')
     for name, constant in keep_direction.items():
         owner = methods.get(name)
         if owner is None:
@@ -740,6 +988,11 @@ def pinned_state(label):
         source = corpus_source('big8', module)
         found = scan_module(source, module)
         return any(generic_at(found, pin) for _name, pin in EXPECTED_PIN_KEYS)
+    if label in BLANKET_BOOKED_ROWS:
+        # Presence, not message: see `BLANKET_BOOKED_ROWS`. A booked win is a row HEAD reported under
+        # some emitter's label and the successor retires altogether, so the only state a restored
+        # blanket can move is "is this module reported at all".
+        return bool(scan_module(BLANKET_BOOKED_ROWS[label]))
     line, source = ALL_FIXTURES[label]
     return generic_at(scan_module(source), line)
 
@@ -784,6 +1037,10 @@ _IMPORT_TIME = ast_scanner.TaintTracker._c22_statement_runs_at_import
 _MODULE_FACTS = ast_scanner.TaintTracker._c22_module_entrypoint_facts
 _REACH = ast_scanner.TaintTracker._c22_callers_pass_untrusted_value
 _GUARD = ast_scanner.TaintTracker._c22_synthetic_param_source_is_founded
+# The successor's deciding predicate, captured so `open_taint_blanket_restored` can put HEAD's answer
+# back and take it off again. It is the only arm in this file that weakens the ENGINE rather than the
+# classifier, and it exists because three refusals and two carriers are now booked as THIS rule's win.
+_OWES = ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint
 
 MUTATIONS = {
     'guard_removed': {
@@ -872,9 +1129,38 @@ MUTATIONS = {
         'restore': lambda: setattr(ast_scanner, 'CWE22_ENTRYPOINT_KEEP_LOUD', _PIN_TABLE),
         'moves': [BLESSED_LABEL],
     },
+    # The booked win, locked. Forcing the successor's predicate to False is not a weakening of this
+    # gate's own rule -- it is HEAD's behaviour with this slice's code in it, the "I cannot prove this
+    # safe, so it must be untrusted" blanket the mandate retired. Every row this file re-files as the
+    # blanket's win must come back when the blanket comes back, which is what stops a re-file from
+    # being a quieting dressed as an argument.
+    'open_taint_blanket_restored': {
+        'what': 'the retired provenance blanket is restored, so an unproven path sink may report again',
+        'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_open_sink_owes_proven_taint',
+                                 lambda self, record, sink: False),
+        'restore': lambda: setattr(ast_scanner.TaintTracker, '_c22_open_sink_owes_proven_taint',
+                                   _OWES),
+        'moves': sorted(BLANKET_BOOKED_ROWS),
+    },
 }
 
 _PIN_TABLE = ast_scanner.CWE22_ENTRYPOINT_KEEP_LOUD
+
+# 2026-11-10, and it is the same supersession seen from the other side. Four of the arms below falsify
+# a classifier clause against an `EARNED_QUIET` row, and since `_c22_open_sink_owes_proven_taint` a
+# declined-but-restored synthetic source is no longer sufficient to report: the guard is behind the
+# provenance requirement now, so `guard_removed` alone leaves all eight rows quiet and the arms report
+# MISSED on a clause that is very much still load-bearing (measured: those arms at HEAD of this round,
+# and `scratch/_c22_r3_entrypoint_blanket_arm.py` for what each restored answer costs). Running them
+# with the successor's answer forced to HEAD's is the standard two-arm discipline this repository
+# already uses for exactly this situation -- see `cwe22_sink_argument_probe`, "the buffer exemption is
+# still falsified on its own axis". The ambient blanket is put back BEFORE the baseline is captured, so
+# the comparison is still made against the engine as it stands, and it changes nothing about which
+# clause each arm weakens: under the ambient answer the shipped guard keeps the row quiet and the
+# weakening brings the generic source back, which is the only claim the arm ever made.
+# `open_taint_blanket_restored` is deliberately NOT in this set -- it IS the blanket.
+_OPEN_TAINT_BLANKET_CONTEXT = ('guard_removed', 'import_time_accepts_any_binding',
+                               'route_decorator_reads_any_attribute', 'harness_base_plain_mixin')
 
 
 def run_mutation(name):
@@ -882,20 +1168,30 @@ def run_mutation(name):
     spec = MUTATIONS[name]
     print(f"MUTATION {name}: {spec['what']}")
     print('  rows that must move: ' + ', '.join(spec['moves']))
-    # The baseline is captured before anything is weakened, so the comparison can never be made
-    # against the mutated engine's own answer.
-    for label in spec['moves']:
-        WORKING[label] = pinned_state(label)
+    ambient = name in _OPEN_TAINT_BLANKET_CONTEXT
+    if ambient:
+        print('  context: `_c22_open_sink_owes_proven_taint` answers False, HEAD\'s provenance '
+              'rule, so this arm falsifies its own clause and not the successor\'s')
+        ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = (
+            lambda self, record, sink: False)
     try:
-        spec['apply']()
-        outcomes = [(label, _moved(label)) for label in spec['moves']]
-    except Exception as exc:
-        print('MUTATION ERROR: ' + type(exc).__name__ + ': ' + str(exc))
-        print(f'\nFALSIFICATION VERDICT ({name}): ERROR - the mutation is broken, '
-              'so it proves nothing either way (exit 2, not a pass)')
-        return 2
+        # The baseline is captured before anything is weakened, so the comparison can never be made
+        # against the mutated engine's own answer.
+        for label in spec['moves']:
+            WORKING[label] = pinned_state(label)
+        try:
+            spec['apply']()
+            outcomes = [(label, _moved(label)) for label in spec['moves']]
+        except Exception as exc:
+            print('MUTATION ERROR: ' + type(exc).__name__ + ': ' + str(exc))
+            print(f'\nFALSIFICATION VERDICT ({name}): ERROR - the mutation is broken, '
+                  'so it proves nothing either way (exit 2, not a pass)')
+            return 2
+        finally:
+            spec['restore']()
     finally:
-        spec['restore']()
+        if ambient:
+            ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = _OWES
     moved = [label for label, did_move in outcomes if did_move]
     for label, did_move in outcomes:
         print(f"  {label:42s} {'MOVED' if did_move else 'unchanged'}")
@@ -925,6 +1221,8 @@ def main() -> int:
         print(f'  !! {item}')
     print(f'\nfixtures={len(ALL_FIXTURES)} earned={len(EARNED_QUIET)} '
           f'superseded_by_open_taint={len(SUPERSEDED_BY_OPEN_TAINT)} '
+          f'refiled_refusals_by_open_taint={len(LEVER2_REFUSED_RETIRED_BY_OPEN_TAINT)} '
+          f'blanket_booked_rows={len(BLANKET_BOOKED_ROWS)} '
           f'loud_by_facts={len(LOUD_BY_FACT)} loud_by_reach={len(LOUD_BY_REACH)} '
           f'locked_cwe22={sum(CWE22_LOCKED.values())} mutations={len(MUTATIONS)} '
           f'failures={len(failures)}')
@@ -932,14 +1230,16 @@ def main() -> int:
         print('VERDICT: FAIL - Slice I no longer matches its measured evidence. Either a blessed '
               'CWE-22 key was declined by the guard, the pin table stopped being load-bearing, a pure '
               'library row came back, an entrypoint or tainted-caller row lost its synthetic source, '
-              'the classifier gained an over-broad fact, or the guard moved off its one consult site. '
-              'Restore the answer; never re-bless a baseline.')
+              'the classifier gained an over-broad fact, a Lever-2 refusal came back without the '
+              'blanket or a declared root stopped keeping one, or the guard moved off its one consult '
+              'site. Restore the answer; never re-bless a baseline.')
         return 1
     print(f'VERDICT: PASS - 0 of {sum(CWE22_LOCKED.values())} blessed CWE-22 keys declined, '
           f'{len(EARNED_QUIET)} invented sources retired by this rule alone, '
           f'{len(SUPERSEDED_BY_OPEN_TAINT)} of them since retired by the successor open() taint rule, '
-          f'{len(LOUD_BY_FACT)} fact grounds and {len(LOUD_BY_REACH)} reach grounds held loud, '
-          f'one consult site and a keep-only pin table confirmed.')
+          f'{len(LEVER2_REFUSED_RETIRED_BY_OPEN_TAINT)} Lever-2 refusals re-filed and booked against '
+          f'that retired blanket, {len(LOUD_BY_FACT)} fact grounds and {len(LOUD_BY_REACH)} reach '
+          f'grounds held loud, one consult site and a keep-only pin table confirmed.')
     return 0
 
 

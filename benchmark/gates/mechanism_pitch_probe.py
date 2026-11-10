@@ -10,7 +10,9 @@ in their own words, and every one of them is scored against the two frozen basel
   boolean, integer cast (`int()`, `float()`), or provably immutable constant, kill the finding at the sink."
   Its safe half **is already the shipped engine**: TIER 1 measures eleven sink families where the literal
   argument is silent and its dynamic counterpart reports, through `_is_self_described`,
-  `_c22_path_is_internal_repo_anchor`, `_builtin_sealed_call` and the CWE-78 argv guard. Its whole half is a
+  `_c22_path_is_internal_repo_anchor`, `_builtin_sealed_call` and the CWE-78 argv guard, and -- on the path
+  family since the round-3 `cwe22_open_taint_probe` rule -- only where the dynamic argument carries an
+  origin the file itself can trace (`param_path_open`, below). Its whole half is a
   mass true-positive delete: TIER 3 re-parses the **line the engine blessed** for all 425 parity and 119
   Big-8 keys and counts the ones whose sink argument is a literal -- **94 of 425 and 5 of 119, 99 blessed
   findings in total**, spread over 24 rules, because for CWE-1275/614/1004 the literal *is* `secure=False`,
@@ -63,6 +65,23 @@ TIER 6 is the honest remainder: the object-receiver draws (`self.<attr>.sample()
 transformers spelling -- so proving it numeric needs a cross-module object-type walk, which Rule 15.3
 ("no multi-hop recursive graph walks") and the 400 MB memory mandate both refuse. These rows stay reported,
 and this tier keeps that statement from being forgotten rather than re-litigated.
+
+One TIER 1 row is collateral from `cwe22_open_taint_probe`, and it was re-anchored by **earning** its
+carrier rather than by re-pricing the table. `param_path_open` is the dynamic half of the literal/parameter
+pair: the sink argument is a name, so mechanism 1's "kill it when the argument is a static literal" must not
+touch it. It used to be loud because the retired blanket stamped a placeholder onto any parameter-fed
+`open()` in a module that merely mentioned `sys.argv`, and
+`scratch/_c22_r3_engines.py --diff` on that spelling shows the row as head-only -- a genuine supersession,
+not a lost key. The supersession reaches this fixture's *ground* and not its *proposition*: the pitch is
+about the parameter boundary, so the honest repair is to make the module cross the boundary it asserts --
+`read_it(sys.argv[1])`, the one hop the walk resolves (`open_helper_param` and `save_json_via_local` of
+`scratch/_c22_walk_resolution_grid.py`). Nothing was re-filed and no number in the price table moved: the
+eleven TIER 1 rows keep their eleven verdicts, TIER 2's counter-table, TIER 3's 94 + 5 blessed census,
+TIER 3b's zero population and TIER 4-6 are all recomputed from the same frozen baselines as before, and
+`sink_literal_pitch_shipped` is still CAUGHT on the literal-is-the-defect rows. What proves the row is now
+credited to the origin rather than to a clause nobody is arguing about is
+`scratch/_c22_r3_misc_carrier_grid.py`: blind `_c22_path_sink_reaches_operator` and the carrier goes quiet,
+restore `_c22_open_sink_owes_proven_taint` to the retired blanket and it comes back.
 
 The engine is **byte-identical to HEAD** for this step. Nothing here is a suppression: it is the arithmetic
 that makes three mandated suppressions permanently unpickable, plus the eleven already-live literal answers
@@ -120,10 +139,12 @@ LITERAL_ALREADY_LIVE = [
     ('literal_path_open', 'CWE-22', 'cfg = "static/app.json"\ndata = ' + _O + '(cfg, "r")\n', 'quiet',
      'self-described path'),
     ('param_path_open', 'CWE-22', 'def read_it(path):\n' + _IND + 'return ' + _O + '(path, "r").read()\n'
-     # The argv read declares an entrypoint: the open() taint requirement otherwise retires an
-     # unproven parameter open in a library module, and this pitch is about the parameter boundary.
-     + 'import sys\nprint(sys.argv[1])\n',
-     'loud', 'a parameter is the boundary'),
+     # The argv read has to be the ARGUMENT of the call, not merely a statement in the module: the
+     # round-3 `cwe22_open_taint_probe` rule retired the blanket that kept an unproven parameter loud in
+     # a library module, and this row's proposition is the parameter boundary, so the fixture now crosses
+     # that boundary itself instead of asking the engine to assume someone else did.
+     + 'import sys\nread_it(sys.argv[1])\n',
+     'loud', 'a parameter the operator hands a value to is still a boundary'),
     ('literal_url_request', 'CWE-918', 'resp = requests.get("https://api.internal/health")\n', 'quiet',
      'host fixed in source'),
     ('param_url_request', 'CWE-918', 'def fetch(target):\n' + _IND + 'return requests.get(target)\n', 'loud',

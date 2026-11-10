@@ -48,8 +48,12 @@ Measured evidence behind the numbers
                       line through the real record path and asks the guard: it answers anchored on 0
                       of the 24, and the same sweep answers True on the anchored control rows, so the
                       zero is a refusal and not an unasked question.
-  fixtures          : 42 shapes -- 6 loud->quiet rows the guard itself earns, 24 must-report rows,
-                      and 12 quiet at both seals (`pathlib_parent_div_literal`,
+  fixtures          : 42 shapes -- 6 loud->quiet rows the guard itself earns, 23 must-report rows, 12
+                      quiet at both seals and 1 booked round-3 supersession (`kwargs_slot`, see the
+                      section below; the tally this paragraph carried before was 24 must-report rows and
+                      no supersession line, and `scratch/_c22_r3_seal_remeasure.py` moved exactly that
+                      one row). TIER 3 asserts the four buckets add back to 42. The 12 are
+                      (`pathlib_parent_div_literal`,
                       `str_anchor_plus_literal`, `abs_escape_literal`, `subscript_index_from_request`,
                       `bare_literal_relative`, `parent_chain_literal`, `ospath_dirname_literal` plus
                       the five all-literal rows `lit_join_two_literals`, `lit_path_two_slot_literals`,
@@ -61,10 +65,13 @@ Measured evidence behind the numbers
                       whatever the leaf holds" -- against every shape here. Item (a) is the shipped
                       guard verbatim; item (b) is disjunct 1 of the same prune (`_is_self_described`,
                       ast_scanner.py:6848), so all 12 all-literal shapes are already quiet and the
-                      pitch buys them nothing. What it costs: 8 of the 11 pitch-reachable reported
-                      rows go silent under `--mutate=root_operand_pitch_shipped` and the run is
-                      `CAUGHT on 33 row(s) [T3=8 T4=1 T5b=16 T6=8]` with exit 1; the other 3 stay loud,
-                      so the pitch does not even silence its own whole shape set. Applied to the 24
+                      pitch buys them nothing. What it costs, re-measured over the whole table this
+                      round: `--mutate=root_operand_pitch_shipped` prints `reported=0 silent=24`, so
+                      every one of the 11 pitch-reachable reported rows goes silent, and the run is
+                      `CAUGHT on 39 row(s) [T3=11 T4=1 T5b=19 T6=8]` with exit 1. The round-2 numbers
+                      (33 rows, `T3=8`, `T5b=16`, "the other 3 stay loud") predate three pitch-reachable
+                      shapes and are superseded by the measurement, not by anything this file changed.
+                      Applied to the 24
                       blessed lines the same mutation answers `pitch_reach=0` on parity and
                       `pitch_reach=0` on Big-8 -- so it silences 0 real findings and its only measured
                       effect is a false negative. A traversal lives in the leaf: `os.path.join('models', name)`
@@ -75,6 +82,46 @@ Measured evidence behind the numbers
                       would have deleted 798 rows of which the engine cannot prove a single one, and
                       6 of the 8 parity blessed keys and 11 of the 16 Big-8 ones live in exactly such
                       a path.
+
+Round-3 supersession - `kwargs_slot`, and how its move was booked
+----------------------------------------------------------------
+The round-3 rule `TaintTracker._c22_open_sink_owes_proven_taint` (ast_scanner.py:8707) asks a CWE-22
+filesystem sink whether a resolved untrusted origin reaches one of its arguments, and the four emitters
+it gates (the phase-11 registry sink, the phase-5 and phase-4 short-circuits, and the subtract-only
+`ProvenanceState.UNKNOWN` prune arm) refuse to report when it answers True. One row of this table was
+that retired fallback and nothing else: `def load(**kwargs): return open(Path(kwargs["f"]))`, a module
+with no `sys.argv`, no `os.environ`, no `parse_args()` -- and no caller at all, so nothing ever fills
+the slot. Attribution first: `python scratch/_c22_r3_engines.py --diff --name m.py --file` on that
+fixture alone prints `head_rows=1 live_rows=0` (HEAD's snapshot emits `CWE-22: open` on the sink line, the
+live engine does not), so this is a supersession by this round and not a row an older clause has always
+silenced.
+`scratch/_c22_r3_seal_remeasure.py` then re-measured the WHOLE table under three arms -- HEAD's
+snapshot, the live engine, and the live engine with the owed rule pinned to False -- and the answer is
+exact: of the 42 rows, `kwargs_slot` is the only head-loud/live-quiet row, the restored blanket brings
+back that row and no other, and no row that is quiet live stays quiet under the blanket by luck.
+
+The seal therefore moves to the measured answer, and the row is booked in `BLANKET_RETIRED_ROWS` rather
+than folded into `FP_ROWS`: the clause that silenced it is not this guard, and claiming it as an
+anchor-guard win would hand `delete_anchor_guard` a row it does not move. What this guard still decides
+is now asserted where a finding can no longer show it -- TIER 6 asks
+`_c22_path_is_internal_repo_anchor` on `Path(kwargs["f"])` itself and requires False, so a caller-filled
+slot is still refused, and because that probe runs inside `run_mutation` both `anchor_guard_always_true`
+and `any_name_is_anchor` are caught on it, which is the same veto the row used to prove through a
+finding. The win is locked in the other direction by `retire_owed_taint_requirement`, which hands the
+retired blanket back (`_c22_open_sink_owes_proven_taint` answering False); TIER 3 runs the arm per row,
+so a booked row that stops reporting under it is reported as a booking lie rather than kept as a quiet
+row. Re-measured tally: 42 shapes -- 6 anchored rows this guard earns, 23 must-report rows, 12 quiet at
+both seals, 1 booked round-3 supersession. Nothing else moved, which is why the anchored controls, the
+5 pairs and the 24 blessed lines are asserted unchanged. The falsification suite was re-run with this
+round's table: 10/10 mutations CAUGHT, 0 ERROR, and the two arms of the booking read exactly as booked --
+`retire_owed_taint_requirement` on 1 row (`[T3=1] -- kwargs_slot`), `anchor_guard_always_true` and
+`any_name_is_anchor` both still caught through the new TIER 6 literal probe;
+`scratch/_c22_r3_seal_anchor_mut_results.txt` keeps that census. Nothing was re-spelled to keep
+`want=loud` because `scratch/_c22_walk_resolution_grid.py` lists what the reachability walk does resolve
+(`sys.argv`/`os.environ` inline and through one assignment, `os.path.join("/srv", sys.argv[1])`, module
+constants, rebinds, a helper parameter called with argv, `shutil.rmtree(options.out_dir)` after a real
+`argparse` namespace) -- an empty `**kwargs` slot filled by nobody is not on that list, so inventing a
+caller for it would have bought the loud answer by deleting the fixture's proposition.
 
 Seal semantics - `CWE22_ANCHOR_SEAL`
 ------------------------------------
@@ -123,6 +170,15 @@ HEAD = 'import os\nfrom pathlib import Path\nimport importlib.resources\n'
 
 # (label, source, expect_when_abstained, expect_when_shipped)
 # 'loud' = a CWE-22 finding is required in that module, 'quiet' = none is allowed.
+
+# Rows whose loud answer was the generic "dynamic variable used in file path" fallback that round 3
+# retired, and nothing else. They are booked here, and not folded into `FP_ROWS`, because the clause
+# that silenced them is `_c22_open_sink_owes_proven_taint` and not this guard: a row in `FP_ROWS` is a
+# row `delete_anchor_guard` must bring back, and these are not. Every label here is measured (see the
+# docstring and `scratch/_c22_r3_seal_remeasure.py`) loud on HEAD's snapshot, quiet live, loud again
+# under the restored blanket, and TIER 3 asserts all three of those statements on every run.
+BLANKET_RETIRED_ROWS = ('kwargs_slot',)
+
 SHAPES = [
     # ---- chains that start at the file's own anchor and carry nothing else ----
     ('pathlib_with_name', HEAD + 'open(Path(__file__).with_name("config.json"))\n',
@@ -191,8 +247,11 @@ SHAPES = [
     ('parameter_root', REQ + 'from pathlib import Path\n\n\ndef load(root):\n'
                             '    return open(root / "x.json")\n\n'
                             'load(Path(request.args.get("d")))\n', 'loud', 'loud'),
+    # 2026-11-10 supersession, booked in `BLANKET_RETIRED_ROWS`: nothing in this module ever fills the
+    # slot, so no resolved origin reaches the sink and the owed rule refuses the row. The anchor veto is
+    # unchanged and is now pinned directly at TIER 6 (`Path(kwargs["f"])` must answer False).
     ('kwargs_slot', REQ + 'from pathlib import Path\n\n\ndef load(**kwargs):\n'
-                         '    return open(Path(kwargs["f"]))\n', 'loud', 'loud'),
+                         '    return open(Path(kwargs["f"]))\n', 'loud', 'quiet'),
     ('method_on_foreign_object', REQ + 'from pathlib import Path\nobj = request.args.get("f")\n'
                                       'open(obj.joinpath("x.json"))\n', 'loud', 'loud'),
     ('upload_stream_handle', REQ + 'from pathlib import Path\nstream = request.files["f"].stream\n'
@@ -231,10 +290,13 @@ SHAPES = [
     ('lit_concat_literals', 'open("./models/" "app.json")\n', 'quiet', 'quiet'),
 ]
 
-FP_ROWS = [row for row in SHAPES if row[2] == 'loud' and row[3] == 'quiet']
+FP_ROWS = [row for row in SHAPES if row[2] == 'loud' and row[3] == 'quiet'
+           and row[0] not in BLANKET_RETIRED_ROWS]
+BLANKET_ROWS = [row for row in SHAPES if row[0] in BLANKET_RETIRED_ROWS]
 MUST_REPORT_ROWS = [row for row in SHAPES if row[3] == 'loud']
 ALREADY_QUIET_ROWS = [row for row in SHAPES if row[2] == 'quiet']
 _BY_LABEL = {row[0]: row[1] for row in SHAPES}
+_BY_SEAL = {row[0]: (row[2], row[3]) for row in SHAPES}
 
 # One axis per row, with the two arms on opposite sides of it. Every clean arm is a row the guard
 # itself silences (FP_ROWS: measured loud on 697a58e's bytes, quiet on these), so a pair that starts
@@ -352,6 +414,24 @@ def check_corpus():
     return failures
 
 
+@contextlib.contextmanager
+def _retired_blanket_restored():
+    """The policy round 3 retired, installed in memory: no path sink owes a resolved untrusted origin.
+
+    `_c22_open_sink_owes_proven_taint` answering False is the generic "dynamic variable used in file
+    path" fallback -- the registry sink, both short-circuits and the `ProvenanceState.UNKNOWN` prune arm
+    stop refusing and report whatever they cannot prove safe. A booked supersession is only an honest
+    booking if this arm moves it back, and no other quiet row may be moved by it, so TIER 3 runs both
+    directions on every row the shipped engine leaves quiet.
+    """
+    original = ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint
+    ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = lambda self, record, sink: False
+    try:
+        yield
+    finally:
+        ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = original
+
+
 def check_shapes():
     """TIER 3: the truth table, asserted against the seal this file is standing under."""
     failures = []
@@ -371,6 +451,36 @@ def check_shapes():
         if status != expected:
             failures.append((label, 'seal', expected, status,
                              'the answer moved without the seal, or the seal moved without the answer'))
+    # The booking, asserted instead of argued. A booked round-3 supersession has to be moved by the
+    # clause that booked it, and no other row the shipped engine leaves quiet may be moved by that
+    # clause: if one is, a second supersession landed in this table without being filed, and the seal
+    # would be papering over it.
+    for label in BLANKET_RETIRED_ROWS:
+        if label not in _BY_SEAL:
+            failures.append((label, 'blanket booking', 'a booked supersession present in SHAPES',
+                             'absent'))
+        elif _BY_SEAL[label] != ('loud', 'quiet'):
+            failures.append((label, 'blanket booking', ('loud', 'quiet'), _BY_SEAL[label],
+                             'a booked supersession is measured loud on HEAD and quiet live'))
+    restored = []
+    for label, source, _when_abstained, when_shipped in SHAPES:
+        if when_shipped == 'loud':
+            continue
+        with _retired_blanket_restored():
+            came_back = bool(scan_source(source))
+        booked = label in BLANKET_RETIRED_ROWS
+        if came_back:
+            restored.append(label)
+        if came_back != booked:
+            failures.append((label, 'blanket booking',
+                             'restored by the retired blanket' if booked else 'stays quiet',
+                             'restored' if came_back else 'quiet',
+                             ('the owed rule is not what silences this booked row, so the re-filing '
+                              'credited the wrong clause' if booked else
+                              'a quiet row the seal does not book comes back under the retired '
+                              'blanket, so this table is missing a supersession')))
+    print(f'  booked round-3 supersessions={len(BLANKET_ROWS)}  quiet rows restored by the retired '
+          f'blanket={restored}')
     return failures
 
 
@@ -738,7 +848,14 @@ def check_vocabulary():
                        # returns True here, and this row is where that is observable -- no engine
                        # finding can show it, because an all-literal path holds no taint to report.
                        ('os.path.join("templates", "app.json")', False),
-                       ('Path(__file__).joinpath("app.json")', True)]:
+                       ('Path(__file__).joinpath("app.json")', True),
+                       # The mechanism `kwargs_slot` used to prove through a finding, pinned at the
+                       # predicate now that the finding is a booked round-3 supersession: a slot a
+                       # `**kwargs` caller filled is a value somebody else chose, so this guard must
+                       # still refuse it. `anchor_guard_always_true` and `any_name_is_anchor` answer
+                       # True here and are caught on this line, which is why the re-filed row did not
+                       # take the veto with it.
+                       ('Path(kwargs["f"])', False)]:
         expr = ast.parse(text, mode='eval').body
         got = probe._c22_path_is_internal_repo_anchor(expr, '', 1)
         marker = 'ok' if got == want else 'MISMATCH'
@@ -932,6 +1049,16 @@ MUTATIONS = {
         'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_path_is_internal_repo_anchor',
                                  _anchor_accepting_literal_root),
     },
+    'retire_owed_taint_requirement': {
+        'what': 'restore the generic fallback this round retired: `_c22_open_sink_owes_proven_taint` '
+                'answers False, so no CWE-22 path sink owes a resolved untrusted origin and every '
+                'bare variable or attribute in a file path reports again on "cannot prove this safe". '
+                'The booked supersession comes back loud under it, which is the only proof that the '
+                're-filed seal row was silenced by that clause and not by a quieter accident',
+        'rows': list(BLANKET_RETIRED_ROWS),
+        'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_open_sink_owes_proven_taint',
+                                 lambda self, record, sink: False),
+    },
 }
 
 
@@ -1006,8 +1133,17 @@ def main() -> int:
     failures += check_root_operand_pitch()
     print('TIER 6 - anchor tables, escape rule, literal probes and wiring:')
     failures += check_vocabulary()
+    accounted = (len(FP_ROWS) + len(MUST_REPORT_ROWS) + len(ALREADY_QUIET_ROWS)
+                 + len(BLANKET_ROWS))
+    print(f'  accounting: shapes={len(SHAPES)} = guard-earned {len(FP_ROWS)} + must-report '
+          f'{len(MUST_REPORT_ROWS)} + already-quiet {len(ALREADY_QUIET_ROWS)} + booked round-3 '
+          f'supersessions {len(BLANKET_ROWS)}')
+    if accounted != len(SHAPES):
+        failures.append(('accounting', 'every shape belongs in exactly one bucket',
+                         len(SHAPES), accounted))
     print(f'\nseal={CWE22_ANCHOR_SEAL} shapes={len(SHAPES)} fp_rows={len(FP_ROWS)} '
           f'must_report={len(MUST_REPORT_ROWS)} already_quiet={len(ALREADY_QUIET_ROWS)} '
+          f'blanket_retired={len(BLANKET_ROWS)} '
           f'pairs={len(PAIRS)} locked_cwe22={sum(CWE22_LOCKED.values())} failures={len(failures)}')
     for item in failures[:12]:
         print(f'  !! {item}')
@@ -1020,6 +1156,8 @@ def main() -> int:
     print(f'VERDICT: PASS - all {sum(CWE22_LOCKED.values())} blessed CWE-22 keys still reported, '
           f'parity corpus exact-set, {len(FP_ROWS)} anchored shapes silent, '
           f'{len(MUST_REPORT_ROWS)} tainted/parameter/escape shapes reported, '
+          f'{len(ALREADY_QUIET_ROWS)} quiet at both seals, '
+          f'{len(BLANKET_ROWS)} round-3 supersessions booked and blanket-locked, '
           f'{len(PAIRS)} pairs agreeing.')
     return 0
 

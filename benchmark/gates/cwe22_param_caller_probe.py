@@ -206,6 +206,12 @@ HELP = (
     + '    with open(sidecar_path, "rb") as handle:\n'
     + '        return handle.read()\n')
 
+# The open() taint requirement (`cwe22_open_taint_probe`) retires an unproven `open()` in a module
+# that declares no entrypoint. A refused row below must still be a live finding for this gate to be
+# able to refuse it, so those carriers append an argv read. Appended, never prepended: no sink line
+# moves, and the caller-closure proof is still the only thing that can answer SAFE.
+ENTRY = 'import sys\nprint(sys.argv[1])\n'
+
 # Rows this rule retires and nothing else does: loud at HEAD, quiet now, and the deciding method
 # answers SAFE on the record.
 EARNED_ROWS = {
@@ -237,7 +243,7 @@ EARNED_ROWS = {
 # Rows the rule is asked about and refuses. Loud at HEAD, loud now, and the deciding method answers
 # SAFE on none of them.
 REFUSED_ROWS = {
-    'no_call_site_in_file': HELP,
+    'no_call_site_in_file': HELP + ENTRY,
     'caller_passes_unbound_name': HELP + 'read_sidecar(external_path)\n',
     'caller_splats_positional': (
         'def read_pair(sidecar_path, other_path):\n'
@@ -309,7 +315,8 @@ REFUSED_ROWS = {
         'class Reader:\n'
         + '    def read(self):\n'
         + '        with open(self.vocab_file) as handle:\n'
-        + '            return handle.read()\n'),
+        + '            return handle.read()\n'
+        + ENTRY),
     'self_field_second_write_from_request': (
         'import os, tempfile\n'
         + 'class Reader:\n'
@@ -335,7 +342,8 @@ REFUSED_ROWS = {
         + '            pass\n'
         + '    def read(self):\n'
         + '        with open(self.csv_file) as handle:\n'
-        + '            return handle.read()\n'),
+        + '            return handle.read()\n'
+        + ENTRY),
     'self_field_is_request_upload': (
         'class Reader:\n'
         + '    def load(self, request):\n'
@@ -351,7 +359,8 @@ REFUSED_ROWS = {
         + '        self.reader_config_file = os.path.join(self.tmpdirname, "..", "escape.json")\n'
         + '    def write(self):\n'
         + '        with open(self.reader_config_file, "w") as fp:\n'
-        + '            fp.write("{}")\n'),
+        + '            fp.write("{}")\n'
+        + ENTRY),
 }
 
 # Quiet at HEAD and quiet now -- retired by a clause that shipped earlier. Kept in the gate so the

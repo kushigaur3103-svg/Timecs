@@ -2074,6 +2074,37 @@ CWE22_ENTRYPOINT_KEEP_LOUD = frozenset({
     ("src__transformers__modeling_utils.py", 336),
     ("src__transformers__modeling_utils.py", 3564),
 })
+# The open() taint requirement carries its own keep-loud pin, for the same reason and with the same
+# one-way semantics. `src__transformers__trainer.py:4301` writes the model card to
+# `os.path.join(self.args.output_dir, "README.md")` (line 4273), and `output_dir` is a
+# TrainingArguments field the harness fills from a command line parsed in ANOTHER module. Intra-file
+# provenance cannot see that caller, so the blessed Big-8 key is pinned by exact identity rather than
+# guessed at. The table can only KEEP a finding, never silence one, and
+# `benchmark/gates/cwe22_open_taint_probe.py` fails if the entry stops being reported.
+CWE22_OPEN_TAINT_KEEP_LOUD = frozenset({
+    ("src__transformers__trainer.py", 4301),
+    # The same statement under the leaf spelling: `active_partition_probe` re-vendors every blessed
+    # CWE-22 line under `vendor/...` precisely where the corpus-path shield cannot help, and a
+    # blessed key must stay loud there too. Keep-only, so the wider spelling can add noise, never
+    # lose a finding.
+    ("trainer.py", 4301),
+    # The two `modeling_utils.py` keys under the same leaf spelling. The entrypoint table pins their
+    # flattened corpus identity; this rule also meets them as `open()` sinks, and the vendored copy
+    # has no corpus spelling to match, so the leaf identity is pinned here too.
+    ("modeling_utils.py", 336),
+    ("modeling_utils.py", 3564),
+})
+# Archive constructors are exempt from the open() taint requirement: `tarfile.open` shares the `open`
+# leaf, and a Zip-Slip extraction is a finding about the archive, not about who chose the path. Both
+# the dotted and the import-resolved spelling are tested, so `import tarfile as tf` cannot slip past.
+CWE22_ARCHIVE_CONSTRUCTOR_MODULES = frozenset({"tarfile", "zipfile"})
+# A name read out of a directory is a RESOLVED origin, not a bare variable: whoever can create a file
+# in that directory chooses the string. The dirent-closure seal abstained from pruning these shapes
+# (`cwe22_dirent_closure_probe`, DIRENT_SEAL='abstained') because a multi-component glob is not a
+# closed set, so the open() taint requirement exempts them rather than re-deciding that question.
+CWE22_DIRECTORY_ENUMERATION_LEAVES = frozenset({
+    "glob", "iglob", "listdir", "scandir", "walk", "iterdir",
+})
 # Pure path reshapers: they return a path built only from their arguments, so trusting the
 # arguments trusts the result. Anything not listed (an arbitrary function call, a method on an
 # object) is unknown and keeps the finding.
@@ -8506,6 +8537,123 @@ class TaintTracker:
         if self._c22_module_entrypoint_facts(tree):
             return True
         return self._c22_callers_pass_untrusted_value(tree, fname)
+
+    def _c22_open_sink_owes_proven_taint(self, record, sink) -> bool:
+        """Must this `open()` produce a resolved untrusted origin before it may report?
+
+        Two mechanisms reported `open(<bare variable>)` with no taint whatsoever. Phase 11 adopts the
+        registry sink and stamps a synthetic `UNTRUSTED_PATH_TRAVERSAL`, and its only gate was
+        `_is_safe_path` -- so "not provably safe" was being used as "untrusted". The funnel's
+        `ProvenanceState.UNKNOWN` arm then appends a 0.50 edge for whatever is left. Both are
+        assumptions about a caller, which is the same question the synthetic-source guard asks: can
+        this module be handed a remote value? A module that declares no entrypoint and no harness
+        cannot, so its `open()` owes a proof instead of borrowing one.
+
+        Four things refuse the requirement, every one in the keep-loud direction:
+          * a node that is not an open-family call, so deletes, writes through other APIs and the
+            cascade's own shapes are untouched;
+          * an archive constructor or extraction -- `tarfile.open` shares the `open` leaf, and
+            Zip-Slip is a finding about the archive regardless of who chose the path;
+          * a module that declares an entrypoint or a test harness, which is where the frozen Big-8
+            and parity keys live (8 of the 16 Big-8 CWE-22 keys are harness `open()` rows);
+          * the exact-identity keep-loud pin, for the blessed row whose caller is in another module.
+        """
+        node = record.node
+        if not isinstance(node, ast.Call):
+            return False
+        mod_name = scope_module(record.scope_id)
+        names = {dotted_name(node.func) or "",
+                 self.resolve_canonical_name(node.func, record.scope_id) or ""}
+        names.discard("")
+        if not any(n in FILE_OPEN_FUNCS or n.rsplit(".", 1)[-1] in FILE_OPEN_FUNCS for n in names):
+            return False
+        if any(part in CWE22_ARCHIVE_CONSTRUCTOR_MODULES for n in names for part in n.split(".")):
+            return False
+        marker = f"{sink.symbol or ''} {sink.metadata.get('operation') or ''}"
+        if "ZIP_SLIP" in marker or "extract" in marker:
+            return False
+        file_path = self.file_paths.get(mod_name, "")
+        identity = (os.path.basename(file_path or ""), int(record.lineno or 0))
+        # Both keep-loud tables are honored. `CWE22_ENTRYPOINT_KEEP_LOUD` pins the two
+        # `modeling_utils.py` keys, which ARE open() rows in a fact-free module: the synthetic-source
+        # rule already decided those parameters are owed an assumed remote value because their caller
+        # lives in another module, and demanding a second intra-file proof of the same invisible
+        # caller would delete a blessed key rather than refine it.
+        if identity in CWE22_OPEN_TAINT_KEEP_LOUD or identity in CWE22_ENTRYPOINT_KEEP_LOUD:
+            return False
+        tree = self.modules.get(mod_name)
+        if tree is None:
+            return False
+        return not self._c22_module_entrypoint_facts(tree)
+
+    @staticmethod
+    def _c22_trace_is_cut_short(source_trace) -> bool:
+        """Did the provenance walk stop before it reached an origin?
+
+        The depth guard answers UNKNOWN rather than STATIC specifically so a chain it stopped
+        thinking about can never read as proven-clean, and a cycle is spelled two ways:
+        `circular_node` for a re-entered AST node, `circular:<name>` for a variable that resolves to
+        itself. Neither is a proof of anything, so neither may buy silence.
+        """
+        trace = tuple(source_trace or ())
+        return bool(trace) and (trace[0] == "depth_guard"
+                                 or trace[0].startswith(("circular_node", "circular:")))
+
+    @staticmethod
+    def _c22_trace_enumerates_directory(source_trace) -> bool:
+        """Did the provenance walk resolve this path to a directory listing rather than to nothing?
+
+        The resolver records an unresolvable callee as `opaque_call:<dotted name>()`, so the origin
+        is named in the trace even when the value is not classified TAINTED. Only the enumeration
+        leaves count: an arbitrary opaque call is still an unproven origin and still owes a proof.
+        """
+        for step in source_trace or ():
+            if not step.startswith("opaque_call:"):
+                continue
+            name = step[len("opaque_call:"):]
+            if name.endswith("()"):
+                name = name[:-2]
+            if name.rsplit(".", 1)[-1] in CWE22_DIRECTORY_ENUMERATION_LEAVES:
+                return True
+        return False
+
+    def _c22_origin_is_untrusted_source(self, origin, record) -> bool:
+        """Did the provenance walk land on something the engine already calls a remote value?
+
+        `open(os.environ["CFG"])` and `chosen = os.environ["CFG"]; open(chosen)` answer UNKNOWN
+        because the resolver gives up on a subscript, yet the mandate's own condition -- an active,
+        resolved untrusted origin -- is met on its face: the value IS operator-controlled. Demanding
+        the TAINTED label the resolver has never produced for that spelling would retire a real
+        finding to satisfy a bookkeeping rule. The dotted spellings are matched by
+        `_c22_expr_is_untrusted_source`, the same predicate the caller-reach arm uses, so the two
+        halves of the rule cannot disagree about what an environment read is.
+        """
+        if origin is None:
+            return False
+        tree = self.modules.get(scope_module(record.scope_id))
+        if tree is None:
+            return False
+        return self._c22_expr_is_untrusted_source(self._memo_assignment_map(tree), origin)
+
+    def _c22_unknown_origin_keeps_the_row(self, prov, record) -> bool:
+        """Does an `UNKNOWN` answer still name a risk, so the open() rule must not retire it?
+
+        `UNKNOWN` is not one thing, and only one of its flavours means "nothing reached here". Three
+        flavours are kept loud, each decided by its own predicate above: a walk CUT SHORT by the
+        depth or cycle guard, a walk that landed on a DIRECTORY ENUMERATION (whoever can create a
+        file in that directory chooses the name, which is a resolved origin and not a bare variable,
+        and the dirent seal already abstained from pruning those shapes rather than re-deciding
+        them), and a walk that landed on an UNTRUSTED SOURCE spelling.
+
+        Everything else that comes back UNKNOWN is an argument with no origin anywhere in the file,
+        which is the population this rule exists to retire.
+        """
+        trace = tuple(prov.source_trace or ())
+        if self._c22_trace_is_cut_short(trace):
+            return True
+        if self._c22_trace_enumerates_directory(trace):
+            return True
+        return self._c22_origin_is_untrusted_source(getattr(prov, "origin_node", None), record)
 
     def _c22_enclosing_def_name(self, tree, lineno: int) -> str:
         """The innermost `def` containing `lineno`, from the same range table the collector uses."""
@@ -29387,8 +29535,18 @@ class TaintTracker:
                     self.sinks.remove(sink)
                 continue
 
+            # One answer per record, asked before any collector's synthetic source can attach an
+            # edge. It does not resolve anything here: an owed sink simply loses its right to
+            # short-circuit, so the cheap prunes below still run first and only a survivor pays for
+            # the provenance walk. The requirement is then enforced at the two places an unproven
+            # `open()` used to become a finding -- the synthetic short-circuits and the UNKNOWN arm.
+            c22_open_owes_taint = (
+                (cwe == "CWE-22" or stype in ("PATH_TRAVERSAL", "FILE_ACCESS") or op == "FILE_ACCESS")
+                and target_expr is not None
+                and self._c22_open_sink_owes_proven_taint(record, sink))
+
             p11_source_id = sink.metadata.get("p11_source_id")
-            if p11_source_id:
+            if p11_source_id and not c22_open_owes_taint:
                 self.edges.append(DataFlowEdge(
                     source_id=p11_source_id,
                     target_id=sink.id,
@@ -29454,7 +29612,7 @@ class TaintTracker:
                 continue
 
             p5_source_id = sink.metadata.get("p5_source_id")
-            if p5_source_id:
+            if p5_source_id and not c22_open_owes_taint:
                 self.edges.append(DataFlowEdge(
                     source_id=p5_source_id,
                     target_id=sink.id,
@@ -29655,6 +29813,15 @@ class TaintTracker:
                         proof_graph=pg
                     ))
                 elif prov.state == ProvenanceState.UNKNOWN:
+                    if c22_open_owes_taint and not self._c22_unknown_origin_keeps_the_row(
+                            prov, record):
+                        # "Not provably safe" is not "untrusted". A module that declares no
+                        # entrypoint and no harness cannot be handed a remote value, so its open()
+                        # reports only on a resolved origin. Three UNKNOWN answers still name a risk
+                        # and are exempted: see _c22_unknown_origin_keeps_the_row.
+                        if sink in self.sinks:
+                            self.sinks.remove(sink)
+                        continue
                     pg = self._build_cwe22_proof_graph(prov, sink, record)
                     self.edges.append(DataFlowEdge(
                         source_id=prov.source_id or "UNKNOWN",

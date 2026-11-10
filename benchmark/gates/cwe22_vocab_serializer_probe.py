@@ -65,14 +65,18 @@ def vocab_body(method_name: str, last_line_mode: str) -> str:
             + "            writer.write(\"a b c\")\n"
             + "        return (vocab_file,)\n")
 
+# The open() taint requirement (`cwe22_open_taint_probe`) retires an unproven `open()` in a module
+# that declares no entrypoint, which would quiet every carrier here for a reason this gate does not
+# own -- and would leave its mutations nothing to move. A `__main__` guard declares an entrypoint
+# WITHOUT spelling an untrusted source, which matters here: the exemption's own veto refuses a module
+# that names argv/environ/request, so an argv tail would make the exempted write loud for the wrong
+# reason. Appended, so line 7 stays 7.
+ENTRY_TAIL = 'if __name__ == "__main__":\n    pass\n'
+
 FIXTURES = {
-    'serializer_write_quiet': (vocab_body('save_vocabulary', '"w", encoding="utf-8"'), []),
-    'serializer_read_loud': (vocab_body('save_vocabulary', 'encoding="utf-8"')
-                             # The argv read is the entrypoint fact that keeps the non-write read loud
-                             # now that the entrypoint guard declines synthetic sources in pure
-                             # library modules; the write/read contrast is still what is measured.
-                             + 'import sys\nprint(sys.argv[1])\n', [7]),
-    'pretrained_write_loud': (vocab_body('save_pretrained', '"w", encoding="utf-8"'), [7]),
+    'serializer_write_quiet': (vocab_body('save_vocabulary', '"w", encoding="utf-8"') + ENTRY_TAIL, []),
+    'serializer_read_loud': (vocab_body('save_vocabulary', 'encoding="utf-8"') + ENTRY_TAIL, [7]),
+    'pretrained_write_loud': (vocab_body('save_pretrained', '"w", encoding="utf-8"') + ENTRY_TAIL, [7]),
     'serializer_write_with_http_source_loud': (
         "from flask import request\n"
         + "import os\n"

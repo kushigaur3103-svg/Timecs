@@ -180,12 +180,22 @@ C22_RESOLVER_FIXTURES = {
                                   "from huggingface_hub import hf_hub_download\n"
                                   + "def get_labels(repo_id, filename):\n"
                                   + "    with open(hf_hub_download(repo_id, filename), \"r\") as h:\n"
-                                  + "        return h.read()\n", [], 0),
+                                  + "        return h.read()\n"
+                                  # Entrypoint fact so the two hub mutations below can still move this
+                                  # row: with the proof blinded the sink registers, and only a module
+                                  # that declares an entrypoint still reports an unproven open().
+                                  + "import sys\n"
+                                  + "print(sys.argv[1])\n", [], 0),
     'resolver_qualified_read': ('src/convert_x_to_pytorch.py',
                                 "import huggingface_hub\n"
                                 + "def get_labels(repo_id, filename):\n"
                                 + "    with open(huggingface_hub.hf_hub_download(repo_id, filename)) as h:\n"
-                                + "        return h.read()\n", [], 0),
+                                + "        return h.read()\n"
+                                # Same entrypoint fact as the bare-import twin: this one must stay
+                                # quiet when the binding table is blinded, because the qualified
+                                # spelling is recognised without it.
+                                + "import sys\n"
+                                + "print(sys.argv[1])\n", [], 0),
     'resolver_cached_download_read': ('src/convert_x_to_pytorch.py',
                                       "from huggingface_hub import cached_download, hf_hub_url\n"
                                       + "def get_labels(repo_id, filename):\n"
@@ -206,17 +216,30 @@ C22_RESOLVER_FIXTURES = {
                                         + "import os\n"
                                         + "def get_labels(root_dir, repo_id, filename):\n"
                                         + "    with open(os.path.join(root_dir, hf_hub_download(repo_id, filename)), \"r\") as h:\n"
-                                        + "        return h.read()\n", [4], 1),
+                                        + "        return h.read()\n"
+                                        # Entrypoint fact: the open() taint requirement retires an
+                                        # unproven open in a module that declares none, so the hub
+                                        # refusal below needs a module where open() still reports.
+                                        + "import sys\n"
+                                        + "print(sys.argv[1])\n", [4], 1),
     'resolver_write_mode_stays_loud': ('src/convert_x_to_pytorch.py',
                                        "from huggingface_hub import hf_hub_download\n"
                                        + "def get_labels(repo_id, filename):\n"
                                        + "    with open(hf_hub_download(repo_id, filename), \"w\") as h:\n"
-                                       + "        h.write(\"x\")\n", [3], 1),
+                                       + "        h.write(\"x\")\n"
+                                       # Entrypoint fact, as above: the write-mode refusal is what
+                                       # keeps this row loud, not the retired open() fallback.
+                                       + "import sys\n"
+                                       + "print(sys.argv[1])\n", [3], 1),
     'resolver_runtime_mode_stays_loud': ('src/convert_x_to_pytorch.py',
                                          "from huggingface_hub import hf_hub_download\n"
                                          + "def get_labels(repo_id, filename, stream_mode):\n"
                                          + "    with open(hf_hub_download(repo_id, filename), stream_mode) as h:\n"
-                                         + "        return h.read()\n", [3], 1),
+                                         + "        return h.read()\n"
+                                         # Entrypoint fact, as above: the runtime-mode refusal is what
+                                         # keeps this row loud, not the retired open() fallback.
+                                         + "import sys\n"
+                                         + "print(sys.argv[1])\n", [3], 1),
 }
 
 # Slice E fixtures: the operator-program proof. Each entry is (path, source, CWE, loud lines,

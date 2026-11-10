@@ -206,8 +206,12 @@ SEAL_TARGETS = [
 
 
 def scan(label, source):
+    # A corpus label already ends in `.py`; appending another one produced `...py.py`, which is a
+    # different file identity and silently defeats every exact-identity keep-loud pin. Fixture labels
+    # carry no extension, so both callers get the spelling they meant.
+    key = label if label.endswith('.py') else f'{label}.py'
     with contextlib.redirect_stderr(io.StringIO()):
-        tracker = ast_scanner.TaintTracker(files={f'{label}.py': source})
+        tracker = ast_scanner.TaintTracker(files={key: source})
         _, _, edges = tracker.analyze()
         rows = cli._findings_for(tracker, edges)
     return [row for row in rows if row['cwe'] == 'CWE-22']

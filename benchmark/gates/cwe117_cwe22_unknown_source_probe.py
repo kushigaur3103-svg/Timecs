@@ -20,6 +20,17 @@ argparse/dataclasses" costs 4 (`src__transformers__trainer.py` 736, 1604, 1609, 
 `f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}"`, is character-identical to an
 example-script false positive, so no expression-shape rule can separate the two populations.
 
+One fixture spelling here is collateral from `cwe22_open_taint_probe`, and the repair is a module fact,
+not a loosened assertion: `parameter_derived_path_write` used to be loud because the engine stamped a
+placeholder onto `open(<param derived>)` in *any* module, which is exactly the blanket that rule
+retired for modules that declare no entrypoint. The fixture now spells a `__main__` guard, so the
+placeholder is still injected - by the entrypoint-aware collector, on a module that earns it - and the
+three things this probe actually checks about the case (reported at line 4, edge id
+`UNTRUSTED_PATH_TRAVERSAL`, zero registered sources) are unchanged. Measured in
+`scratch/_c22_placeholder_collateral.py`: the `argv`/`argparse` spellings move the row to another line
+and onto the generic synthetic message, so they would have changed the contract instead of the ground
+for it.
+
 This file asserts the contract on sources parsed in memory, never on files it opens: the parity gate
 scans this directory, and every content-read of a path assembled at runtime inside it is reported as
 CWE-22 - an earlier draft of this probe proved that with `NEW=2`. Presence of the 59 keys in the live
@@ -70,7 +81,9 @@ PLACEHOLDER_CASES = [
         'def save(output_dir, name):\n'
         '    target = os.path.join(output_dir, name)\n'
         '    with open(target, "w", encoding="utf-8") as fh:\n'
-        '        fh.write("x")\n'),
+        '        fh.write("x")\n'
+        'if __name__ == "__main__":\n'
+        '    save("out", "weights.bin")\n'),
      'CWE-22', 4, 'UNTRUSTED_PATH_TRAVERSAL'),
 ]
 

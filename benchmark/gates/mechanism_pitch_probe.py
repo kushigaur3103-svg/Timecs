@@ -119,7 +119,10 @@ LITERAL_ALREADY_LIVE = [
     # (label, cwe, source, verdict, note)
     ('literal_path_open', 'CWE-22', 'cfg = "static/app.json"\ndata = ' + _O + '(cfg, "r")\n', 'quiet',
      'self-described path'),
-    ('param_path_open', 'CWE-22', 'def read_it(path):\n' + _IND + 'return ' + _O + '(path, "r").read()\n',
+    ('param_path_open', 'CWE-22', 'def read_it(path):\n' + _IND + 'return ' + _O + '(path, "r").read()\n'
+     # The argv read declares an entrypoint: the open() taint requirement otherwise retires an
+     # unproven parameter open in a library module, and this pitch is about the parameter boundary.
+     + 'import sys\nprint(sys.argv[1])\n',
      'loud', 'a parameter is the boundary'),
     ('literal_url_request', 'CWE-918', 'resp = requests.get("https://api.internal/health")\n', 'quiet',
      'host fixed in source'),

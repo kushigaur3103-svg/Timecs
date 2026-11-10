@@ -23,8 +23,10 @@ What Lever 1 actually moved, measured rather than claimed: the paired full-arena
 disagreed with a fresh run on 8 rows and was retired) and the 25-fixture table below, every one of
 which is a real `UNTRUSTED_PATH_TRAVERSAL` row at `git show HEAD:ast_scanner.py` (snapshot hash
 matches HEAD byte for byte, verified). Ten synthetic sources are declined: eight lines go quiet and
-two of those stay reported by another emitter, so the guard removed an invented source and not a
-finding. Thirteen stay loud on a module fact and two on caller reach alone.
+two of those stayed reported by another emitter, so the guard removed an invented source and not a
+finding. Thirteen stay loud on a module fact and two on caller reach alone. The successor open()
+taint rule (`cwe22_open_taint_probe`) has since retired those two remaining emitters as well, so
+TIER 3 now asserts the whole row is quiet and still attributes the declined source to this guard.
 
 The narrowings are the load-bearing part, and each is pinned by a fixture that stays loud:
 
@@ -48,9 +50,11 @@ One deciding site
 The guard is consulted from exactly one place, inside the collector, strictly before the
 `_add_blindspot_sink(... "UNTRUSTED_PATH_TRAVERSAL" ...)` stamp, and its answer can only ever *skip*
 that stamp. It never widens a source, never re-labels a row, and cannot make a finding appear: the
-cascade, the registry sinks and the taint graph still report the same `open()` if real taint arrives
-(`library_write_mode_open` and `reach_unbound_caller` are exactly that case, asserted as
-row-still-loud-with-a-different-message in TIER 3).
+cascade, the registry sinks and the taint graph still report the same `open()` if real taint arrives.
+`library_write_mode_open` and `reach_unbound_caller` were that case when this gate shipped -- the row
+survived under the registry's message -- and the successor open() taint rule has since retired the
+unproven fallback that carried them, so TIER 3 asserts they are quiet now and that this guard is
+still the rule that declined their invented source.
 
 The three blessed keys it cannot prove from inside the file
 ----------------------------------------------------------
@@ -152,9 +156,13 @@ EARNED_QUIET = {
                                           + 'MODE = os.environ.get("MODE", "dev")\n' + HELPER),
 }
 
-# The invented source is gone and the finding is not: the line stays reported by the registry or the
-# cascade, under a different message. This is the half of the claim that the guard removes no TP.
-ROW_KEPT_BY_OTHER_EMITTER = {
+# Superseded, and the supersession is asserted rather than deleted. When this gate shipped, these two
+# lines kept reporting under the registry's own message (`CWE-22: open`) after the invented source was
+# declined -- the proof that the guard removed an assumption and not a finding. The successor rule
+# (`cwe22_open_taint_probe`) then retired the unproven `open()` fallback in modules that declare no
+# entrypoint, which is exactly these two shapes, so the whole row is now quiet. This gate still owns
+# the half it always owned: the guard declined the synthetic source, and the generic message is gone.
+SUPERSEDED_BY_OPEN_TAINT = {
     'library_write_mode_open': (2, 'def dump_state(state_slot, payload):\n'
                                   + '    with open(state_slot, "w") as handle:\n'
                                   + '        handle.write(payload)\n'),
@@ -218,7 +226,7 @@ LOUD_BY_REACH = {
 
 ALL_FIXTURES = {}
 ALL_FIXTURES.update(EARNED_QUIET)
-ALL_FIXTURES.update(ROW_KEPT_BY_OTHER_EMITTER)
+ALL_FIXTURES.update(SUPERSEDED_BY_OPEN_TAINT)
 ALL_FIXTURES.update(LOUD_BY_FACT)
 ALL_FIXTURES.update(LOUD_BY_REACH)
 
@@ -425,12 +433,15 @@ def check_fixtures():
                 failures.append(('quiet row not attributable to the guard', label, line, ground))
             else:
                 earned += 1
-        elif label in ROW_KEPT_BY_OTHER_EMITTER:
-            still = [message for row_line, message in found if row_line == line]
+        elif label in SUPERSEDED_BY_OPEN_TAINT:
+            at_line = [message for row_line, message in found if row_line == line]
             if generic_at(found, line):
                 failures.append(('invented source survived', label, line))
-            elif not still:
-                failures.append(('the whole finding disappeared', label, line))
+            elif at_line:
+                failures.append(('successor open() taint rule stopped retiring this shape',
+                                 label, line, at_line))
+            elif ground not in ('declined', 'reach'):
+                failures.append(('quiet row not attributable to the guard', label, line, ground))
             else:
                 kept += 1
         elif ground == 'facts':
@@ -446,7 +457,7 @@ def check_fixtures():
         else:
             failures.append(('unattributable fixture', label, line, ground))
     print(f'  fixtures={len(ALL_FIXTURES)} declined_and_quiet={earned} '
-          f'declined_row_kept_by_other_emitter={kept} loud_by_facts={loud_fact} '
+          f'declined_then_retired_by_open_taint_successor={kept} loud_by_facts={loud_fact} '
           f'loud_by_reach={loud_reach}')
     for label in sorted(LOUD_BY_REACH):
         facts = consult_at(observe_consults(ALL_FIXTURES[label][1]), ALL_FIXTURES[label][0])
@@ -651,26 +662,37 @@ def check_wiring():
                 if isinstance(node, ast.Name) and node.id == 'CWE22_ENTRYPOINT_KEEP_LOUD']
     consulted = [lineno for lineno in pin_uses if lineno not in pin_defs]
     print(f'  pin_table_text_lines={pin_lines} pin_defs={pin_defs} consulted_from={consulted}')
-    if len(pin_defs) != 1 or len(consulted) != 1:
-        failures.append(('the pin table must be defined once and consulted once',
+    # Two consults since the open() taint requirement shipped: the synthetic-source guard answers
+    # `return True` (the source is owed) and `_c22_open_sink_owes_proven_taint` answers `return False`
+    # (no proof is owed). Both are the keep-loud direction for their own question, and a third
+    # consult would mean some new rule is reading the pin without this gate knowing.
+    keep_direction = {'_c22_synthetic_param_source_is_founded': True,
+                      '_c22_open_sink_owes_proven_taint': False}
+    if len(pin_defs) != 1 or len(consulted) != len(keep_direction):
+        failures.append(('the pin table must be defined once and consulted once per deciding rule',
                          (pin_defs, consulted)))
+    for name, constant in keep_direction.items():
+        owner = methods.get(name)
+        if owner is None:
+            failures.append(('a pin-consulting rule is not a TaintTracker method', name))
+            continue
+        arms = [item for item in ast.walk(owner) if isinstance(item, ast.If)
+                and 'CWE22_ENTRYPOINT_KEEP_LOUD' in ast.unparse(item.test)]
+        if len(arms) != 1:
+            failures.append(('the pin arm is not a single If in the deciding predicate',
+                             (name, len(arms))))
+            continue
+        body = arms[0].body
+        only_keep = (len(body) == 1 and isinstance(body[0], ast.Return)
+                     and isinstance(body[0].value, ast.Constant)
+                     and body[0].value.value is constant)
+        print(f'  {name}: pin_arm_returns_{constant}_only={only_keep}')
+        if not only_keep:
+            failures.append(('the pin table must only ever keep a row, never silence one', name))
     method = methods.get('_c22_synthetic_param_source_is_founded')
     if method is None:
         failures.append(('the deciding predicate is not a TaintTracker method', None))
         return failures
-    arms = [item for item in ast.walk(method) if isinstance(item, ast.If)]
-    pin_arm = [item for item in arms
-               if 'CWE22_ENTRYPOINT_KEEP_LOUD' in ast.unparse(item.test)]
-    if len(pin_arm) != 1:
-        failures.append(('the pin arm is not a single If in the deciding predicate', len(pin_arm)))
-    else:
-        body = pin_arm[0].body
-        only_keep = (len(body) == 1 and isinstance(body[0], ast.Return)
-                     and isinstance(body[0].value, ast.Constant)
-                     and body[0].value.value is True)
-        print(f'  pin_arm_returns_true_only={only_keep} body={ast.unparse(body[0])[:40]}')
-        if not only_keep:
-            failures.append(('the pin table must only ever keep a row, never silence one', None))
     cluster = ['_c22_synthetic_param_source_is_founded', '_c22_module_entrypoint_facts',
                '_c22_statement_runs_at_import', '_c22_expr_is_untrusted_source',
                '_c22_callers_pass_untrusted_value', '_c22_enclosing_def_name',
@@ -902,7 +924,7 @@ def main() -> int:
     for item in failures[:14]:
         print(f'  !! {item}')
     print(f'\nfixtures={len(ALL_FIXTURES)} earned={len(EARNED_QUIET)} '
-          f'kept_by_other_emitter={len(ROW_KEPT_BY_OTHER_EMITTER)} '
+          f'superseded_by_open_taint={len(SUPERSEDED_BY_OPEN_TAINT)} '
           f'loud_by_facts={len(LOUD_BY_FACT)} loud_by_reach={len(LOUD_BY_REACH)} '
           f'locked_cwe22={sum(CWE22_LOCKED.values())} mutations={len(MUTATIONS)} '
           f'failures={len(failures)}')
@@ -915,7 +937,7 @@ def main() -> int:
         return 1
     print(f'VERDICT: PASS - 0 of {sum(CWE22_LOCKED.values())} blessed CWE-22 keys declined, '
           f'{len(EARNED_QUIET)} invented sources retired by this rule alone, '
-          f'{len(ROW_KEPT_BY_OTHER_EMITTER)} of them still reported by another emitter, '
+          f'{len(SUPERSEDED_BY_OPEN_TAINT)} of them since retired by the successor open() taint rule, '
           f'{len(LOUD_BY_FACT)} fact grounds and {len(LOUD_BY_REACH)} reach grounds held loud, '
           f'one consult site and a keep-only pin table confirmed.')
     return 0

@@ -66,6 +66,11 @@ PRE = 'import json\nimport tempfile\nimport unittest\nfrom pathlib import Path\n
 HUB = 'from huggingface_hub import hf_hub_download\n'
 REQ = 'from flask import request\n'
 UNTRUSTED = 'request.args["name"]'
+# The open() taint requirement (`cwe22_open_taint_probe`) retires an unproven `open()` in a module
+# that declares no entrypoint, which would make every carrier below quiet with the clause blinded --
+# a decorative fixture. Appending an argv read keeps the sink reporting so the value-origin clause is
+# still the only thing that can quiet it. It is appended, never prepended, so no sink line moves.
+ENTRY = 'import sys\nprint(sys.argv[1])\n'
 
 FIXTURES = {
     # --- earned: loud before this clause, quiet after it ---------------------------------------
@@ -86,7 +91,7 @@ FIXTURES = {
         'def convert_checkpoint(language):\n'
         '    config_file = hf_hub_download(repo_id="facebook/mms-tts", filename="config.json")\n'
         '    with open(config_file, "r") as handle:\n'
-        '        return json.loads(handle.read())\n'),
+        '        return json.loads(handle.read())\n') + ENTRY,
     'resolver_in_if_branch': HUB + 'import json\n' + (
         'def convert_checkpoint(out_dir, checkpoint_path=None, language=None):\n'
         '    if checkpoint_path is None:\n'
@@ -97,7 +102,7 @@ FIXTURES = {
         '        with open(config_file, "r") as handle:\n'
         '            hps = json.loads(handle.read())\n'
         '    else:\n'
-        '        print("skip")\n'),
+        '        print("skip")\n') + ENTRY,
     'resolver_loop_bare_positional': HUB + 'import json\n' + (
         'def get_remote_tools(organization):\n'
         '    tools = {}\n'
@@ -106,7 +111,7 @@ FIXTURES = {
         '        resolved_config_file = hf_hub_download(repo_id, "tool_config.json")\n'
         '        with open(resolved_config_file, encoding="utf-8") as reader:\n'
         '            tools[repo_id] = json.load(reader)\n'
-        '    return tools\n'),
+        '    return tools\n') + ENTRY,
     # --- refused: the positive proof is missing, so the row stays loud -------------------------
     'name_is_method_parameter': PRE + (
         'class AutoImageProcessorTest(unittest.TestCase):\n'
@@ -162,12 +167,12 @@ FIXTURES = {
     'name_never_written_here': 'import json\n' + (
         'def read_it():\n'
         '    with open(config_file, "r") as handle:\n'
-        '        return json.load(handle)\n'),
+        '        return json.load(handle)\n') + ENTRY,
     'resolver_leaf_not_hub': 'from .utils import hf_hub_download\nimport json\n' + (
         'def convert_checkpoint(language):\n'
         '    config_file = hf_hub_download(repo_id="facebook/mms-tts", filename="config.json")\n'
         '    with open(config_file, "r") as handle:\n'
-        '        return json.loads(handle.read())\n'),
+        '        return json.loads(handle.read())\n') + ENTRY,
     'subscript_not_bare_ident': PRE + (
         'class Holder(unittest.TestCase):\n'
         '    def test_slot(self):\n'

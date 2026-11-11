@@ -1980,6 +1980,13 @@ CWE22_TEMPFILE_ROOT_CALLS = frozenset({
 # The object a `tempfile` call hands back is not always the path: a context manager or an open file
 # object exposes it under `.name`, so one attribute hop is part of the proof.
 CWE22_TEMPFILE_NAME_ATTRS = frozenset({"name", "filename"})
+# Enumerating a directory the program itself created hands back children of that directory, so a
+# `for f in Path(temp_dir).glob("*")` target is a path the program chose as much as `temp_dir` is.
+# Closed to the three pathlib enumerators: `os.scandir` yields DirEntry objects whose `.path` is a
+# different proof, and a comprehension target is a different binding shape. The pattern must be a
+# constant carrying no `..` and no absolute root, because pathlib ignores the receiver for an
+# absolute pattern -- `Path(tmp).glob("/etc/*")` reads /etc, not the temp dir.
+CWE22_TEMP_ROOT_ENUMERATION_LEAVES = frozenset({"glob", "rglob", "iterdir"})
 # CWE-22 hub-cache proof. `huggingface_hub` resolves a (repo, filename) pair into a file it has
 # already downloaded under its own content-addressed cache directory and returns that path; the
 # string a caller receives never escapes the cache root, so reading it is not a traversal. The
@@ -2293,6 +2300,18 @@ CWE22_OPERATOR_PATH_WRAPPERS = frozenset({
     "splitext", "format",
 })
 CWE22_OPERATOR_PATH_MODULES = frozenset({"os.path", "os", "posixpath"})
+# A namespace FIELD that is written is no longer only what the operator typed -- unless every write
+# to it is a pure transform of operator text. `args.task_name = args.task_name.lower()` and
+# `training_args.output_dir = Path(training_args.output_dir)` hand back the same characters in a
+# different case or type, so the field still holds the invocation; `args.dest = payload()` does not.
+# The whitelist is deliberately syntactic and closed: a method here must run on the field itself (or
+# another field of the same namespace that also passes), and every argument must be a constant, so
+# `args.x.replace("a", requests.get(url).text)` is refused on the argument rather than on the method
+# name. Nothing here credits a call the engine cannot see inside.
+CWE22_NAMESPACE_PURE_FIELD_METHODS = frozenset({
+    "lower", "upper", "strip", "lstrip", "rstrip", "replace", "removeprefix", "removesuffix",
+})
+CWE22_NAMESPACE_PURE_FIELD_CASTS = frozenset({"Path", "PurePath", "PurePosixPath", "str"})
 # Calls that make a path component safe to join, or pin it under a known root. `normpath` is
 # included because every corpus case that uses it pairs it with a `startswith` root check.
 PATH_SANITIZER_SEGMENTS = frozenset({
@@ -6734,6 +6753,10 @@ class TaintTracker:
         return stem in HTTP_TRANSPORT_MODULE_STEMS and any(d in HTTP_CLIENT_PACKAGE_DIRS for d in dirs)
 
     CWE117_BUILTIN_SEALED_NAMES = frozenset({"len", "int", "float", "bool", "ord"})
+    # Argument-free `time.<name>()` getters whose return CPython forces to a builtin float. The
+    # membership test is on the method, the receiver test stays `"time"` at the call site, and a
+    # module that binds the name `time` to anything else loses the arm for every entry here.
+    CWE117_STDLIB_SCALAR_METHODS = frozenset({"time", "monotonic"})
 
     def _shadowed_names_in_tree(self, tree) -> frozenset:
         """Every name a module binds itself, memoised on the tree the way `_module_nodes` is.
@@ -6776,6 +6799,68 @@ class TaintTracker:
     def _module_shadowed_names(self, mod_name: str) -> frozenset:
         """`_shadowed_names_in_tree` for the tree registered under *mod_name*."""
         return self._shadowed_names_in_tree(self.modules.get(mod_name) if mod_name else None)
+
+    def _stdlib_time_module_names(self, tree) -> frozenset:
+        """Names this module binds to the stdlib `time` module and to nothing else.
+
+        The clock-getter arm used to fail-close on `"time" not in shadowed`, and no module can
+        satisfy that: `import time` is itself a binding, so the conjunct written to survive a rebound
+        `time` refused every caller that legitimately uses the API. This is the origin-aware form of
+        the same veto -- a name qualifies only when EVERY site that binds it is `import time`, so
+        `from tools import clock as time`, an assignment, a `del`, a parameter, a `def time` or a
+        `global time` each remove it. `import a.time` binds `a` and not `time`, so it never
+        qualifies a `time.` receiver. Two passes, because the sweep must know which alias nodes an
+        `import time` owns before it treats an `alias` as a competing binding.
+        """
+        if tree is None:
+            return frozenset()
+        cached = tree.__dict__.get("_cached_stdlib_time_names")
+        if cached is not None:
+            return cached
+        nodes = self._module_nodes(tree)
+        clock_names = set()
+        plain_time_aliases = set()
+        for n in nodes:
+            if isinstance(n, ast.Import):
+                for alias in n.names:
+                    if alias.name == "time":
+                        clock_names.add(alias.asname or alias.name)
+                        plain_time_aliases.add(id(alias))
+        other_bindings = set()
+        for n in nodes:
+            if isinstance(n, ast.alias):
+                if id(n) not in plain_time_aliases:
+                    other_bindings.add(n.asname or n.name.split(".")[0])
+            elif isinstance(n, ast.Name):
+                if isinstance(n.ctx, (ast.Store, ast.Del)):
+                    other_bindings.add(n.id)
+            elif isinstance(n, ast.arg):
+                other_bindings.add(n.arg)
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                other_bindings.add(n.name)
+            elif isinstance(n, (ast.Global, ast.Nonlocal)):
+                other_bindings.update(n.names)
+            elif isinstance(n, ast.ExceptHandler):
+                if n.name:
+                    other_bindings.add(n.name)
+            elif isinstance(n, (ast.MatchAs, ast.MatchStar)):
+                other_bindings.add(n.name)
+            elif isinstance(n, ast.MatchMapping) and n.rest:
+                other_bindings.add(n.rest)
+        sealed = frozenset(clock_names - other_bindings)
+        tree.__dict__["_cached_stdlib_time_names"] = sealed
+        return sealed
+
+    def _clock_receiver_is_stdlib_time(self, receiver) -> bool:
+        """True when `receiver` names a module-level `import time` and nothing else."""
+        if not isinstance(receiver, ast.Name):
+            return False
+        node = receiver
+        while getattr(node, "parent", None) is not None:
+            node = node.parent
+        if not isinstance(node, ast.Module):
+            return False
+        return receiver.id in self._stdlib_time_module_names(node)
 
     @staticmethod
     def _c22_is_safe_asset_parameter(param_id: str) -> bool:
@@ -7559,11 +7644,15 @@ class TaintTracker:
             return (self._is_intra_numeric_value(expr.body, proven, shadowed, local_names) and
                     self._is_intra_numeric_value(expr.orelse, proven, shadowed, local_names))
         if isinstance(expr, ast.Call):
-            # time.time()
-            if (isinstance(expr.func, ast.Attribute) and expr.func.attr == "time"
+            # time.time() / time.monotonic()
+            if (isinstance(expr.func, ast.Attribute)
+                    and expr.func.attr in self.CWE117_STDLIB_SCALAR_METHODS
                     and isinstance(expr.func.value, ast.Name) and expr.func.value.id == "time"
-                    and (shadowed is None or "time" not in shadowed)
+                    and (shadowed is None or self._clock_receiver_is_stdlib_time(expr.func.value))
                     and not expr.args and not expr.keywords):
+                # `monotonic` shares `time`'s arm because the proof is identical and sits on the same
+                # surface: CPython's clock getters hand back a builtin float or raise, so the printed
+                # text is digits, a sign and at most one dot. Args make it a different function.
                 return True
             # .item()
             if (isinstance(expr.func, ast.Attribute) and expr.func.attr == "item"
@@ -7861,10 +7950,14 @@ class TaintTracker:
         if isinstance(expr, ast.Call):
             if shadowed is not None and self._builtin_sealed_call(expr, shadowed):
                 return True
-            if (isinstance(expr.func, ast.Attribute) and expr.func.attr == "time"
+            if (isinstance(expr.func, ast.Attribute)
+                    and expr.func.attr in self.CWE117_STDLIB_SCALAR_METHODS
                     and isinstance(expr.func.value, ast.Name) and expr.func.value.id == "time"
-                    and (shadowed is None or "time" not in shadowed)
+                    and (shadowed is None or self._clock_receiver_is_stdlib_time(expr.func.value))
                     and not expr.args and not expr.keywords):
+                # `monotonic` shares `time`'s arm because the proof is identical and sits on the same
+                # surface: CPython's clock getters hand back a builtin float or raise, so the printed
+                # text is digits, a sign and at most one dot. Args make it a different function.
                 return True
             if (isinstance(expr.func, ast.Attribute) and expr.func.attr == "item"
                     and not expr.args and not expr.keywords):
@@ -9566,6 +9659,61 @@ class TaintTracker:
             current = parent
         return None
 
+    def _c22_namespace_field_write_is_pure(self, tree, owner, field, argparse_names,
+                                           pending=frozenset()):
+        """Every write into this namespace field hands back operator text, so writing it ends nothing.
+
+        Co-inductive on purpose. `args.task_name = args.task_name.lower()` reads the field it writes,
+        so proving the write needs the field. The base case is the parse itself, which the caller's
+        candidate loop checks on its own; the step is the closed whitelist below. A field already
+        being judged answers True, and because EVERY write has to pass, one `args.x = payload()`
+        anywhere in the same scope refuses the field for every read of it.
+        """
+        holder = field.split(".", 1)[0]
+        if holder not in argparse_names or "." not in field:
+            return False
+        key = (owner, field)
+        if key in pending:
+            return True
+        # `binds` keys a dotted write under the same (owner, "holder.field") this asks about, and the
+        # build loop appends the value and records the mutation in one iteration, so the table is
+        # already the list of writes and a second container cost ~8 MB of retained arena memory for
+        # nothing. The `"." not in field` guard above is what keeps that true: a plain name has `binds`
+        # values that were never written INTO the field, so it must never reach this lookup.
+        writes = self._c22_scope_binds(tree)[0]
+        values = list(writes.get(key) or []) + list(writes.get(("", field)) or [])
+        if not values:
+            return False
+        pending = pending | {key, ("", field)}
+        return all(self._c22_namespace_write_value_is_pure(tree, owner, holder, value,
+                                                           argparse_names, pending)
+                   for value in values)
+
+    def _c22_namespace_write_value_is_pure(self, tree, owner, holder, expr, argparse_names, pending):
+        """A written value that can only be the operator's own text, in a different case or type."""
+        if isinstance(expr, ast.Constant):
+            return True
+        if isinstance(expr, ast.Attribute):
+            if (dotted_name(expr.value) or "") != holder:
+                return False
+            ref = dotted_name(expr) or ""
+            mutated = self._c22_scope_binds(tree)[1]
+            if (owner, ref) not in mutated and ("", ref) not in mutated:
+                return True
+            return self._c22_namespace_field_write_is_pure(tree, owner, ref, argparse_names, pending)
+        if isinstance(expr, ast.Call):
+            if (isinstance(expr.func, ast.Attribute)
+                    and expr.func.attr in CWE22_NAMESPACE_PURE_FIELD_METHODS):
+                if expr.keywords or not all(isinstance(a, ast.Constant) for a in expr.args):
+                    return False
+                return self._c22_namespace_write_value_is_pure(
+                    tree, owner, holder, expr.func.value, argparse_names, pending)
+            if ((dotted_name(expr.func) or "") in CWE22_NAMESPACE_PURE_FIELD_CASTS
+                    and len(expr.args) == 1 and not expr.keywords):
+                return self._c22_namespace_write_value_is_pure(
+                    tree, owner, holder, expr.args[0], argparse_names, pending)
+        return False
+
     def _c22_is_namespace_root(self, tree, node, name, argparse_names, path=None, seen=None):
         """`name` holds this program's parsed command line, in the scope reading it right now.
 
@@ -9588,7 +9736,16 @@ class TaintTracker:
         field = path if path is not None else name
         mutated = self._c22_scope_binds(tree)[1]
         if (owner, field) in mutated or ("", field) in mutated:
-            return False
+            # A written field is only still the invocation when every write into it is a pure
+            # transform of operator text. The blanket refusal this replaces cost 6 arena rows whose
+            # writes are `args.task_name.lower()`, `Path(training_args.output_dir)` and a copy of a
+            # sibling field (`scratch/_c22_r7_b_head.log` vs `_c22_r7_b_live.log`: loud at HEAD, quiet
+            # now, no row added or moved). `write_unclassified_call` in
+            # benchmark/gates/cwe22_namespace_field_purity_probe.py is what proves the refusal still
+            # fires on `args.dest = payload()`, and `purity_blanket_true` is the mutation that catches
+            # crediting it.
+            if not self._c22_namespace_field_write_is_pure(tree, owner, field, argparse_names):
+                return False
         if not cands or any(id(value) in seen for value in cands if value is not None):
             return False
         seen = seen | {id(value) for value in cands if value is not None}
@@ -9905,6 +10062,57 @@ class TaintTracker:
             return False
         return self._c22_path_is_proven_temp_root(expr, scope_id, lineno)
 
+    def _c22_loop_target_enumerates_temp_root(self, expr, scope_id: str = "",
+                                              lineno: int = 0, depth: int = 0) -> bool:
+        """Is this name a `for` target over a directory the program itself created?
+
+        `with tempfile.TemporaryDirectory() as temp_dir:` then `for f in Path(temp_dir).glob("*"):`
+        then `f.read_bytes()` reads a child of a root the OS picked for this process. The temp-root
+        proof the engine already ships answers the receiver; what it does not answer is the loop
+        target, because a loop variable is not an assignment and `_c22_bound_values` cannot see it.
+        That absence is why the arena row stayed loud, and it is an absence of evidence rather than
+        evidence of a caller-chosen path.
+
+        The binding is read off the parent links, and the FIRST enclosing `for` that names this
+        target decides: an inner loop that rebinds the name shadows the outer one, so taking the
+        outer proof would credit a different iterable. A callable boundary ends the search, because
+        past it the name is a parameter or a closure and neither was enumerated here.
+        """
+        if not isinstance(expr, ast.Name) or depth > 8:
+            return False
+        node = getattr(expr, "parent", None)
+        while node is not None:
+            if isinstance(node, (ast.For, ast.AsyncFor)):
+                if expr.id in _c22_target_names(node.target):
+                    return self._c22_enumeration_is_over_temp_root(node.iter, scope_id, lineno)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                return False
+            node = getattr(node, "parent", None)
+        return False
+
+    def _c22_enumeration_is_over_temp_root(self, iter_expr, scope_id: str, lineno: int) -> bool:
+        """The iterable is a closed pathlib enumeration of a proven temp root, by a relative pattern."""
+        if not isinstance(iter_expr, ast.Call) or not isinstance(iter_expr.func, ast.Attribute):
+            return False
+        leaf = iter_expr.func.attr
+        if leaf not in CWE22_TEMP_ROOT_ENUMERATION_LEAVES:
+            return False
+        if iter_expr.keywords or any(isinstance(a, ast.Starred) for a in iter_expr.args):
+            return False
+        if leaf == "iterdir":
+            if iter_expr.args:
+                return False
+        else:
+            if len(iter_expr.args) != 1:
+                return False
+            pattern = iter_expr.args[0]
+            if not self._c22_anchor_literal_ok(pattern, True):
+                return False
+            text = pattern.value.replace("\\", "/")
+            if text.startswith("/") or (len(text) > 1 and text[1] == ":"):
+                return False
+        return self._c22_path_is_proven_temp_root(iter_expr.func.value, scope_id, lineno)
+
     @staticmethod
     def _c22_enclosing_function(node):
         """The nearest enclosing `def`, read off the parent links parsing already set.
@@ -10061,6 +10269,9 @@ class TaintTracker:
         called, has_tempfile = self._c22_slice_g_module_facts(tree)
         if has_tempfile and self._c22_self_attribute_is_temp_sink(target_expr, record.scope_id,
                                                                   record.lineno):
+            return True
+        if has_tempfile and self._c22_loop_target_enumerates_temp_root(
+                target_expr, record.scope_id, record.lineno):
             return True
         if isinstance(target_expr, ast.Name) and self._c22_value_is_proven_module_origin(
                 tree, target_expr, mod_name):

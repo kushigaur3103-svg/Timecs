@@ -2057,6 +2057,32 @@ CWE22_PURE_CONTAINER_RESHAPE = frozenset({
     "zip", "enumerate", "list", "tuple", "set", "frozenset", "sorted", "reversed", "dict",
     "str", "len", "range",
 })
+# Local filesystem discovery: these calls read what is already on this disk and hand back names for
+# it. They neither fetch a path component from anywhere nor invent one, so they are path calls -- but
+# only in their qualified stdlib spelling, the witness discipline `CWE22_TEMPFILE_ROOT_CALLS` already
+# states. A bare `listdir` may be this file's own `def listdir(root): return requests.get(root).json()`,
+# and the blinded walk resolves NAMES to bindings without reading a callee body, so the bare spelling
+# is an unknown wrapper and is refused.
+#
+# The descent into the arguments is load-bearing, and the shape that proves it is narrower than it
+# looks. `open(os.listdir(requests.get(root).text)[0])` is NOT it: the walk stops at the call in both
+# arms, so that row is loud (or absent) for reasons the descent never touches. The deciding shape puts
+# a command-line component BESIDE the discovery call --
+# `open(os.path.join(out, os.listdir(requests.get(url).text)[0]))` with `out` handed `sys.argv[1]` --
+# because then the unblinded walk has a root it can see and the blinded walk has none, and only the
+# proof's descent into the discovery argument stands between the row and retirement. Answering True at
+# the leaf instead retires both such shapes, which is the reshaper mistake above repeated;
+# `fs_discovery_no_descent` in `benchmark/gates/cwe22_local_fs_discovery_probe.py` hands that early
+# return back and is CAUGHT on exactly those two rows. `fs_discovery_bare_spelling` does the same for
+# the qualified-only witness, on the local-def shape.
+#
+# Measured over seven hiding shapes -- remote via a name, remote inside a join, remote in a
+# comprehension, a socket recv, urlopen, os.environ, and getcwd joined to a remote component -- zero
+# remote roots went quiet, while `os.listdir(sys.argv[1])` and `glob.glob(sys.argv[1])` retire
+# (`scratch/_c22_r6_fs_soundness.py`, Q2). In the arena the group retires 4 of the 5 rows it touches
+# and no others; the three sibling groups the mandate named retire 0 and hide remote roots, so they
+# are declined on the predicate in the same gate.
+CWE22_LOCAL_FS_DISCOVERY = frozenset({"os.getcwd", "os.listdir", "glob.glob"})
 
 
 def _c22_expr_is_argv_spelling(expr) -> bool:
@@ -8977,11 +9003,21 @@ class TaintTracker:
         elif isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
             kids = expr.elts
         elif isinstance(expr, ast.Dict):
-            kids = expr.values
+            # Iterating a dict yields its KEYS, so a remote root written as a key is a path component
+            # exactly like one written as a value. Walking only `expr.values` retired
+            # `table = {requests.get(url).text: 1}` / `for name in table` / `open(join(out, name))`:
+            # quiet with the demotion on, loud with it off, so the demotion owned that silence. Five
+            # hiding shapes were quiet on the ea28a58 blob and are loud now -- this one, the same dict
+            # read through `list(table)[0]`, a nested dict, a key produced by a local def, and the
+            # `ast.DictComp` spelling below, which had the identical blindness on `expr.key`.
+            # `container_key_arm_blind` in `benchmark/gates/cwe22_local_fs_discovery_probe.py` hands
+            # both retired arms back and is CAUGHT on all five. `**unpack` leaves a None key; the AST
+            # filter below drops it and the value arm still walks the unpacked expression.
+            kids = list(expr.keys) + list(expr.values)
         elif isinstance(expr, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
             kids = (expr.elt,)
         elif isinstance(expr, ast.DictComp):
-            kids = (expr.value,)
+            kids = (expr.key, expr.value)
         elif isinstance(expr, ast.Starred):
             kids = (expr.value,)
         return all(self._c22_value_origin_is_resolved(tree, k, argparse_names, cli_names,
@@ -9009,6 +9045,8 @@ class TaintTracker:
         if leaf in CWE22_PURE_CONTAINER_RESHAPE or leaf in self._C22_PATH_CONSTRUCTORS:
             return True
         if path in CWE22_TEMPFILE_ROOT_CALLS:
+            return True
+        if path in CWE22_LOCAL_FS_DISCOVERY:
             return True
         if leaf in CWE22_HUB_CACHE_RESOLVERS:
             return path == f"{CWE22_HUB_RESOLVER_MODULE}.{leaf}"

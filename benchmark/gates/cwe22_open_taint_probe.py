@@ -255,6 +255,214 @@ reduction. The lever is therefore not shipped, and the sound floor under the zer
 the ~35 the arithmetic of the mandate assumed. The 90 public CLI rows are the reason: they cannot be
 retired without dropping a finding the shield obligates this engine to keep.
 
+SUPERSEDED, one clause of it: "they cannot be retired" was true of a rule that asked only whether an
+operator value reaches the sink. Round 5 asks a second question -- whose operator -- and 44 of the 135
+retire on the differential below. The rest of the paragraph stands: the 11 sacred rows, the pins and the
+remote-download chains are still not reachable.
+
+Round 5 asks the other half of condition (a), and the floor it reaches is 91
+---------------------------------------------------------------------------
+Rounds 3 and 4 kept `open(args.output_dir)` loud because a value the operator controls demonstrably
+reaches the argument. That is condition (a) read as "an operator value gets here", and the round-4
+census is the objection to it: of the 116 non-sacred refusals, 57 sit inside a `main()` that the module's
+own `if __name__` block calls, in a file the operator started, from a repository the operator installed.
+For that shape the operator is not an attacker -- the operator is the process owner, and a finding that
+calls a shell flag a remote vector is the FP the mandate named.
+
+"What is a local program" cannot be answered by the module (that blanket was deleted in round 2), by the
+path (`tests/`, `examples/` are forbidden by contract 3), or by an import (`examples/pytorch/.../run_glue.py`
+imports `datasets`; so does a web service). So the question is asked of the ARGUMENT, by differential, in
+`_c22_sink_root_is_only_the_local_command_line`: run the shipped walk once as written, then again with the
+parsed-command-line recognitions switched off -- the argparse namespace table, the `@click` parameter
+table, the `parse_args()`/`click.prompt()` operator leaf, and the `sys.argv` / bare `argv` spellings at
+the source door (`CWE22_LOCAL_COMMAND_LINE_SPOTS` / `..._NAMES`). Every other door stays open in the
+blinded walk: an environment read, a stdin read, an `input()` prompt, a web request, a socket, an
+`urlopen`. A row is retired when the first walk finds a root and the second finds none, which is the
+statement "nothing but this program's own command line makes this path attacker-chosen" -- and a decline
+in the second walk answers True, so the width bound can cost a retirement and can never buy one. The
+first walk is re-asked inside the predicate rather than trusted from the funnel, because a rule whose
+soundness depends on where it was called from is a rule a later emitter can call from anywhere
+(`requirement_always_refused` is what falsifies that premise).
+
+Two refusals bound where the rule does not reach: a harness fact (a `unittest`/`pytest`/`nose`/`absl`
+import, a `*TestCase` base, a top-level `def test_`), because a suite is handed paths by whatever runs
+it, so its CLI rows keep the standard argument-taint reading -- in this arena that clause holds exactly
+one row loud, `utils/add_pipeline_model_mapping_to_test.py:288`, and `local_cli_harness_guard_off` is the
+mutation that says so; the blessed keys do not depend on it, because the shield and the two pin tables
+refuse those bytes a clause earlier. `TIER 3` proves both halves on the same bytes:
+`demoted_local_command_line=8/8` and `same_bytes_under_the_shield=8/8`, one file scanned as `m.py`
+(quiet) and as `benchmark/corpus/m.py` (loud).
+
+The argv door is the half that an arena run was needed to find. The first build of this rule reached 68
+retirements and stopped: 17 rows survived with `argv_read` in their module facts and a blinded walk that
+still found a root. The reason is a SECOND binding of the same name. `run_glue.py:227-234` parses
+`training_args` twice -- `parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))` when the script
+gets one `.json` argument, `parser.parse_args_into_dataclasses()` otherwise -- and the assignment map keeps
+both, so a walk that consults `training_args` consults the `sys.argv` spelling too. The first blinding
+switched off the namespace table, the `@click` table and the `parse_args()`-shaped leaf, and left the
+SOURCE DOOR wide open, where `sys.argv` lives. `scratch/_c22_r5_gap.py` on that build's rows file prints
+all 17 refusals: 16 `CLI_only` (14 under `examples/**`, 1 `tests/sagemaker/**`, 1
+`utils/download_glue_data.py:53`, whose `main(sys.argv[1:])` is the command line handed to a parameter)
+plus `utils/notification_service.py:771`, whose root is `arguments = sys.argv[1:][0]` nine hundred lines
+earlier and which the census files as unclassified because the hop is a call argument, not a namespace.
+Blinding `CWE22_LOCAL_COMMAND_LINE_SPOTS` / `..._NAMES` at the door took all 17: 67 -> 50 rows, 0 appeared.
+Every count in this paragraph is the PRE-SOUNDNESS-FIX build's; the shipped floor is 91, and the 41
+retirements between the two are the price of the three false negatives named below.
+
+The environment door is left open on purpose. The census prices the choice as far as it can see: exactly
+one survivor, `.circleci/create_circleci_config.py:175`, is `OTHER_LOCAL_only` with an environment read as
+its only non-command-line root, so closing that door too would retire at least one further row. The
+mandate names argv, argparse and click, and an environment variable is written by whoever installed the
+service -- a wider audience than the one shell -- which is exception (b) read conservatively. The final
+census prices the same choice from the other side: 7 of the 91 survivors refuse at
+`unclassified_call:os.getenv` (`examples/research_projects/lxmert/utils.py:364/397` and the `visual_bert`
+twins, among them), and environment-fed module constants sit behind more -- `TRANSFORMERS_CACHE` is
+`os.getenv("TRANSFORMERS_CACHE", ...)` at `examples/research_projects/lxmert/utils.py:74`, and
+`old_default_cache_path` hangs off `torch_cache_home = os.getenv("TORCH_HOME", ...)` at
+`src/transformers/utils/hub.py:84`. So one row understates the price rather than setting it, which is a
+reason to leave the door open, not to close it.
+
+    python scratch/_c22_r5_build_candidate.py
+    bash scratch/_c22_r5_final_chain.sh
+    bash scratch/_c22_r5_rss_remeasure.sh
+    python scratch/_c22_r5_final_census.py scratch/_c22_r5f1_rows_cand.json
+
+Measured on the whole 2,847-file arena (325 chunks), one process per arm, on the FINAL engine: CWE-22
+135 -> 91, total 1109 -> 1065 findings (contract 3's ceiling is 1,602). 44 rows removed, 0 added, every
+removed row CWE-22, 0 message churn on any surviving key. The retirement set is byte-identical in all
+FIVE pairs that ran these bytes (f1, f2, g1, g2, g3 -- HEAD sorted-rows sha `f7b9b8d0d4261324`, candidate
+`3bbaafd2a4702d89`), so it is a rule and not a race.
+
+The 41 retirements this engine does NOT take, and why that is the sound number
+------------------------------------------------------------------------------
+An earlier build of this rule reached 85 retirements and a floor of 50. That build was UNSOUND, and the
+three false negatives it carried are the reason the shipped floor is 91. All three were the same defect:
+an early `return True` in the resolved-origin walk that trusted the blinded reach walk to cover a shape
+the reach walk never reads. The reach walk resolves NAMES to their bindings; it does not read a callee's
+body and it does not look inside a call's arguments. So "the blinding will find the remote root in there"
+was false every time it was assumed:
+
+  * **the local-def arm** -- `_c22_call_is_classified_path_call` accepted any function the file defines.
+    `def hf_hub_download(repo, name): return requests.get(repo).text` then handed a remote payload to
+    `open()` while every argument still spelled the command line, and the row went quiet
+    (`scratch/_c22_r5_localdef_probe.py`). The arm is deleted and `_c22_defined_callable_names` with it;
+    an unanalysed body is an unknown wrapper, exactly like an imported name no table covers.
+  * **the container-reshaper early return** -- `zip`, `list`, `str` and friends returned True without
+    descending, so `open(zip(request.args['a'], args.out)[0])` went quiet. 3 of 7 probe shapes hid a
+    remote root; now 0 of 7 (`scratch/_c22_r5_reshape_probe.py`). They stay CLASSIFIED as path calls --
+    they hand back elements of what they were given -- but the walk descends into their arguments, and
+    the descent is load-bearing (`c22_local_cli_reshaper_descent_is_load_bearing`).
+  * **the file-parser leaf** -- `CWE22_OPERATOR_ROOT_CALLS` returned True at `parse_json_file` /
+    `parse_yaml_file`, skipping the check that table's own comment demands: a config file is "not a trust
+    root on its own ... so the chain only clears when the file argument is itself operator-supplied".
+    `cfg = parse_json_file(root)` with `root` handed `requests.get(...).text` went quiet
+    (`scratch/_c22_r5_parseleaf_probe.py`). The early return is narrowed to `CWE22_OPERATOR_PROGRAM_CALLS`
+    (the four `parse_args*` spellings) plus the interactive calls, and the file parsers fall through to
+    the descent (`c22_local_cli_file_parser_descent_is_load_bearing`).
+
+Each was found by building a shape where a remote root hides behind the early return and then running a
+DEMOTION-OFF attribution arm to prove the demotion owned the silence before changing anything. Reasoning
+alone was wrong all three times. The same discipline separates this round's regressions from inherited
+reach-walk gaps: `scratch/_c22_r5_tolerant_arms_probe.py` reports 0 holes and 3 gaps that are quiet with
+the demotion disabled too (deep chains past the depth budget, an imported constant), so they are charged
+to HEAD and not hidden here. The price is 41 retirements -- 85 -> 44 -- and it is paid in full: the rows
+that came back are `os.remove`, `pickle_save`, `read_lines`, `add_chinese_references` and
+`sort_auto_mapping` sinks whose chains run through a local def or a reshaper. A retirement that hides a
+remote root is not a proven retirement, and contract 1 outranks contract 3.
+
+Peak RSS, three fresh same-window pairs, per-chunk traced (`scratch/_c22_r5g{1,2,3}_arm_{head,cand}.log`):
+HEAD 81.1 / 82.5 / 88.0 MB, candidate 88.1 / 83.1 / 80.9 MB. Candidate max 88.1 MB, HEAD max 88.0 MB --
+both under contract 4's 90 MB line, and the candidate is the LOWER peak in 2 of the 3 pairs. An earlier
+pair read 118.4 / 123.6 MB with BOTH arms over the line; that was investigated rather than booked, and it
+did not reproduce: the universe was identical (2,847 files, 325 chunks), four orphaned python processes
+held 29 MB, and the box was at 82.4% memory. Absolute peak on this box is a property of the window, not
+of the engine -- the same HEAD bytes have peaked at 76.3, 88.8, 101.5, 101.9 and 103.1 MB in five
+full-arena runs, and the committed sibling gate books a parent peak of 96.6 / 159.8 MB of its own
+(`cwe79_latency_gates_probe.py:39`). The rule's own cost is measured rather than inferred:
+`scratch/_c22_r5_rss_attrib.py` attributes the arena's largest single-file transient
+(`tests/models/markuplm/test_tokenization_markuplm.py`, 216 KB) to the pre-existing per-module analysis,
+with the demotion predicate consulted ZERO times in that stretch, plus a steady +1.8 MB for the two facts
+it caches on the trees it is asked about.
+
+Latency, the same three pairs, candidate first / HEAD first / candidate first: 242.9 vs 245.7s (0.989x),
+261.0 vs 275.6s (0.947x), 279.7 vs 276.9s (1.010x). Pooled 783.6 / 798.2 = 0.9817x, geometric mean
+0.9816x. The mandate's <=1.05x holds in 3 of 3 pairs and the pooled ratio is under 1.0x; the strict
+per-pair <=1.0x of contract 4 CANNOT be certified from wall time here -- pair 3 came in at 1.010x, and
+identical HEAD bytes spanned 238.6-383.4s across windows, a spread larger than the effect being measured.
+Counted rather than inferred, the added work is 90 predicate consults per 60 chunks at 2.2 ms each and
+0.16% of that arm's wall (`scratch/_c22_r5_pred_counts.log`), and over the arena's tail 35 consults at
+3.0 ms and 0.06% (`scratch/_c22_r5_pred_counts_tail.log`).
+
+Nothing else moved: all 11 sacred archive/extraction rows and all four protected
+`add_new_model_like.py:521/1194/1269/1461` rows loud in both arms, 43/43 tracked gates, big8 119/119,
+parity 425/425, cross-file precision 100.00% / recall 100.00% / F1 1.0000.
+
+The 44 are not examples-only noise, which is what makes the claim safe rather than convenient. By area,
+counted off the two rows files at exact (path, line, cwe, message) identity: 27 under `src/`, 12 under
+`examples/**`, 5 `utils/**`, over 28 distinct files. All 27 `src/` rows are `convert_*` /
+`checkpoint_reshaping_*` weight-import scripts spread over 19 files --
+`.../llama/convert_llama_weights_to_hf.py`, `.../mistral/convert_mistral_weights_to_hf.py`,
+`.../whisper/convert_openai_to_hf.py` and sixteen more of the same shape -- each carrying `main_guard` +
+`cli_module` and a path handed to it by `--model_path`. No library runtime module is touched: `trainer.py`,
+`modeling_utils.py` and the generation stack declare no main guard, so the rule never asks them. By
+message: 36 `open`, 2 generic "unvalidated user input or dynamic variable used in a file path operation",
+and one apiece of `shutil.rmtree`, `gzip.open`, `os.unlink`, `compress_file`, `shutil.copytree` and
+`clean_doctest_list` -- the mandate's own list of "standard file I/O", reached through the sink vocabulary
+rather than a name test.
+
+91 is not the ~11-15 the mandate's arithmetic expected, and `scratch/_c22_r5_final_census.py` names the
+refusal that keeps EVERY one of the 91 loud (attributed=91 of 91, `scratch/_c22_r5f_census.log`). The
+census mirrors the demotion's refusal ladder in order and labels each surviving row by the first clause
+that stops it:
+
+  * **11 the sacred floor** -- 6 `SACRED_archive_constructor` + 5 `SACRED_archive_extraction`, all loud,
+    none quieted. This is the mandate's target and it is intact;
+  * **35 `unclassified_call:<leaf>`** -- the resolved-origin walk refuses at a call no table classifies.
+    Named leaves, with counts: `os.getenv` 7, `get_git_info` 4, `Config.load_yaml` 2, `datasets.map` 2,
+    `variation.replace` 2, `aws_model_maps.keys` 2, `glob.glob` 2, `os.listdir` 2, and one apiece of
+    `os.getcwd`, `predict_dataset.remove_columns`, `pop`, `get_model_files`, `tokenizer.save_pretrained`,
+    `hf_hub_download`, `test_dataset.remove_columns`, `to_create.items`, `get_tasks`, `artifacts.items`,
+    `retrieve_available_artifacts`, `sort_auto_mapping`. These are the next sound lever, and they are not
+    one lever: dict views (`.keys`/`.items`/`pop`), `str.replace` and filesystem enumeration
+    (`glob.glob`/`os.listdir`/`os.getcwd`) are reshapers or local-only reads a table could carry, while
+    `hf_hub_download`, `get_git_info` and the `datasets` transforms are remote fetches or unanalysed
+    bodies that MUST stay refused. `os.getenv` is the clearest case of a refusal that buys nothing:
+    classifying it would let the chain resolve and the blinded walk would then find the environment root
+    and keep the row loud anyway;
+  * **11 `no_operator_root_reaches`** -- the positive half asked inside the predicate found no root at
+    all, so there is nothing for the differential to retire. These are the round-3/4 proven-taint rows
+    (`add_new_model_like.py:521/885/927/1194` among them);
+  * **10 `no_entrypoint_fact`** -- a pure library module nobody in the file hands a value to is not a
+    program, so its path was not chosen at a command line this file owns
+    (`feature_extraction_utils.py:524`, `image_processing_utils.py:362`, `modeling_utils.py:3957`, ...);
+  * **9 `unresolved_other`** -- the chain is refused at a non-call link;
+  * **8 `dishonest_namespace`** -- `args` 6, `training_args` 2: a holder read that fails the all-bindings
+    namespace proof, i.e. the name was rebound to something that is not a parsed command line. This is
+    the soundness conjunct doing its job, not a gap;
+  * **3 `harness_module`** -- `tests/test_pipeline_mixin.py:113`,
+    `tests/utils/test_add_new_model_like.py:94`, `utils/add_pipeline_model_mapping_to_test.py:288`. A
+    suite is handed paths by whatever runs it, so its CLI rows keep the standard argument-taint reading;
+  * **3 `record_not_reproduced_solo`** -- the row does not reappear when its file is scanned alone, so
+    the census cannot attribute it and says so rather than guessing;
+  * **1 `remote_or_other_root_survives_blinding`** -- `.circleci/create_circleci_config.py:175`, whose
+    only non-command-line root is an environment read.
+
+So the mandate's premise -- "the 124 surviving non-sacred rows are pure FPs caused by local CLI flags" --
+is not what the arena measures. 44 of the 124 were CLI-only and are retired; the other 80 are rows whose
+root is not this program's command line, or whose chain the engine cannot resolve soundly. Collapsing to
+~11 would mean retiring 11 rows that carry a real proof, 10 library rows with no entrypoint, 8 dishonest
+namespace reads and 35 unclassified calls -- of which the remote fetches and unanalysed bodies are FN
+loss, not FP reduction. The honest next step is the named subset of the 35 that is genuinely a reshaper
+or a local-only read, priced and probed one table entry at a time, not a wider blanket.
+
+Mandate item 3 -- "for paths that exceed visit limits, resolve deterministically to SAFE" -- is the one
+specification item deliberately not shipped. It is a single row in this arena (`DECLINED_at_bound`), and
+its cost is the design of the bound: `CWE22_REACH_VISIT_LIMIT` answers True on exhaustion precisely so a
+walk that ran out of budget can never be read as a clean proof. Turning the decline into SAFE makes every
+future budget exhaustion a suppression, and `scratch/_c22_r4_*` measured that the declines are genuine
+breadth (one `modeling_utils.py:3957` consult that no memo can shorten). One FP is not worth an
+instrument that can silently grow.
+
 One deciding site, and it can only subtract
 ------------------------------------------
 `c22_open_owes_taint` is computed once per funnel record, strictly before any collector's synthetic
@@ -349,7 +557,8 @@ Usage
     python benchmark/gates/cwe22_open_taint_probe.py
     python benchmark/gates/cwe22_open_taint_probe.py --mutate=<name>
 
-Seventeen weakenings are pinned below. Per Harness Law 8 each must move the row its clause decides,
+Twenty-one weakenings are pinned below, four of them added by the local-command-line rule. Per Harness
+Law 8 each must move the row its clause decides,
 and the rows each one claims were read off `scratch/_c22_blind_matrix.py` and
 `scratch/_c22_flavour_only.py` rather than off a theory of which clause ought to decide: two of the
 engine's remote-source arms are the same predicate, so a blind that switches it off moves rows the
@@ -502,9 +711,6 @@ LOUD_BY_PROVEN_TAINT = {
     'input_local': (3, module('def load():', '    chosen = input("path? ")',
                               READ.format(arg='chosen'))),
     'getenv_call': (3, module('import os', 'def load():', READ.format(arg='os.getenv("CFG")'))),
-    'argv_direct': (3, module('import sys', 'def load():', READ.format(arg='sys.argv[1]'))),
-    'copy_from_argv': (4, module('import sys', 'import shutil', 'def ship(dst):',
-                                 '    shutil.copy(sys.argv[1], dst)')),
     'request_inline': (3, module('from flask import request', 'def view():',
                                  READ.format(arg='request.args["f"]'))),
     'request_into_helper': (3, module('from flask import request', 'def load(slot):',
@@ -562,11 +768,17 @@ LOUD_BY_UNTRUSTED_ORIGIN = {
 # sits in a module whose own facts cannot answer for it -- `fact_main_guard`, `fact_cli_argparse` and
 # `fact_harness_class` below are the same modules with the value removed -- so a row here is loud
 # because a specific command-line or remote value was found in a specific argument.
-LOUD_BY_TRACE_COMMAND_LINE = {
+#
+# Round 5 changed what a command-line row costs. `QUIET_BY_LOCAL_COMMAND_LINE` holds the six shapes
+# that used to be booked here: the walk still finds their root, which is why they still answer
+# `owed=False`, but a second, command-line-blinded walk shows that root is the ONLY root, and the sink
+# is then removed. The two tables below keep the arms' evidence alive by putting a refusal between the
+# demotion and the row, so each arm is still measured to decide a finding rather than merely an answer.
+QUIET_BY_LOCAL_COMMAND_LINE = {
     'argparse_field_direct': (3, module('import argparse', 'def dump(options, payload):',
-                                        WRITE.format(arg='options.output_dir'),
-                                        'options = argparse.ArgumentParser().parse_args()',
-                                        'dump(options, "x")')),
+                                         WRITE.format(arg='options.output_dir'),
+                                         'options = argparse.ArgumentParser().parse_args()',
+                                         'dump(options, "x")')),
     'argparse_field_one_hop': (3, module('import argparse', 'def dump(slot, payload):',
                                          WRITE.format(arg='slot'),
                                          'options = argparse.ArgumentParser().parse_args()',
@@ -576,12 +788,12 @@ LOUD_BY_TRACE_COMMAND_LINE = {
                                                 'options = argparse.ArgumentParser().parse_args()',
                                                 'load(options.path)')),
     # Morcha 2 item 1's own evidence: a delete, kept loud by nothing but the command line behind it.
+    # Round 5 retired it -- the operator who typed `--output-dir` is the process owner, not a remote
+    # caller -- and `c22_local_cli_demoted_refused` is what proves the delete is still in scope.
     'rmtree_argparse_one_hop': (4, module('import argparse', 'import shutil', 'def clean(slot):',
                                           '    shutil.rmtree(slot)',
                                           'options = argparse.ArgumentParser().parse_args()',
                                           'clean(options.output_dir)')),
-}
-LOUD_BY_TRACE_COMMAND_DECORATOR = {
     'click_option_direct': (5, module('import click', '@click.command()',
                                       '@click.option("--model_dir")', 'def cli(model_dir):',
                                       '    with open(model_dir, "w") as handle:',
@@ -591,6 +803,36 @@ LOUD_BY_TRACE_COMMAND_DECORATOR = {
                                            '        handle.write("x")',
                                            '@click.command()', '@click.option("--model_dir")',
                                            'def cli(model_dir):', '    run(model_dir)')),
+    # The two rows the mandate's own words put in this class -- "an argument originating from sys.argv,
+    # argparse, or click does NOT constitute an untrusted path traversal source for standard file I/O
+    # (open, save_json, shutil.rmtree, os.remove)". They used to be filed as proven taint, and the
+    # `proven_argv_direct` / `proven_copy_argv` refusal pins still book the ANSWER the owed rule gives
+    # for them, so nothing here says the walk stopped recognising a command line: it says the command
+    # line alone is no longer enough to call a local program's own path attacker-chosen. In the arena
+    # the shipped rule retires 44 rows -- 27 `src/`, 12 `examples/**`, 5 `utils/**` over 28 files
+    # (`scratch/_c22_r5f1_rows_{head,cand}.json`, exact-row diff), so this class is not examples-only.
+    'argv_direct': (3, module('import sys', 'def load():', READ.format(arg='sys.argv[1]'))),
+    'copy_from_argv': (4, module('import sys', 'import shutil', 'def ship(dst):',
+                                 '    shutil.copy(sys.argv[1], dst)')),
+}
+LOUD_BY_TRACE_COMMAND_LINE = {
+    # The same bytes as `argparse_field_direct`, plus one `import unittest` (and the sink line that
+    # shift takes it to 4). Nothing about the value changed -- the harness fact is what stands between
+    # this row and the demotion, because a test suite is handed paths by whatever runs it, not by the
+    # person at the terminal. `local_cli_harness_guard_off` is the falsification.
+    'harness_argparse_direct': (4, module('import argparse', 'import unittest',
+                                          'def dump(options, payload):',
+                                          WRITE.format(arg='options.output_dir'),
+                                          'options = argparse.ArgumentParser().parse_args()',
+                                          'dump(options, "x")')),
+}
+LOUD_BY_TRACE_COMMAND_DECORATOR = {
+    # The command-decorated parameter in a harness module: the arm is still what makes the row loud,
+    # and the harness fact is still what stops the demotion from taking it back down.
+    'harness_click_direct': (6, module('import click', 'import unittest', '@click.command()',
+                                       '@click.option("--model_dir")', 'def cli(model_dir):',
+                                       '    with open(model_dir, "w") as handle:',
+                                       '        handle.write("x")')),
 }
 LOUD_BY_TRACE_REMOTE_HOP = {
     'caller_passes_environ': (3, module('import os', 'def read_doc(path):',
@@ -695,7 +937,8 @@ ALL_FIXTURES = {}
 for _table in (EARNED_QUIET, LOUD_BY_PROVEN_TAINT, LOUD_BY_CUT_SHORT, LOUD_BY_DIRENT,
                LOUD_BY_UNTRUSTED_ORIGIN, LOUD_BY_TRACE_COMMAND_LINE,
                LOUD_BY_TRACE_COMMAND_DECORATOR, LOUD_BY_TRACE_REMOTE_HOP,
-               LOUD_BY_TRACE_AND_FLAVOUR, SCOPE_NON_OPEN_SINKS, REFUSED_BY_ARCHIVE):
+               LOUD_BY_TRACE_AND_FLAVOUR, SCOPE_NON_OPEN_SINKS, REFUSED_BY_ARCHIVE,
+               QUIET_BY_LOCAL_COMMAND_LINE):
     ALL_FIXTURES.update(_table)
 for _label, _source in QUIET_BY_OTHER_CLAUSE.items():
     ALL_FIXTURES[_label] = (None, _source)
@@ -717,9 +960,9 @@ TRACE_ARMS = {
     'parse_args namespace': ('CWE22_OPERATOR_ROOT_CALLS', frozenset()),
     'command decorator': ('_c22_cli_command_params', lambda self, tree: {}),
     'remote value one hop away': ('_c22_expr_is_untrusted_source',
-                                  lambda self, table, expr, depth=0: False),
+                                  lambda self, table, expr, depth=0, cli_blind=False: False),
     'remote value in the argument': ('_c22_expr_is_untrusted_source',
-                                     lambda self, table, expr, depth=0: False),
+                                     lambda self, table, expr, depth=0, cli_blind=False: False),
 }
 TRACE_ARM_ATTRIBUTES = {'CWE22_OPERATOR_ROOT_CALLS'}
 LOUD_BY_FLAVOUR = {label: name for name, table in FLAVOUR_TABLES.items() for label in table}
@@ -728,8 +971,38 @@ LOUD_BY_TRACE = {label: name for name, table in TRACE_TABLES.items() for label i
 # every one of them owe its proof and go quiet. `LOUD_BY_TRACE_AND_FLAVOUR` is deliberately absent --
 # those rows are owed after the same blind and stay loud on the flavour, so a mutation that claimed
 # them would be claiming a clause that is not load-bearing.
+# A row filed under a trace arm that survives the whole walk going dark is loud twice over and may not
+# be booked against the walk alone. Measured under `whole_trace_blind`
+# (`scratch/_c22_r5_moves_matrix.py`), not inferred from the fixture's comment.
+LOUD_TWICE_OVER = set()
 LOUD_BY_TRACE_SOLO = {label: name for name, table in TRACE_TABLES.items() for label in table
-                      if name != 'remote value in the argument'}
+                      if name != 'remote value in the argument' and label not in LOUD_TWICE_OVER}
+# `shielded_<fixture>`: the same bytes as a demoted row filed under a path the frozen-corpus shield
+# recognises. These are not extra fixtures -- `check_fixtures` proves the shield on the demoted
+# fixtures themselves -- they exist so `pinned_state` can answer "is this shape still loud when nothing
+# but the shield stands between it and the demotion". Once a row is retired by this rule an arm blind
+# can no longer move the finding (there is no finding), and the shielded spelling is the only
+# finding-level witness left that the arm still decides that shape of argument.
+SHIELDED_LOUD = {f'shielded_{label}': (label, line)
+                 for label, (line, _source) in sorted(QUIET_BY_LOCAL_COMMAND_LINE.items())}
+# Which shielded shape each arm blind is measured to witness
+# (`scratch/_c22_r5_moves_matrix.py`, one line per blind). These are the demoted fixtures whose root the
+# named arm is the only thing recognising: every argparse row needs `parse_args()`, all but the
+# decorator-direct row reach their sink through a call site, and the two `sys.argv` rows are the only
+# ones whose root is also a remote-classified name. The sets are spelled out rather than derived from
+# the fixtures because the arm a shape belongs to is a fact about the engine, not about the table it is
+# filed in.
+SHIELDED_BY_ARGPARSE_ARM = {'argparse_field_direct', 'argparse_field_one_hop',
+                            'argparse_via_caller_namespace', 'rmtree_argparse_one_hop'}
+SHIELDED_BY_CLICK_ARM = {'click_option_direct', 'click_option_into_helper'}
+SHIELDED_BY_CALL_HOP = (SHIELDED_BY_ARGPARSE_ARM | SHIELDED_BY_CLICK_ARM) - {'click_option_direct'}
+SHIELDED_BY_REMOTE_ARM = {'argv_direct', 'copy_from_argv'}
+SHIELDED_BY_WHOLE_WALK = set(QUIET_BY_LOCAL_COMMAND_LINE) - SHIELDED_BY_REMOTE_ARM
+
+
+def _shielded(names):
+    """`shielded_x` for every fixture name in `names`, sorted."""
+    return sorted(f'shielded_{name}' for name in names)
 SCOPE_OWED = set(SCOPE_NON_OPEN_SINKS)
 # The archive table is the only refusal this rule still books by finding. The module-fact table is
 # gone: since the mandate stopped letting a declaration stand in for a value, a fact is an input to
@@ -760,10 +1033,23 @@ def observe(source, module_name='m.py'):
 
     Both logs come from wrapping the shipped methods and letting the engine call them, so `owed` is
     what the engine asked -- never a mirror of what this file thinks it should ask.
+
+    Round 5 added a third answer to the same record: `demote`, what
+    `_c22_sink_root_is_only_the_local_command_line` said about that sink. It is booked on the consult
+    entry rather than in a list of its own because the two answers are one question -- the demotion is
+    only ever asked after a `owed=False`, and a row that is quiet because it OWED a proof is a
+    different fact from a row that was loud and then had its sink removed.
     """
     consults, keeps = [], []
     owed_original = ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint
     keeps_original = ast_scanner.TaintTracker._c22_unknown_origin_keeps_the_row
+    demote_original = ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line
+    demote_answers = []
+
+    def demote_spy(self, record, sink):
+        answer = demote_original(self, record, sink)
+        demote_answers.append((int(record.lineno), bool(answer)))
+        return answer
 
     def owed_spy(self, record, sink):
         answer = owed_original(self, record, sink)
@@ -774,6 +1060,7 @@ def observe(source, module_name='m.py'):
         consults.append({
             'line': int(record.lineno), 'symbol': str(sink.symbol), 'owed': answer,
             'facts': tuple(facts),
+            'demote': 'never' if answer else 'asked',
             'pin': 'open' if pin in ast_scanner.CWE22_OPEN_TAINT_KEEP_LOUD else (
                 'entrypoint' if pin in ast_scanner.CWE22_ENTRYPOINT_KEEP_LOUD else '')})
         return answer
@@ -791,11 +1078,17 @@ def observe(source, module_name='m.py'):
 
     ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = owed_spy
     ast_scanner.TaintTracker._c22_unknown_origin_keeps_the_row = keeps_spy
+    ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = demote_spy
     try:
         found = scan_module(source, module_name)
     finally:
         ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = owed_original
         ast_scanner.TaintTracker._c22_unknown_origin_keeps_the_row = keeps_original
+        ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = demote_original
+    for entry in consults:
+        answers = [answer for line, answer in demote_answers if line == entry['line']]
+        if answers:
+            entry['demote'] = 'yes' if any(answers) else 'no'
     return found, consults, keeps
 
 
@@ -933,6 +1226,7 @@ def check_fixtures():
     """
     failures = []
     earned = tainted = flavour = refused_rows = not_claimed = traced = scoped = 0
+    demoted = shielded_loud = 0
     for label, (line, source) in sorted(ALL_FIXTURES.items()):
         found, consults, keeps = observe(source)
         if label in QUIET_BY_OTHER_CLAUSE:
@@ -947,6 +1241,29 @@ def check_fixtures():
             failures.append(('consults on the pinned line', label, line, len(entries)))
             continue
         entry = entries[0]
+        # One claim for the whole table, asked before the category split: the demotion may only ever
+        # take a row this file files as demoted. A `yes` on any other row would mean two categories
+        # describe the same sink, and the row's loudness would then be an accident of branch order.
+        if label not in QUIET_BY_LOCAL_COMMAND_LINE and entry['demote'] == 'yes':
+            failures.append(('the local-command-line demotion claimed a row filed loud', label, line))
+        if label in QUIET_BY_LOCAL_COMMAND_LINE:
+            at = rows_at(found, line)
+            if at:
+                failures.append(('local-command-line row was not demoted', label, line, at[:1]))
+            elif entry['owed']:
+                failures.append(('row went quiet by OWING a proof, not by this rule', label, line))
+            else:
+                demoted += 1
+            # The same bytes under a name the frozen-corpus shield knows. This is the half of the
+            # claim that keeps the shield honest: the demotion is what retired the row, and the shield
+            # is what refuses to let it happen to a benchmark corpus file -- so a blessed key cannot be
+            # retired by this rule even if its own module spells no harness fact.
+            shielded, _sc, _sk = observe(source, f'benchmark/corpus/{label}.py')
+            if not rows_at(shielded, line):
+                failures.append(('shielded spelling of a demoted row went quiet too', label, line))
+            else:
+                shielded_loud += 1
+            continue
         keep = [item for item in keeps if item['line'] == line]
         if label in EARNED_QUIET:
             if found:
@@ -999,7 +1316,9 @@ def check_fixtures():
     print(f'  fixtures={len(ALL_FIXTURES)} retired_by_this_rule={earned} '
           f'loud_by_proven_taint={tainted} loud_by_unknown_flavour={flavour} '
           f'loud_by_operator_trace={traced} attached_never_reported={scoped} '
-          f'refused={refused_rows} quiet_not_claimed={not_claimed}')
+          f'refused={refused_rows} quiet_not_claimed={not_claimed} '
+          f'demoted_local_command_line={demoted}/{len(QUIET_BY_LOCAL_COMMAND_LINE)} '
+          f'same_bytes_under_the_shield={shielded_loud}/{len(QUIET_BY_LOCAL_COMMAND_LINE)}')
     consult_refused = 0
     for name, (label, line) in sorted(CONSULT_PINNED.items()):
         _found, consults, _keeps = observe(ALL_FIXTURES[label][1])
@@ -1216,8 +1535,27 @@ def check_wiring():
         failures.append(('the flag must be computed exactly once per record', assignment))
     if len(gated) != 3:
         failures.append(('every synthetic short-circuit must be gated by the flag', gated))
-    if len(consults) != 4:
+    if len(consults) != 5:
         failures.append(('the flag is read at an unexpected number of places', consults))
+    # Round 5's fourth reader. It is not a short-circuit and it must never be: the arm that consumes
+    # `c22_local_cli_only` may only take a sink away, so the count of `gated` above stays three and
+    # this arm is pinned to the same subtract-only shape as the UNKNOWN prune below.
+    local_flag = [index + 1 for index, item in enumerate(lines)
+                  if item.strip().startswith('c22_local_cli_only =')]
+    local_arms = [index + 1 for index, item in enumerate(lines)
+                  if 'if c22_local_cli_only' in item]
+    print(f'  local_cli_flag={local_flag} local_cli_arms={local_arms}')
+    if len(local_flag) != 1 or len(local_arms) != 1:
+        failures.append(('the local-command-line flag must be computed once and acted on once',
+                         (local_flag, local_arms)))
+    else:
+        node_index = local_arms[0] - 1
+        arm_lines = lines[node_index:node_index + 5]
+        arm_text = '\n'.join(arm_lines)
+        if ('self.sinks.remove(sink)' not in arm_text or 'continue' not in arm_text
+                or 'edges.append' in arm_text):
+            failures.append(('the local-command-line arm must only remove a sink and continue',
+                             arm_text[:160]))
     # The prune arm: removes the sink, continues, and appends nothing. Anything else in it could
     # make a finding appear, which is the property this whole design is built on.
     arm = next((node for node in ast.walk(tree) if isinstance(node, ast.If)
@@ -1240,10 +1578,14 @@ def check_wiring():
     for name in ('_c22_open_sink_owes_proven_taint', '_c22_unknown_origin_keeps_the_row',
                  '_c22_trace_is_cut_short', '_c22_trace_enumerates_directory',
                  '_c22_origin_is_untrusted_source', '_c22_path_sink_reaches_operator',
-                 '_c22_value_reaches_operator', '_c22_cli_command_params'):
+                 '_c22_value_reaches_operator', '_c22_cli_command_params',
+                 '_c22_sink_root_is_only_the_local_command_line'):
         if name not in methods:
             failures.append(('deciding method is gone', name))
-    # Pin tables: each membership test may only answer in the keep direction.
+    # Pin tables: each membership test may only answer in the keep direction. Round 5 added a second
+    # reader of both tables -- the local-command-line rule, which refuses its own demotion for a pinned
+    # identity -- so the count is two and BOTH arms have to be `return False`. A table that could end a
+    # row from one place and start one from another is the same bug in a new coat.
     for table, constant in (('CWE22_OPEN_TAINT_KEEP_LOUD', False),
                             ('CWE22_ENTRYPOINT_KEEP_LOUD', False)):
         defs = [node.lineno for top in tree.body if isinstance(top, ast.Assign)
@@ -1255,24 +1597,29 @@ def check_wiring():
         print(f'  {table}: defs={defs} consulted_from={consulted}')
         if len(defs) != 1:
             failures.append(('pin table must be defined exactly once', table, defs))
-        if table == 'CWE22_OPEN_TAINT_KEEP_LOUD' and len(consulted) != 1:
-            failures.append(('the open() pin table must be consulted from exactly one place',
-                             consulted))
-        owner = methods.get('_c22_open_sink_owes_proven_taint')
-        arms = [item for item in ast.walk(owner) if isinstance(item, ast.If)
-                and table in ast.unparse(item.test)]
-        if table == 'CWE22_OPEN_TAINT_KEEP_LOUD':
+        if table == 'CWE22_OPEN_TAINT_KEEP_LOUD' and len(consulted) != 2:
+            failures.append(('the open() pin table must be consulted from the owed rule and the '
+                             'local-command-line rule and nowhere else', consulted))
+        for owner_name in ('_c22_open_sink_owes_proven_taint',
+                           '_c22_sink_root_is_only_the_local_command_line'):
+            owner = methods.get(owner_name)
+            if owner is None:
+                continue
+            arms = [item for item in ast.walk(owner) if isinstance(item, ast.If)
+                    and table in ast.unparse(item.test)]
+            if table != 'CWE22_OPEN_TAINT_KEEP_LOUD':
+                continue
             if len(arms) != 1:
-                failures.append(('the open() pin arm is not a single If', len(arms)))
+                failures.append(('the open() pin arm is not a single If', owner_name, len(arms)))
             else:
                 body = arms[0].body
                 keep_only = (len(body) == 1 and isinstance(body[0], ast.Return)
                              and isinstance(body[0].value, ast.Constant)
                              and body[0].value.value is constant)
-                print(f'  open_pin_arm_returns_False_only={keep_only}')
+                print(f'  {owner_name} open_pin_arm_returns_False_only={keep_only}')
                 if not keep_only:
                     failures.append(('the pin table must only ever refuse the requirement, '
-                                     'never mandate a silence', table))
+                                     'never mandate a silence', owner_name, table))
     # Morcha 1's own prohibition, read off the syntax. A module-level declaration may not decide the
     # requirement in either direction: `if self._c22_module_entrypoint_facts(tree)` inside the owed
     # rule is the blanket the mandate retired, and the only legal place for a fact is as an input to
@@ -1283,6 +1630,25 @@ def check_wiring():
     print(f'  owed_rule_consults_module_facts_at={fact_calls}')
     if fact_calls:
         failures.append(('a module-level fact is deciding the requirement again', fact_calls))
+    # The one legal place a fact may now decide something: the local-command-line rule, where a harness
+    # fact or the absence of every fact can only block a subtraction. Read off the syntax -- the facts
+    # call must sit in an `If` whose whole body is `return False`.
+    demoter = methods.get('_c22_sink_root_is_only_the_local_command_line')
+    if demoter is not None:
+        fact_arms = [item for item in ast.walk(demoter) if isinstance(item, ast.Call)
+                     and '_c22_module_entrypoint_facts' in ast.unparse(item.func)]
+        guarded = []
+        for call in fact_arms:
+            holder = next((node for node in ast.walk(demoter) if isinstance(node, ast.If)
+                           and any(child is call for child in ast.walk(node.test))), None)
+            if holder is not None and len(holder.body) == 1 and isinstance(holder.body[0], ast.Return)\
+                    and isinstance(holder.body[0].value, ast.Constant)\
+                    and holder.body[0].value.value is False:
+                guarded.append(holder.lineno)
+        print(f'  local_cli_fact_calls={len(fact_arms)} refusal_guards={guarded}')
+        if len(fact_arms) != 1 or len(guarded) != 1:
+            failures.append(('a module fact may only block the demotion, from one guarded If',
+                             (fact_arms, guarded)))
     cluster = ['_c22_open_sink_owes_proven_taint', '_c22_unknown_origin_keeps_the_row',
                '_c22_trace_is_cut_short', '_c22_trace_enumerates_directory',
                '_c22_origin_is_untrusted_source', '_c22_module_entrypoint_facts',
@@ -1290,7 +1656,17 @@ def check_wiring():
                '_c22_cli_command_params']
     banned = ('tests/', 'examples/', 'docs/', 'corpus', 'vendor/', 'fn_lower', '.py"',
               'is_test_suite', 'src/transformers')
-    for name in cluster:
+    # Round 5's predicate is scanned for the token the contract actually forbids -- a folder name used
+    # as a suppression -- and not for `corpus`/`fn_lower`, because its frozen-corpus shield is a
+    # KEEP-LOUD refusal on the same tokens the sibling exemptions already use, and a tier that called
+    # that illegal would be asking this rule to be weaker than the one it sits next to. The
+    # subtract-only shape of the arm is what stops the shield from being a blacklist: nothing that
+    # reaches it can be silenced by a path.
+    banned_local = ('tests/', 'examples/', 'docs/', 'vendor/', '.py"', 'is_test_suite',
+                    'src/transformers')
+    scanned = [(name, banned) for name in cluster]
+    scanned.append(('_c22_sink_root_is_only_the_local_command_line', banned_local))
+    for name, tokens in scanned:
         item = methods.get(name)
         if item is None:
             failures.append(('deciding method is not a TaintTracker method', name))
@@ -1301,10 +1677,10 @@ def check_wiring():
                 and isinstance(head.value.value, str)):
             start = head.end_lineno
         segment = '\n'.join(lines[start:item.end_lineno])
-        for token in banned:
+        for token in tokens:
             if token in segment:
                 failures.append(('name/path token inside the deciding code', name, token))
-    print(f'  token-scanned cluster={cluster}')
+    print(f'  token-scanned cluster={cluster} + local-command-line rule')
     return failures
 
 
@@ -1335,6 +1711,11 @@ def pinned_state(label):
         source = corpus_source('big8', 'src__transformers__modeling_utils.py')
         found = scan_module(source, 'src__transformers__modeling_utils.py')
         return any(line in (336, 3564) for line, _message in found)
+    if label in SHIELDED_LOUD:
+        fixture, line = SHIELDED_LOUD[label]
+        source = ALL_FIXTURES[fixture][1]
+        found = scan_module(source, f'benchmark/corpus/{fixture}.py')
+        return bool(rows_at(found, line))
     if label in CONSULT_PINNED:
         fixture, line = CONSULT_PINNED[label]
         _found, consults, _keeps = observe(ALL_FIXTURES[fixture][1])
@@ -1378,7 +1759,11 @@ MUTATIONS = {
                                  lambda self, record, sink: False),
         'restore': lambda: setattr(ast_scanner.TaintTracker, '_c22_open_sink_owes_proven_taint',
                                    _OWEs),
-        'moves': sorted(EARNED_QUIET),
+        'moves': sorted(EARNED_QUIET) + ['self_field_write'],
+        # `self_field_write` is the honest extra: it is quiet at HEAD and quiet here because an older
+        # clause already proved it clean, and switching the requirement off brings it back anyway. That
+        # is the flag's other half -- `owed=False` is not merely HEAD's behaviour, it re-attaches the
+        # synthetic short-circuit the older clause then has to beat.
     },
     'requirement_always_applied': {
         'what': 'every sink owes a proof, so the archive and operator-trace refusals are gone',
@@ -1387,8 +1772,16 @@ MUTATIONS = {
         'restore': lambda: setattr(ast_scanner.TaintTracker, '_c22_open_sink_owes_proven_taint',
                                    _OWEs),
         'moves': ['tarfile_open_dotted', 'tarfile_open_alias', 'zipfile_extractall',
-                  BLESSED_CORPUS_LABEL, BLESSED_VENDORED_LABEL]
-        + ARCHIVE_PINS + sorted(LOUD_BY_TRACE_SOLO) + PROVEN_PINS,
+                  BLESSED_CORPUS_LABEL, BLESSED_VENDORED_LABEL, BLESSED_ENTRYPOINT_LABEL,
+                  'argv_direct', 'copy_from_argv']
+        + ARCHIVE_PINS + sorted(LOUD_BY_TRACE_SOLO) + PROVEN_PINS
+        + _shielded(SHIELDED_BY_WHOLE_WALK),
+        # Two additions the round-5 population makes, both measured. The `modeling_utils` pin moves
+        # here because the pin is consulted by the owed rule, so forcing the requirement on takes the
+        # pin's answer away with it. The six shielded shapes and the two argv fixtures move in OPPOSITE
+        # directions: the shielded rows lose the finding the shield was protecting, and the two argv
+        # rows -- demoted at baseline -- come back loud, because `owed=True` means the funnel never asks
+        # the demotion at all and the UNKNOWN untrusted-origin flavour then saves them.
     },
     'archive_table_emptied': {
         'what': 'the archive module table is emptied, so `tarfile.open` is judged as a plain open()',
@@ -1408,23 +1801,35 @@ MUTATIONS = {
     'whole_trace_blind': {
         'what': 'the argument-wide operator walk finds nothing anywhere, so every trace row owes again',
         'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_path_sink_reaches_operator',
-                                 lambda self, node, tree: False),
+                                 lambda self, node, tree, cli_blind=False: False),
         'restore': lambda: setattr(ast_scanner.TaintTracker, '_c22_path_sink_reaches_operator',
                                    _REACHES),
         # Only the rows the walk decides alone. The three inline-environment rows owe their proof again
         # under this blind and stay loud on the UNKNOWN exemption, so they are not claimed here
         # (`scratch/_c22_blind_matrix.py`, column `trace`). The four `proven_*` answers are claimed:
         # taking the walk away makes a `sys.argv`/`request` argument owe its proof again even though
-        # the row itself survives on its TAINTED answer.
-        'moves': sorted(LOUD_BY_TRACE_SOLO) + PROVEN_PINS,
+        # the row itself survives on its TAINTED answer. Round 5 adds the two demoted argv rows, which
+        # come back LOUD because a blind walk kills the demotion's positive half before it can act, and
+        # the six shielded spellings, which go quiet for the same reason the unshielded trace rows do.
+        # `harness_argparse_direct` is in the claim because the walk is the only thing keeping it loud;
+        # `LOUD_TWICE_OVER` is what a fixture that survived this blind would have to be moved to, and
+        # after the round-5 line-number fix nothing in the table needs it.
+        'moves': sorted(LOUD_BY_TRACE_SOLO) + PROVEN_PINS + ['argv_direct', 'copy_from_argv']
+        + _shielded(SHIELDED_BY_WHOLE_WALK),
     },
     # One mutation per recognition arm, each with exactly the rows that arm was measured to decide
-    # (`scratch/_c22_blind_matrix.py`, `scratch/_c22_flavour_only.py`).
+    # (`scratch/_c22_blind_matrix.py`, `scratch/_c22_flavour_only.py`, `scratch/_c22_r5_moves_matrix.py`).
+    # Round 5 changed what each of these arms can still be credited with: the plain command-line shapes
+    # are retired now, so a blind cannot move a finding that is not there, and the arm's evidence for
+    # those shapes is its SHIELDED spelling -- the same bytes under `benchmark/corpus/`, where the
+    # corpus shield refuses the demotion and the row is loud for the arm's own reason. An arm that
+    # decides nothing in either spelling would be a decorative claim, and the measured `moves=` line in
+    # `scratch/_c22_r5_moves_matrix.py` is what says it is not.
     'operator_root_calls_blind': {
         'what': 'a namespace built by `parse_args()` stops being recognized as a command-line root',
         'apply': lambda: setattr(ast_scanner, 'CWE22_OPERATOR_ROOT_CALLS', frozenset()),
         'restore': lambda: setattr(ast_scanner, 'CWE22_OPERATOR_ROOT_CALLS', _ROOT_CALLS),
-        'moves': sorted(LOUD_BY_TRACE_COMMAND_LINE),
+        'moves': sorted(LOUD_BY_TRACE_COMMAND_LINE) + _shielded(SHIELDED_BY_ARGPARSE_ARM),
     },
     'cli_command_params_blind': {
         'what': 'the `@click.option`/`argument` decorator table is emptied, so typed text has no root',
@@ -1432,7 +1837,50 @@ MUTATIONS = {
                                  lambda self, tree: {}),
         'restore': lambda: setattr(ast_scanner.TaintTracker, '_c22_cli_command_params',
                                    _CLI_PARAMS),
-        'moves': sorted(LOUD_BY_TRACE_COMMAND_DECORATOR),
+        'moves': sorted(LOUD_BY_TRACE_COMMAND_DECORATOR) + _shielded(SHIELDED_BY_CLICK_ARM),
+    },
+    # ------------------------------------------------------------------ round 5, the local-command-line rule
+    # Three mutations, one per thing the new clause can be wrong about. `local_cli_demotion_off` asks
+    # whether the rule earns its retirements at all; `cli_blind_is_noop` asks whether the SECOND walk is
+    # what earns them, or whether any root near a command line would do; `local_cli_harness_guard_off`
+    # asks whether the harness exception is load-bearing, because a rule that demotes a test suite is
+    # the one way this slice could ever reach a benchmark key.
+    'local_cli_demotion_off': {
+        'what': 'the local-command-line rule is switched off, so every retired row comes back',
+        'apply': lambda: setattr(ast_scanner.TaintTracker,
+                                 '_c22_sink_root_is_only_the_local_command_line',
+                                 lambda self, record, sink: False),
+        'restore': lambda: setattr(ast_scanner.TaintTracker,
+                                   '_c22_sink_root_is_only_the_local_command_line', _DEMOTE),
+        'moves': sorted(QUIET_BY_LOCAL_COMMAND_LINE),
+    },
+    'cli_blind_is_noop': {
+        'what': 'the second walk runs unblinded, so "the command line was the root" degrades to '
+               '"some root happened to be nearby"',
+        'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_path_sink_reaches_operator',
+                                 lambda self, node, tree, cli_blind=False: _REACHES(self, node, tree)),
+        'restore': lambda: setattr(ast_scanner.TaintTracker, '_c22_path_sink_reaches_operator',
+                                   _REACHES),
+        'moves': sorted(QUIET_BY_LOCAL_COMMAND_LINE),
+    },
+    'local_cli_harness_guard_off': {
+        'what': 'the harness facts stop refusing the demotion, so a test suite loses its CLI rows',
+        'apply': lambda: setattr(ast_scanner, 'CWE22_HARNESS_FACTS', frozenset()),
+        'restore': lambda: setattr(ast_scanner, 'CWE22_HARNESS_FACTS', _HARNESS_FACTS),
+        'moves': sorted(LOUD_BY_TRACE_COMMAND_LINE) + sorted(LOUD_BY_TRACE_COMMAND_DECORATOR),
+    },
+    'local_cli_demote_on_any_root': {
+        'what': 'the differential is dropped: any row the unblinded walk refused to owe gets demoted, '
+               'whether its root was the command line or a socket reading the command line',
+        'apply': lambda: setattr(ast_scanner.TaintTracker,
+                                 '_c22_sink_root_is_only_the_local_command_line',
+                                 _demote_without_the_second_walk),
+        'restore': lambda: setattr(ast_scanner.TaintTracker,
+                                   '_c22_sink_root_is_only_the_local_command_line', _DEMOTE),
+        # Measured: the rows a web-request root was saving -- the only shapes whose module really does
+        # spell a caller-fed fact (the flask import) AND whose surviving root is remote. Claiming the
+        # demoted fixtures here would be wrong: they are already quiet, so nothing moves.
+        'moves': ['request_inline', 'request_into_helper'],
     },
     'caller_hop_blind': {
         'what': 'the call-site table is emptied, so a value a caller hands over is invisible',
@@ -1440,18 +1888,20 @@ MUTATIONS = {
                                  lambda self, tree: {}),
         'restore': lambda: setattr(ast_scanner.TaintTracker, '_c22_param_proofs', _PARAM_PROOFS),
         # The command-line rows plus the two shapes that reach the walk through the same call-site
-        # table: a `@click.option` value handed to a helper, and an `os.environ` value handed to a
-        # helper (`caller_passes_environ`, measured quiet under this blind in
-        # `scratch/_c22_moves_matrix.py`). `proven_request_helper` is the refusal answer for the same
-        # one-hop spelling, so this blind is also what makes that row owe again.
-        'moves': (sorted(LOUD_BY_TRACE_COMMAND_LINE) + ['click_option_into_helper',
-                                                        'caller_passes_environ',
-                                                        'proven_request_helper']),
+        # table: an `os.environ` value handed to a helper (`caller_passes_environ`, measured quiet
+        # under this blind in `scratch/_c22_moves_matrix.py`), and the refusal answer for the same
+        # one-hop spelling, `proven_request_helper`. Round 5 dropped `click_option_into_helper` and the
+        # three retired argparse rows from this list -- they are quiet now, and a blind cannot move a row
+        # that is already gone -- and put their shielded spellings in instead, which is the same five
+        # shapes with the corpus shield standing where the demotion used to stand.
+        'moves': (sorted(LOUD_BY_TRACE_COMMAND_LINE) + ['caller_passes_environ',
+                                                        'proven_request_helper']
+                  + _shielded(SHIELDED_BY_CALL_HOP)),
     },
     'trace_remote_arm_blind': {
         'what': 'the remote-source predicate is switched off inside the walk, env/argv/request gone',
         'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_expr_is_untrusted_source',
-                                 lambda self, table, expr, depth=0: False),
+                                 lambda self, table, expr, depth=0, cli_blind=False: False),
         'restore': lambda: setattr(ast_scanner.TaintTracker, '_c22_expr_is_untrusted_source',
                                    _UNTRUSTED),
         # Everything this one predicate decides, in all three of the places it is read: the walk's
@@ -1460,9 +1910,13 @@ MUTATIONS = {
         # under their own blind), and the provenance classifier that labels `sys.argv` and
         # `os.getenv` TAINTED. `getenv_call` itself was measured to stand under this blind -- its row
         # is kept by the `os.getenv` sink rule, not by this predicate -- so it is not claimed.
+        # `argv_direct` and `copy_from_argv` used to be claimed here; round 5 retired them (see
+        # `QUIET_BY_LOCAL_COMMAND_LINE`), so this blind now moves nothing that is not already quiet --
+        # except their own shielded spellings, which are the two rows that still show the remote-name
+        # arm recognising a command line read.
         'moves': (sorted(LOUD_BY_TRACE_REMOTE_HOP) + sorted(LOUD_BY_TRACE_AND_FLAVOUR)
-                  + sorted(LOUD_BY_UNTRUSTED_ORIGIN) + ['argv_direct', 'copy_from_argv']
-                  + PROVEN_PINS),
+                  + sorted(LOUD_BY_UNTRUSTED_ORIGIN) + PROVEN_PINS
+                  + _shielded(SHIELDED_BY_REMOTE_ARM)),
     },
     'open_pin_table_emptied': {
         'what': 'the exact-identity open() pin is emptied, so the cross-module blessed row is declined',
@@ -1524,12 +1978,17 @@ MUTATIONS = {
                                  lambda self, prov, record: True),
         'restore': lambda: setattr(ast_scanner.TaintTracker, '_c22_unknown_origin_keeps_the_row',
                                    _KEEPS),
-        'moves': ['module_global_from_opaque_call'],
+        # `self_field_write` is booked here as well as under `requirement_always_refused`: an
+        # `open(self.out_slot)` resolves to an UNKNOWN origin, so a blanket "UNKNOWN is a risk" reports
+        # a row that two independent clauses -- the self-field rule and this requirement -- prove clean.
+        'moves': ['module_global_from_opaque_call', 'self_field_write'],
     },
 }
 
 _ORIGIN = ast_scanner.TaintTracker._c22_origin_is_untrusted_source
 _REACHES = ast_scanner.TaintTracker._c22_path_sink_reaches_operator
+_DEMOTE = ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line
+_HARNESS_FACTS = ast_scanner.CWE22_HARNESS_FACTS
 _CLI_PARAMS = ast_scanner.TaintTracker._c22_cli_command_params
 _PARAM_PROOFS = ast_scanner.TaintTracker._c22_param_proofs
 _UNTRUSTED = ast_scanner.TaintTracker._c22_expr_is_untrusted_source
@@ -1540,6 +1999,27 @@ _ROOT_CALLS = ast_scanner.CWE22_OPERATOR_ROOT_CALLS
 # the fact tuple the engine saw on each consult, and these are the four that came back non-empty.
 FACT_ONLY_EARNED = {'fact_main_guard', 'fact_cli_argparse', 'fact_harness_class',
                     'generic_fallback_uncalled_helper'}
+
+
+def _demote_without_the_second_walk(self, record, sink):
+    """Every refusal the demotion asks, with the differential itself switched off.
+
+    The blinded call answers "no root" and the unblinded call is left exactly as the engine wrote it, so
+    the row still owes nothing for the right reason -- it is only the SECOND question that stops being
+    asked. This is the shape of the rule if it had been written as "a command-line root was seen", which
+    is what the mandate's prose could be read to mean, and it is the reason the differential is there
+    instead: under it, a web request read two lines from an `argparse` namespace is retired too.
+    """
+    original = ast_scanner.TaintTracker._c22_path_sink_reaches_operator
+
+    def forced(_self, node, tree, cli_blind=False):
+        return False if cli_blind else original(_self, node, tree, cli_blind)
+
+    ast_scanner.TaintTracker._c22_path_sink_reaches_operator = forced
+    try:
+        return _DEMOTE(self, record, sink)
+    finally:
+        ast_scanner.TaintTracker._c22_path_sink_reaches_operator = original
 
 
 def _fact_blanket_owes(self, record, sink):
@@ -1592,7 +2072,7 @@ def main() -> int:
     failures += check_open_family_scope()
     print('TIER 4b - the three UNKNOWN flavours, label by label:')
     failures += check_trace_flavours()
-    print('TIER 5 - one flag per record, three short-circuits gated, arm can only subtract:')
+    print('TIER 5 - one flag per record, three short-circuits gated, two subtract-only arms:')
     failures += check_wiring()
     for item in failures[:14]:
         print(f'  !! {item}')

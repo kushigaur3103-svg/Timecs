@@ -74,8 +74,13 @@ touch it. It used to be loud because the retired blanket stamped a placeholder o
 `scratch/_c22_r3_engines.py --diff` on that spelling shows the row as head-only -- a genuine supersession,
 not a lost key. The supersession reaches this fixture's *ground* and not its *proposition*: the pitch is
 about the parameter boundary, so the honest repair is to make the module cross the boundary it asserts --
-`read_it(sys.argv[1])`, the one hop the walk resolves (`open_helper_param` and `save_json_via_local` of
-`scratch/_c22_walk_resolution_grid.py`). Nothing was re-filed and no number in the price table moved: the
+a call whose argument is an operator read, the one hop the walk resolves (`open_helper_param` and
+`save_json_via_local` of `scratch/_c22_walk_resolution_grid.py`). Round 5 moves that carrier a second time,
+from `read_it(sys.argv[1])` to `read_it(os.environ["CFG"])`, and for the same reason it moved the rule: the
+local command line of a standalone script is the process owner's own input, so the demotion retires an
+argv-fed `open()` there, while an environment read is written by whoever installed the service and stays a
+root. The proposition is the parameter boundary, not the spelling of the root, so it survives both moves
+unchanged. Nothing was re-filed and no number in the price table moved: the
 eleven TIER 1 rows keep their eleven verdicts, TIER 2's counter-table, TIER 3's 94 + 5 blessed census,
 TIER 3b's zero population and TIER 4-6 are all recomputed from the same frozen baselines as before, and
 `sink_literal_pitch_shipped` is still CAUGHT on the literal-is-the-defect rows. What proves the row is now
@@ -139,11 +144,16 @@ LITERAL_ALREADY_LIVE = [
     ('literal_path_open', 'CWE-22', 'cfg = "static/app.json"\ndata = ' + _O + '(cfg, "r")\n', 'quiet',
      'self-described path'),
     ('param_path_open', 'CWE-22', 'def read_it(path):\n' + _IND + 'return ' + _O + '(path, "r").read()\n'
-     # The argv read has to be the ARGUMENT of the call, not merely a statement in the module: the
+     # The operator read has to be the ARGUMENT of the call, not merely a statement in the module: the
      # round-3 `cwe22_open_taint_probe` rule retired the blanket that kept an unproven parameter loud in
-     # a library module, and this row's proposition is the parameter boundary, so the fixture now crosses
-     # that boundary itself instead of asking the engine to assume someone else did.
-     + 'import sys\nread_it(sys.argv[1])\n',
+     # a library module, and this row's proposition is the parameter boundary, so the fixture crosses
+     # that boundary itself instead of asking the engine to assume someone else did. Round 5 moves the
+     # carrier from `sys.argv[1]` to `os.environ["CFG"]` for the same reason it moved the rule: the local
+     # command line of a standalone script is the process owner's own input, so an argv-fed `open()` is
+     # demoted there, while an environment read is written by whoever installed the service and stays a
+     # root the walk recognises. The proposition -- a parameter the operator hands a value to is still a
+     # boundary -- is unchanged, and so is the line the row is asserted on.
+     + 'read_it(os.environ["CFG"])\n',
      'loud', 'a parameter the operator hands a value to is still a boundary'),
     ('literal_url_request', 'CWE-918', 'resp = requests.get("https://api.internal/health")\n', 'quiet',
      'host fixed in source'),

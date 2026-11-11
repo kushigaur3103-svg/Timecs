@@ -67,8 +67,10 @@ blessed key's own shape, and the shipped table `CWE22_OPEN_TAINT_KEEP_LOUD` keep
 "the bless, not the dataflow, is what keeps the row". `no_call_site_in_file` is the same admission for
 the two `modeling_utils.py` keys. One row is earned back instead: an unimported `hf_hub_download` is
 still no witnessed root, but `hub_resolver_without_import_witness` now hands that resolver a filename
-read from `sys.argv`, which is the mandate's condition (a) in plain words, so the sink reports (lines 3
-and 5) while the funnel still refuses (asked 2, hits 0).
+read from `os.environ`, which is the mandate's condition (a) in plain words, so the sink reports (lines 3
+and 5) while the funnel still refuses (asked 2, hits 0). Round 5 moved that carrier off `sys.argv` for the
+same reason it moved the rule: a standalone script's own command line is the process owner's invocation,
+so an argv-fed sink there is retired, while an environment read stays an untrusted root.
 
 Two rows are neither, and this file refuses to book them. `self_field_holds_parsed_command_line` writes
 `self.args = argparse.ArgumentParser().parse_args()` and then opens `self.args.csv_file`;
@@ -128,7 +130,7 @@ are the ones that still arrive as findings, each because a resolved origin reall
     (`caller_passes_foreign_receiver_join`);
   * a path argument the operator chose -> refused and loud, which is what
     `hub_resolver_without_import_witness` now spells: the resolver is still unimported, so the witnessed
-    root the clause wants is still missing, and `sys.argv` is still what makes the row a finding;
+    root the clause wants is still missing, and `os.environ` is still what makes the row a finding;
   * a `request` write into a `self` field that the sink reads in the same frame -> refused and loud
     (`self_field_second_write_from_request`), and a `with open(request.args[...])` that is not a helper
     call at all -> refused and loud (`tainted_open_is_not_a_helper_call`).
@@ -425,9 +427,12 @@ EARNED_ROWS = {
 # does reach the sink argument. Loud at HEAD, loud now, `asked > 0` and `hits == 0` on every one: the
 # clause still refuses to certify them, and the owed rule is the thing that keeps them on the record.
 # `hub_resolver_without_import_witness` is the one re-filed row this round EARNED back: an unimported
-# `hf_hub_download` is still no witnessed root -- the resolver filename now comes out of `sys.argv`,
+# `hf_hub_download` is still no witnessed root -- the resolver filename now comes out of `os.environ`,
 # which is the mandate's condition (a) spelled literally, so the sink reports at 3 and 5 while the
-# funnel still refuses (asked 2, hits 0).
+# funnel still refuses (asked 2, hits 0). Round 5 moved that carrier off `sys.argv`: a standalone
+# script's own command line is the process owner's invocation, so the demotion retires an argv-fed
+# sink there, while an environment read stays an untrusted root. The proposition is the missing
+# import witness, not the spelling of the root, so it survives the move unchanged.
 REFUSED_ROWS = {
     'one_caller_passes_request': (
         'import os\n' + HELP
@@ -441,8 +446,8 @@ REFUSED_ROWS = {
         + '        return handle.read()\n'
         + 'read_sidecar("/opt/a.bin")\n'),
     'hub_resolver_without_import_witness': (
-        'import sys\n' + HELP
-        + 'read_sidecar(hf_hub_download("org/model", sys.argv[1]))\n'),
+        'import os, sys\n' + HELP
+        + 'read_sidecar(hf_hub_download("org/model", os.environ["SIDECAR"]))\n'),
     'caller_passes_foreign_receiver_join': (
         HELP + 'def view(request):\n'
         + '    read_sidecar(request.holder.join("/opt/a.bin"))\n'),

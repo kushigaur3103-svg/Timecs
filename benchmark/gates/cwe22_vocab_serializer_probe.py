@@ -32,27 +32,42 @@ pinned by *narrowing* them (`mode_set_refuses_writes`), which is the direction t
 population actually depends on.
 
 Round 3 retired the assumption this gate's four booked rows were resting on. `_c22_open_sink_owes_proven_taint`
-(`ast_scanner.py:8707`) refuses to let a CWE-22 path sink emit at all unless a resolved operator/remote
+(`ast_scanner.py:8691`) refuses to let a CWE-22 path sink emit at all unless a resolved operator/remote
 value reaches one of ITS arguments, and it is asked after the exemption, including at the registry sink
 factory. Attribution is `scratch/_c22_r3_sliceh_attrib.py`, which drives `scratch/_c22_r3_engines.py --diff`
 (HEAD's engine snapshot and the live engine in separate processes): `serializer_read_loud`,
-`pretrained_write_loud`, `serializer_write_with_argv_source_loud` and `serializer_write_with_http_source_loud`
+`pretrained_write_loud`, `serializer_write_with_argv_source_loud` (its round-3 name; re-filed as
+`serializer_write_with_argv_source_quiet` in round 5, below) and `serializer_write_with_http_source_loud`
 are each `head_rows=1, live_rows=0` -- genuine supersessions -- while `serializer_write_quiet` is QUIET UNDER
 BOTH ARMS and keeps its empty booking, so it was never this round's collateral.
 
-No row was re-filed. Each superseded row named its root somewhere that does not reach the sink: the two
-rows at 7 carry no root whatsoever (`open(vocab_file, ...)` over a `save_directory` join nobody hands the
-command line to), and the argv/http rows at 12 spelled theirs inside a `picked_directory()` that no
+No row was re-filed in round 3. Each superseded row named its root somewhere that does not reach the sink:
+the two rows at 7 carry no root whatsoever (`open(vocab_file, ...)` over a `save_directory` join nobody hands
+the command line to), and the argv/http rows at 12 spelled theirs inside a `picked_directory()` that no
 call site ever calls. `scratch/_c22_r3_sliceh_earn.py` measured the carriers, and all four were earnable,
 so all four were earned at their new lines. Two carriers, and the choice between them is a table lookup:
-`options = argparse.ArgumentParser().parse_args()` at module level with `encoding=options.encoding` in the
-NON-path argument, which is condition (a) of the mandate without disturbing the exemption's third fact --
-`_c22_module_proves_no_untrusted_source` (`ast_scanner.py:8314`) only vetoes source NAMES, `argv`/`environ`
-attributes and web imports, never argparse -- used by `serializer_read_loud` (10), `pretrained_write_loud`
-(10) and the new `serializer_cli_encoding_write_quiet` (still 0 registered, still quiet); and the root
-written into the join itself, `os.path.join(save_directory, sys.argv[1])` / `request.args["filename"]`, for
-`serializer_write_with_argv_source_loud` and `serializer_write_with_http_source_loud` (8), where the row is
-loud because the operator really did name the file and the exemption is refused twice over.
+a module-level operator read with its value in the NON-path argument, which is condition (a) of the mandate
+without disturbing the exemption's third fact -- `_c22_module_proves_no_untrusted_source`
+(`ast_scanner.py:8287`) only vetoes source NAMES, `argv`/`environ` attributes and web imports -- used by
+`serializer_read_loud` (10), `pretrained_write_loud` (10) and `serializer_cli_encoding_write_quiet` (still 0
+registered, still quiet); and the root written into the join itself,
+`os.path.join(save_directory, sys.argv[1])` / `request.args["filename"]`, for the two source-table rows (8),
+where the row is loud because the operator really did name the file and the exemption is refused twice over.
+
+Round 5 moves the first carrier and re-files one row of the second, and both moves are the same rule. The
+local-command-line demotion retires a path sink whose only resolved root is this program's own command line,
+so `argparse.ArgumentParser().parse_args()` -- round 3's carrier, chosen precisely because the walk saw it
+and the veto did not -- stopped buying liveness: the exempted write went quiet for a reason this gate does
+not own, and `shipped_predicate_blinded` / `mode_set_refuses_writes` had no finding left to move. The
+replacement is `stdin_encoding = sys.stdin.readline()` with `encoding=stdin_encoding`, which is the one
+spelling that satisfies both halves at once and is measured rather than argued
+(`scratch/_c22_r5_carrier_lab.py roots`: loud, survives the blinding, no demotion), because the veto walks
+for `Attribute.attr in ("argv", "environ")` and `stdin` is not one of them. All three fixtures keep their
+lines and their verdicts, and the registration census is unchanged. The argv source-table row is RE-FILED
+as `serializer_write_with_argv_source_quiet` with its spelling kept byte-for-byte: its proposition -- a root
+spelled in an argument is recognised by `_c22_expr_is_untrusted_source` even with the module veto emptied --
+is still carried verbatim by its http twin, and the new `local_cli_demotion_off` arm hands the retired
+blanket back at [8] with registration 1, so the re-filing is locked rather than deleted.
 
 Two of those fixtures used to be anchors, and their arms moved rather than went quiet. Under a blinded
 exemption or a narrowed write-flag tuple the shipped `serializer_write_quiet` still only changes
@@ -117,13 +132,23 @@ def vocab_body(method_name: str, last_line_mode: str, join_tail: str = '"vocab.t
 # reason. Appended, so every line number below is the line the carrier was measured at.
 ENTRY_TAIL = 'if __name__ == "__main__":\n    pass\n'
 
-# Round 3's carrier for the three CLI-shaped fixtures: two module-level lines, then the body, so the
-# `open` that used to sit at 7 sits at 10. `parse_args()` is condition (a) of the mandate -- a direct
-# command line -- and argparse is NOT in the veto's tables, so an exempted serializer write stays
-# exempted (`serializer_cli_encoding_write_quiet` registers 0) while the row still owes nothing to the
-# provenance rule. The value goes in the NON-path argument on purpose: the destination is still the
-# framework's own `save_directory`, so the only thing being proved is provenance, not a traversal.
-CLI_NS = 'import argparse\noptions = argparse.ArgumentParser().parse_args()\n'
+# Round 5's carrier for the three stdin-shaped fixtures: two module-level lines, then the body, so the
+# `open` that used to sit at 7 sits at 10. Round 3 used `argparse.ArgumentParser().parse_args()` here,
+# and the reason it had to be argparse is the reason it can no longer be: the exemption's third fact
+# refuses a module that names argv/environ/request, so the carrier needed a root the walk recognises
+# but the veto does not. The local-command-line demotion now blinds exactly that root -- a standalone
+# script's own command line is the process owner's invocation -- which left the exempted write quiet
+# for a reason this gate does not own and its mutations nothing to move. `sys.stdin.readline()` is the
+# one spelling that satisfies both halves at once, and it is measured, not argued: the veto walks for
+# `Name.id` in `CWE22_UNTRUSTED_SOURCE_NAMES`, an `ImportFrom` in `CWE22_UNTRUSTED_IMPORT_MODULES`, and
+# `Attribute.attr` in `("argv", "environ")` -- `stdin` is in none of the three, while
+# `_c22_expr_is_untrusted_source` does recognise it and the blinding leaves it alone
+# (`scratch/_c22_r5_carrier_lab.py roots`: loud, blind=True, demote=False). So an exempted serializer
+# write stays exempted (`serializer_cli_encoding_write_quiet` registers 0) while the row still owes
+# nothing to the provenance rule. The value goes in the NON-path argument on purpose: the destination
+# is still the framework's own `save_directory`, so the only thing being proved is provenance, not a
+# traversal.
+STDIN_NS = 'import sys\nstdin_encoding = sys.stdin.readline()\n'
 
 FIXTURES = {
     # Quiet under HEAD and quiet under live: the exemption's own row, unchanged by this round.
@@ -132,16 +157,16 @@ FIXTURES = {
     # is what makes `shipped_predicate_blinded` and `mode_set_refuses_writes` move a FINDING at 10
     # instead of only moving a census.
     'serializer_cli_encoding_write_quiet': (
-        CLI_NS + '\n' + vocab_body('save_vocabulary', '"w", encoding=options.encoding') + ENTRY_TAIL, []),
+        STDIN_NS + '\n' + vocab_body('save_vocabulary', '"w", encoding=stdin_encoding') + ENTRY_TAIL, []),
     # Read mode: the exemption demands a write flag, so this row is owned by the second emitter and stays
     # loud under `flags=('a',)` -- measured. EARNed at 10; at HEAD it was loud at 7 with no provenance.
     'serializer_read_loud': (
-        CLI_NS + '\n' + vocab_body('save_vocabulary', 'encoding=options.encoding') + ENTRY_TAIL, [10]),
+        STDIN_NS + '\n' + vocab_body('save_vocabulary', 'encoding=stdin_encoding') + ENTRY_TAIL, [10]),
     # `save_pretrained` is outside the exemption vocabulary, so the same carrier stays loud at 10 and
-    # `widened_serializer_vocabulary` is what silences it. Argparse rather than argv, because a vetoed
+    # `widened_serializer_vocabulary` is what silences it. Stdin rather than argv, because a vetoed
     # module would stay loud even when the widened set exempted it and the arm would move nothing.
     'pretrained_write_loud': (
-        CLI_NS + '\n' + vocab_body('save_pretrained', '"w", encoding=options.encoding') + ENTRY_TAIL, [10]),
+        STDIN_NS + '\n' + vocab_body('save_pretrained', '"w", encoding=stdin_encoding') + ENTRY_TAIL, [10]),
     # A serializer module that reads its filename from stdin: the veto's third fact fails, the value
     # reaches, and the row is loud at 7 -- and this is the only loudness here that depends on the source
     # TABLE alone, so it is the fixture `untrusted_vocabulary_emptied` now moves (measured quiet).
@@ -154,9 +179,16 @@ FIXTURES = {
     'serializer_write_with_http_source_loud': (
         vocab_body('save_vocabulary', '"w", encoding="utf-8"', 'request.args["filename"]',
                    'from flask import request\nimport os\n'), [8]),
-    'serializer_write_with_argv_source_loud': (
+    # RE-FILED by round 5, not earned: the root IS this program's own command line, spelled in the
+    # sink's path argument, which is exactly the shape the local-command-line demotion retires. The
+    # proposition it used to carry -- a root in an argument is recognised by
+    # `_c22_expr_is_untrusted_source` even with the module veto emptied -- is still carried verbatim by
+    # its http twin above, so nothing is lost by booking this one as a measured quiet. The spelling is
+    # kept byte-for-byte and `local_cli_demotion_off` hands the retired blanket back at [8], which is
+    # what makes this a re-filing with a lock rather than a deleted expectation.
+    'serializer_write_with_argv_source_quiet': (
         vocab_body('save_vocabulary', '"w", encoding="utf-8"', 'sys.argv[1]',
-                   'import os\nimport sys\n'), [8]),
+                   'import os\nimport sys\n'), []),
 }
 
 
@@ -302,12 +334,13 @@ def run_mutations() -> list:
     """
     results = []
     shipped = ast_scanner.TaintTracker._c22_is_framework_vocab_serializer_write
+    demotion = ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line
     names = ast_scanner.CWE22_VOCAB_SERIALIZER_METHODS
     flags = ast_scanner.CWE22_SERIALIZER_WRITE_FLAGS
     source_names = ast_scanner.CWE22_UNTRUSTED_SOURCE_NAMES
     import_names = ast_scanner.CWE22_UNTRUSTED_IMPORT_MODULES
 
-    def mutate(predicate=None, exempt=None, write_flags=None, empty_veto=False):
+    def mutate(predicate=None, exempt=None, write_flags=None, empty_veto=False, demotion_off=False):
         if predicate is not None:
             ast_scanner.TaintTracker._c22_is_framework_vocab_serializer_write = predicate
         if exempt is not None:
@@ -317,9 +350,13 @@ def run_mutations() -> list:
         if empty_veto:
             ast_scanner.CWE22_UNTRUSTED_SOURCE_NAMES = frozenset()
             ast_scanner.CWE22_UNTRUSTED_IMPORT_MODULES = frozenset()
+        if demotion_off:
+            ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = (
+                lambda self, record, sink: False)
 
     def restore():
         ast_scanner.TaintTracker._c22_is_framework_vocab_serializer_write = shipped
+        ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = demotion
         ast_scanner.CWE22_VOCAB_SERIALIZER_METHODS = names
         ast_scanner.CWE22_SERIALIZER_WRITE_FLAGS = flags
         ast_scanner.CWE22_UNTRUSTED_SOURCE_NAMES = source_names
@@ -345,7 +382,14 @@ def run_mutations() -> list:
          {'empty_veto': True},
          [('serializer_write_from_stdin_loud', [], 0), ('serializer_cli_encoding_write_quiet', None, 0),
           ('serializer_write_with_http_source_loud', None, 1),
-          ('serializer_write_with_argv_source_loud', None, 1)]),
+          ('serializer_write_with_argv_source_quiet', None, 0)]),
+        # Round 5's own lock inside this gate: the re-filed argv row is quiet BECAUSE the demotion
+        # retired it, so handing that rule back must restore the finding and its registration.
+        ('local_cli_demotion_off',
+         {'demotion_off': True},
+         [('serializer_write_with_argv_source_quiet', [8], 1),
+          ('serializer_cli_encoding_write_quiet', None, 0),
+          ('serializer_write_with_http_source_loud', None, 1)]),
     ]
     detail = {}
     for label, kwargs, rows in arms:
@@ -369,6 +413,7 @@ def run_mutations() -> list:
         if not moved:
             print(f'     ! {label} moved no booked finding')
     restored_ok = (ast_scanner.TaintTracker._c22_is_framework_vocab_serializer_write is shipped
+                   and ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line is demotion
                    and ast_scanner.CWE22_VOCAB_SERIALIZER_METHODS is names
                    and ast_scanner.CWE22_SERIALIZER_WRITE_FLAGS is flags
                    and ast_scanner.CWE22_UNTRUSTED_SOURCE_NAMES is source_names

@@ -34,11 +34,15 @@ and the sink reported. `cwe22_open_taint_probe` retired exactly that blanket thi
 `scratch/_c22_r3_engines.py --diff` on the old spelling returns the row as head-only, so the supersession
 is booked rather than hidden -- and a carrier quiet in every tree would have left all four tripwires green
 while an exclusion leaked everywhere. The carrier therefore EARNS its row now: the last line is
-`load(sys.argv[1])`, one hop the walk resolves (`open_helper_param`/`remove_helper_param` of
+`load(os.environ['MODEL_NAME'])`, one hop the walk resolves (`open_helper_param`/`remove_helper_param` of
 `scratch/_c22_walk_resolution_grid.py`), and `scratch/_c22_r3_misc_carrier_grid.py` shows the row travelling
 with `_c22_path_sink_reaches_operator` and nothing else -- blind that walk and the sink line goes quiet,
-restore the retired blanket and it comes back. No number moved with it: the frozen-baseline reach table,
-the glob-shape laws, the two scaffolding trees that must still go quiet and all twenty-nine
+restore the retired blanket and it comes back. Round 5 moved that carrier a second time, off
+`load(sys.argv[1])`, for the same reason it moved the rule: a standalone script's own command line is the
+process owner's invocation, so the demotion retires an argv-fed `open()` there, while an environment read is
+written by whoever installed the service and stays a root. The proposition is the exclusion's reach, not the
+spelling of the root, so it survives both moves unchanged. No number moved with it: the frozen-baseline
+reach table, the glob-shape laws, the two scaffolding trees that must still go quiet and all twenty-nine
 `mutation ... -> CAUGHT` mappings assert what they asserted before, now against a true positive the glob
 would really delete.
 
@@ -167,7 +171,9 @@ CONFIG_TRAV = (
     "def load(name):\n"
     "    return open(os.path.join('models', name)).read()\n"
     "\n"
-    "load(sys.argv[1])\n"
+    # Round 5: the local command line of a standalone script is the process owner's own invocation, so
+    # an argv-fed carrier is retired by the demotion. An environment read stays an untrusted root.
+    "load(os.environ['MODEL_NAME'])\n"
 )
 
 

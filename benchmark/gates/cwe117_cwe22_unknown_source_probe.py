@@ -20,22 +20,32 @@ argparse/dataclasses" costs 4 (`src__transformers__trainer.py` 736, 1604, 1609, 
 `f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}"`, is character-identical to an
 example-script false positive, so no expression-shape rule can separate the two populations.
 
-One fixture spelling here is collateral from `cwe22_open_taint_probe`. This file used to call its repair "a
-module fact, not a loosened assertion", and to support that with a measurement in
+One fixture spelling here is collateral from `cwe22_open_taint_probe`, twice over, and both times it was
+repaired by **earning** the carrier rather than by loosening an assertion. This file used to call its
+repair "a module fact, not a loosened assertion", and to support that with a measurement in
 `scratch/_c22_placeholder_collapse.py` saying the `argv`/`argparse` spellings move the row off line 4 and
 onto the generic synthetic message, so using one would have changed the contract rather than the ground for
 it. Measurement has since falsified that: the row moved a line in that script because every candidate there
 concatenates a *second* `import os` on top of `BASE`, and the round-3 rule asks its question of the
 **argument** (`_c22_open_sink_owes_proven_taint`), so a `__main__` guard that hands `save` nothing but
 literals no longer buys the placeholder at all - `scratch/_c22_r3_engines.py --diff` on that fixture returns
-its CWE-22 row as head-only, a booked supersession. The ground the rule does accept is now spelled in the
-fixture: `save(sys.argv[1], "weights.bin")`, one hop the walk resolves exactly as measured by
-`open_helper_param` and `save_json_via_local` in `scratch/_c22_walk_resolution_grid.py`. What did not move is
-the contract, which is the only thing a placeholder probe may lock: the same three assertions - reported at
-line 4, carried by a `UNTRUSTED_PATH_TRAVERSAL` edge whose `source_id` is not a node in `tracker.sources`, in
-a module registering **zero** sources - hold verbatim, because naming argv as a call argument gives the
-placeholder a reason to be stamped, not a second route in; `argparse` under the guard is still silent
-(`scratch/_c22_placeholder_collateral2.py`, which prices each candidate against all three assertions).
+its CWE-22 row as head-only, a booked supersession. Round 3 therefore spelled the ground the rule does
+accept, `save(sys.argv[1], "weights.bin")`, one hop the walk resolves exactly as measured by
+`open_helper_param` and `save_json_via_local` in `scratch/_c22_walk_resolution_grid.py`.
+
+Round 5 moves that carrier a second time, to `save(os.environ["OUT"], "weights.bin")`, and for the same
+reason it moved the rule: the local command line of a standalone script is the process owner's own
+invocation, so an argv-fed `open()` there is retired, while an environment read is written by whoever
+installed the service and stays an untrusted root. The subscript spelling is not a preference, it is the
+only one that keeps this gate's contract: `scratch/_c22_r5_carrier_lab.py` prices eleven carriers against
+all three assertions at once, and `os.environ["OUT"]` and `sys.stdin.readline()` are the two that report at
+line 4 on a `UNTRUSTED_PATH_TRAVERSAL` edge with **zero** registered sources, while `os.environ.get(...)`,
+`os.getenv(...)` and `input()` each register one real source and so would stop isolating the placeholder.
+What did not move is the contract, which is the only thing a placeholder probe may lock: the same three
+assertions - reported at line 4, carried by a `UNTRUSTED_PATH_TRAVERSAL` edge whose `source_id` is not a node
+in `tracker.sources`, in a module registering **zero** sources - hold verbatim, because naming an operator
+read as a call argument gives the placeholder a reason to be stamped, not a second route in; `argparse`
+under the guard is still silent (`scratch/_c22_placeholder_collateral2.py`).
 `scratch/_c22_r3_misc_carrier_grid.py` re-reads this fixture out of this file and shows the row travelling
 with `_c22_path_sink_reaches_operator` alone: blind that walk and line 4 goes quiet, restore the retired
 blanket and it comes back.
@@ -86,16 +96,19 @@ PLACEHOLDER_CASES = [
         '    logger.info(f"  Total batch size = {total}")\n'),
      'CWE-117', 5, 'UNKNOWN'),
     ('parameter_derived_path_write', (
-        # The argv read is an ARGUMENT to the helper, which is what the round-3 owed rule accepts:
-        # `save(sys.argv[1], ...)` is how the walk carries an operator value into `target` on line 4,
-        # and the `__main__` guard around it keeps the shape of a training-script entrypoint.
+        # The environment read is an ARGUMENT to the helper, which is what the owed rule accepts:
+        # `save(os.environ["OUT"], ...)` is how the walk carries an operator value into `target` on
+        # line 4, and the `__main__` guard around it keeps the shape of a training-script entrypoint.
+        # Round 5 moved this carrier off `sys.argv[1]`: the local command line of a standalone script
+        # is the process owner's own invocation, so the demotion retires an argv-fed `open()` there,
+        # while an environment read is written by whoever installed the service and stays a root.
         'import os, sys\n'
         'def save(output_dir, name):\n'
         '    target = os.path.join(output_dir, name)\n'
         '    with open(target, "w", encoding="utf-8") as fh:\n'
         '        fh.write("x")\n'
         'if __name__ == "__main__":\n'
-        '    save(sys.argv[1], "weights.bin")\n'),
+        '    save(os.environ["OUT"], "weights.bin")\n'),
      'CWE-22', 4, 'UNTRUSTED_PATH_TRAVERSAL'),
 ]
 

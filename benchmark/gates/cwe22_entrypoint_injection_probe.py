@@ -92,7 +92,8 @@ inside the capture, the read-mode `open(options.path)` of a genuinely declared `
 Eight of them are `LOUD_BY_FACT` carriers, and their proposition was never the retired blanket: it is
 that the classifier declares a module fact and the collector therefore injects a synthetic source. That
 is still exactly what happens -- the guard is still consulted once per carrier and still answers True
-(kept at 13 in TIER 3) -- but a fact alone no longer buys the report, so each carrier was re-spelled to
+(kept at 9 in TIER 3, after round 5 re-filed the four CLI-rooted carriers below) -- but a fact alone no
+longer buys the report, so each carrier was re-spelled to
 name an origin the walk resolves: a command line this file parses, a value read off a request, or an
 `input()` the script asks for. Two properties decided the spelling, both measured in
 `scratch/_c22_r3_entrypoint_candidates.py`, `scratch/_c22_r3_entrypoint_method_grid.py` and the
@@ -114,9 +115,13 @@ the win is pinned to the clause that earned it and cannot be re-tuned into the p
 scrutinised for a root the walk is supposed to recognise and none declares one: `options` is never bound
 in either carrier, and `mkdtemp()` is spelled with no `tempfile.` receiver, which
 `_c22_path_is_proven_temp_root` refuses by design because a bare name could be anybody's function. The
-counterpart table `LEVER2_REFUSED_WITH_ROOT_DECLARED` is the other half of that claim: the same three
-shapes WITH a declared `parse_args()` namespace or a `sys.argv` root must stay loud, or the win would be
-a hole rather than a refinement. One shape is filed as neither: an `import argparse` module that binds
+counterpart table `LEVER2_REFUSED_WITH_ROOT_DECLARED` was the other half of that claim: the same three
+shapes WITH a declared `parse_args()` namespace or a `sys.argv` root had to stay loud, or the win would be
+a hole rather than a refinement. Round 5 answers that claim rather than breaking it -- a declared
+namespace of THIS program is exactly what may be quiet, because the operator of a local CLI tool is the
+process owner -- so the table is now `LEVER2_REFUSED_RETIRED_BY_LOCAL_CLI`, asserted quiet with
+`demotion_brought_back=4/4` and `local_cli_demotion_off` as its falsification. One shape is filed as
+neither: an `import argparse` module that binds
 `options = argparse.ArgumentParser().parse_args()` and then reads `open(options.path)` is quiet at HEAD
 too (`head_rows=0 live_rows=0`), which is a pre-existing gap in the read-mode `open()` sink and not this
 round's collateral -- the write-mode spelling is what the walk sees, and it is pinned loud.
@@ -138,13 +143,42 @@ reach assertion is still pinned.
 Where each surviving row is still pinned, clause by clause: the eight `EARNED_QUIET` modules to the
 guard's declined answer (TIER 3 asserts the line is empty AND that `ground_of` reads `declined`, so a
 quiet row nobody was asked about cannot be booked here), the two `SUPERSEDED_BY_OPEN_TAINT` carriers to
-that same declined answer plus the successor's retire, the thirteen `LOUD_BY_FACT` carriers to the fact
+that same declined answer plus the successor's retire, the nine `LOUD_BY_FACT` carriers to the fact
 ground of `_c22_module_entrypoint_facts` (consult count exactly one, generic message present,
 `guard_always_false` and the two fact-blind arms still moving), the two `LOUD_BY_REACH` carriers to
 `_c22_callers_pass_untrusted_value` with a control that fails if a reach fixture secretly carries a
 fact, the three remaining Lever-2 refusals to the roots they actually spell, the three re-filed ones to
-the restored blanket, and the 24 blessed keys plus the two `modeling_utils.py` pins to TIER 1, TIER 2
+the restored blanket, the four `RETIRED_BY_LOCAL_CLI` carriers to a fact ground that is STILL declared
+with the report retired, the three `LEVER2_REFUSED_RETIRED_BY_LOCAL_CLI` shapes to the restored demotion,
+and the 24 blessed keys plus the two `modeling_utils.py` pins to TIER 1, TIER 2
 and `keep_loud_table_emptied` -- unchanged, unlowered, still emitted, still zero declined.
+
+Round 5: the local command line is the operator, not the attacker
+----------------------------------------------------------------
+`_c22_sink_root_is_only_the_local_command_line` retires a path sink whose only resolved root is this
+program's own command line, and it cost this file seven rows. Four are `LOUD_BY_FACT` carriers
+(`fact_main_guard`, `fact_import_time_call`, `fact_cli_argparse`, `fact_argv_read`) and three are Lever-2
+refusals with a declared CLI root. None was deleted and no floor moved: TIER 3 still requires the guard
+to be consulted exactly once on each pinned line and to answer on the module's OWN fact, so the
+classifier half of every one of those propositions is asserted exactly as before -- only the report half
+is re-filed, into `RETIRED_BY_LOCAL_CLI` and `LEVER2_REFUSED_RETIRED_BY_LOCAL_CLI`, and
+`local_cli_demotion_off` brings all seven back (CAUGHT on 7 pinned rows). A fourth Lever-2 shape,
+`tempfile_leaf_with_argv_root`, was booked here by the unsound first cut and returned to
+`JOIN_BASE_REFUSED` when the resolved-origin proof landed -- bare `mkdtemp()` is a call the engine
+cannot classify, so its chain is unresolved and the report is owed.
+
+The four fact carriers could not be EARNed with a different root, and the reason is the round-3
+constraint read one rule further along: the origin must not be one the reach arm also recognises, or
+dropping the fact leaves the guard agreeing. Every root that survives the round-5 blinding --
+`os.environ`, `os.getenv`, `sys.stdin`, `input()`, a socket, a web read -- is recognised by
+`_c22_expr_is_untrusted_source` and declares its own entrypoint fact, so it would spend the second fact
+the carrier is forbidden to spend. The inline `parse_args()` leaf was the one spelling that satisfied
+both, and the blinding switches exactly that leaf off. `facts_blind_main_guard` and
+`facts_blind_import_time_execution` therefore run with the demotion ambient-disabled
+(`_LOCAL_CLI_DEMOTION_CONTEXT`), the same two-arm discipline `_OPEN_TAINT_BLANKET_CONTEXT` already uses,
+and both still report CAUGHT on their own fact. TIER 5 gains a third deciding rule in `keep_direction`:
+the demotion reads the same pin table and answers `return False`, which is the keep-loud direction for
+its question, so `sites_outside_deciding` stays 0 and the table still cannot silence a row.
 
 Collateral: the four gates that pinned the blanket
 --------------------------------------------------
@@ -157,6 +191,12 @@ source being injected at all, and the rule each of those gates actually owns sti
 their own mutation tiers still report CAUGHT. `workflow_controls_probe` is the one that matters most:
 it is the gate that proves no path blacklist exists, and its reasoning was "nothing but a path policy
 can quiet this carrier". A content policy can now, so the carrier has to be loud by content.
+(Round 5 later re-filed `runtime_read` again, one rule further along: its re-earned loudness was "the
+command line is IN the argument", which is the half of condition (a) the local-command-line demotion
+removes. It is booked in `active_partition_probe`'s `C22_LOCAL_CLI_RETIREMENT` with a restoring
+mutation. `resolver_local_def_is_not_a_binding` is NOT re-filed -- it is loud again, because the
+resolved-origin proof refuses a call to a function the module defines: the blinded walk never reads a
+callee's body, so a local `def` returning `requests.get(repo).text` would otherwise be a false negative.)
 
 Usage
 -----
@@ -285,18 +325,6 @@ SUPERSEDED_BY_OPEN_TAINT = {
 # harness carrier below therefore names its caller as a construction, which is what the engine can see
 # and what a real driver does.
 LOUD_BY_FACT = {
-    # `main_guard`, and nothing else: the guard is the fact and the parsed namespace is the origin.
-    'fact_main_guard': (2, HELPER + 'if __name__ == "__main__":\n'
-                        + '    load_config(argparse.ArgumentParser().parse_args().cfg)\n'),
-    'fact_import_time_call': (2, HELPER
-                              + 'options = argparse.ArgumentParser().parse_args()\n'
-                              + 'print(load_config(options.cfg))\n'),
-    'fact_cli_argparse': (3, 'import argparse\n' + HELPER
-                          + 'def run():\n'
-                          + '    options = argparse.ArgumentParser().parse_args()\n'
-                          + '    return load_config(options.cfg)\n'),
-    'fact_argv_read': (3, 'import sys\n' + HELPER + 'def run():\n'
-                       + '    return load_config(sys.argv[1])\n'),
     'fact_stdin_read': (3, 'import sys\n' + HELPER + 'def run():\n'
                         + '    return load_config(sys.stdin.read())\n'),
     'fact_web_request': (4, 'def view(request):\n'
@@ -348,10 +376,46 @@ LOUD_BY_REACH = {
                              + '    return load_config(os.environ["CFG"])\n'),
 }
 
+# ── Round 5 re-filed: four fact carriers whose report the local-command-line demotion retires ──────
+# Their proposition has two halves, and only one of them moved. The classifier half is untouched and
+# is still asserted here: the guard is consulted exactly once on the pinned line and it still agrees
+# on the module's OWN fact (`ground == 'facts'`), which is what TIER 4a pins as an exact fact set. The
+# report half is superseded: every one of these carriers roots its value in this program's own command
+# line -- an inline `parse_args()`, a module-level namespace, or `sys.argv[1]` -- and the mandate says
+# the operator of a local CLI tool is the process owner, not a remote attacker. So the row is quiet
+# now, and `local_cli_demotion_off` hands the retired answer back to prove the silence belongs to that
+# rule and not to a classifier that stopped declaring the fact.
+#
+# These four cannot be EARNed with a different root, and the reason is the same constraint that chose
+# argparse for them in round 3, read one rule further along: the origin must not be one the REACH arm
+# (`_c22_callers_pass_untrusted_value`) also recognises, or dropping the fact would leave the guard
+# agreeing and `facts_blind_*` would report MISSED. Every root that survives the round-5 blinding --
+# `os.environ`, `os.getenv`, `sys.stdin`, `input()`, a socket or a web read -- IS recognised by that
+# arm (`_c22_expr_is_untrusted_source`), and each also declares its own entrypoint fact, so it would
+# smuggle in the second fact the comment above forbids. The inline `parse_args()` leaf was the one
+# spelling that satisfied both, and the blinding switches exactly that leaf off. The two arms that
+# falsify those facts therefore run with the demotion ambient-disabled, the same two-arm discipline
+# `_OPEN_TAINT_BLANKET_CONTEXT` already uses for the successor rule.
+RETIRED_BY_LOCAL_CLI = {
+    # `main_guard`, and nothing else: the guard is the fact and the parsed namespace is the origin.
+    'fact_main_guard': (2, HELPER + 'if __name__ == "__main__":\n'
+                        + '    load_config(argparse.ArgumentParser().parse_args().cfg)\n'),
+    'fact_import_time_call': (2, HELPER
+                              + 'options = argparse.ArgumentParser().parse_args()\n'
+                              + 'print(load_config(options.cfg))\n'),
+    'fact_cli_argparse': (3, 'import argparse\n' + HELPER
+                          + 'def run():\n'
+                          + '    options = argparse.ArgumentParser().parse_args()\n'
+                          + '    return load_config(options.cfg)\n'),
+    'fact_argv_read': (3, 'import sys\n' + HELPER + 'def run():\n'
+                       + '    return load_config(sys.argv[1])\n'),
+}
+
 ALL_FIXTURES = {}
 ALL_FIXTURES.update(EARNED_QUIET)
 ALL_FIXTURES.update(SUPERSEDED_BY_OPEN_TAINT)
 ALL_FIXTURES.update(LOUD_BY_FACT)
+ALL_FIXTURES.update(RETIRED_BY_LOCAL_CLI)
 ALL_FIXTURES.update(LOUD_BY_REACH)
 
 # --------------------------------------------------------------------------- Lever 2 origin tables
@@ -373,11 +437,19 @@ JOIN_BASE_PROVEN = {
 # successor rule does recognise -- a remote read, a `sys.argv` read. Three more shapes used to sit in
 # these two tables; they are re-filed below, with the measurement, because their only loudness basis
 # was the blanket.
+#
+# `tempfile_leaf_with_argv_root` came back here from the round-5 retirement table. Round 5 first booked
+# it quiet; the soundness repair that made the demotion's blinded False a PROOF rather than an absence
+# refuses it, and the refusal is the engine's own documented doctrine: `CWE22_TEMPFILE_ROOT_CALLS`
+# lists qualified stdlib spellings only, because `from tempfile import mkdtemp` followed by bare
+# `mkdtemp()` could be anybody's function. `_c22_call_is_classified_path_call` therefore cannot classify
+# the leaf, the value chain is unresolved, and the row keeps its report -- loud at HEAD, loud now, so it
+# is a refusal this lever owns rather than a win any round may book.
 JOIN_BASE_REFUSED = {
     'request_root': 'import os\nopen(os.path.join(request.root, "a.json"))\n',
+    'tempfile_leaf_with_argv_root': ('import os\nopen(os.path.join(mkdtemp(sys.argv[1]), "a.json"))\n'),
 }
 CLEANUP_TEMP_REFUSED = {
-    'rmtree_from_argv': 'import shutil\nshutil.rmtree(sys.argv[1])\n',
     'remove_from_request': 'import os\nos.remove(request.args["f"])\n',
 }
 # ── 2026-11-10 re-filed: three refusals whose silence IS the mandate ─────────────────────────────
@@ -408,13 +480,25 @@ LEVER2_REFUSED_RETIRED_BY_OPEN_TAINT = {
     'unimported_tempfile': 'import os\nopen(os.path.join(mkdtemp(), "a.json"))\n',
     'rmtree_operator_root': 'import shutil\nshutil.rmtree(options.storage_location)\n',
 }
-LEVER2_REFUSED_WITH_ROOT_DECLARED = {
+# Round 5 re-files this whole table, and the re-file is the mandate rather than a hole. It was written
+# as the other half of the round-3 claim: "a win that quiets a declared `parse_args()` namespace as
+# readily as an unbound `options` is a hole, not a win". The local-command-line demotion answers that
+# a declared namespace of THIS program is exactly what may be quiet -- the operator is the process
+# owner -- so the two shapes below, plus `rmtree_from_argv` from the cleanup refusal table, are now
+# booked as that rule's win. Their spellings are kept byte-for-byte, `check_lever2_tables` asserts them
+# quiet, and `local_cli_demotion_off` brings every one back, which is what stops the re-file from being
+# a quieting dressed as an argument. The `request` roots in the refusal tables above are untouched: a
+# remote read is not this program's command line, and the blinding leaves it alone. A fourth shape,
+# `tempfile_leaf_with_argv_root`, was booked here by the unsound first cut and returned to
+# `JOIN_BASE_REFUSED` when the resolved-origin proof landed: its bare `mkdtemp()` leaf is a call the
+# engine cannot classify, so the chain is unresolved and the report is owed.
+LEVER2_REFUSED_RETIRED_BY_LOCAL_CLI = {
     'operator_namespace_declared': ('import argparse\noptions = argparse.ArgumentParser().parse_args()\n'
                                     'open(options.storage_location, "w")\n'),
-    'tempfile_leaf_with_argv_root': ('import os\nopen(os.path.join(mkdtemp(sys.argv[1]), "a.json"))\n'),
     'rmtree_operator_namespace_declared': ('import argparse, shutil\n'
                                           'options = argparse.ArgumentParser().parse_args()\n'
                                           'shutil.rmtree(options.out_dir)\n'),
+    'rmtree_from_argv': 'import shutil\nshutil.rmtree(sys.argv[1])\n',
 }
 
 # Every row this gate books as the successor rule's win, by SOURCE alone. `SUPERSEDED_BY_OPEN_TAINT`
@@ -428,6 +512,11 @@ LEVER2_REFUSED_WITH_ROOT_DECLARED = {
 BLANKET_BOOKED_ROWS = {label: source for label, (_line, source)
                        in SUPERSEDED_BY_OPEN_TAINT.items()}
 BLANKET_BOOKED_ROWS.update(LEVER2_REFUSED_RETIRED_BY_OPEN_TAINT)
+
+# The same bookkeeping one rule further along, for round 5's re-filed refusals. Presence rather than
+# message, for the reason `BLANKET_BOOKED_ROWS` gives: `shutil.rmtree` and the registry's write-mode
+# `open` report under their own labels, not under the synthetic source's generic message.
+LOCAL_CLI_BOOKED_ROWS = dict(LEVER2_REFUSED_RETIRED_BY_LOCAL_CLI)
 
 # Quiet, and NOT booked as this lever's: a path built only out of literals has no caller in it at
 # all, so the collector's literal skip owns those rows. They sit here so no later revision can claim
@@ -591,7 +680,7 @@ def check_blessed_reach():
 def check_fixtures():
     """TIER 3: the 25-module truth table, with the deciding arm named for every row."""
     failures = []
-    earned = kept = loud_fact = loud_reach = 0
+    earned = kept = loud_fact = loud_reach = cli_retired = 0
     for label, (line, source) in sorted(ALL_FIXTURES.items()):
         found = scan_module(source)
         log = observe_consults(source)
@@ -618,6 +707,15 @@ def check_fixtures():
                 failures.append(('quiet row not attributable to the guard', label, line, ground))
             else:
                 kept += 1
+        elif label in RETIRED_BY_LOCAL_CLI:
+            at_line = [message for row_line, message in found if row_line == line]
+            if ground != 'facts':
+                failures.append(('re-filed fact row stopped declaring its own fact', label, line, ground))
+            elif at_line:
+                failures.append(('local-command-line demotion stopped retiring this shape',
+                                 label, line, at_line))
+            else:
+                cli_retired += 1
         elif ground == 'facts':
             loud_fact += 1
             if not generic_at(found, line):
@@ -632,7 +730,7 @@ def check_fixtures():
             failures.append(('unattributable fixture', label, line, ground))
     print(f'  fixtures={len(ALL_FIXTURES)} declined_and_quiet={earned} '
           f'declined_then_retired_by_open_taint_successor={kept} loud_by_facts={loud_fact} '
-          f'loud_by_reach={loud_reach}')
+          f'loud_by_reach={loud_reach} fact_still_declared_report_retired_by_local_cli={cli_retired}')
     for label in sorted(LOUD_BY_REACH):
         facts = consult_at(observe_consults(ALL_FIXTURES[label][1]), ALL_FIXTURES[label][0])
         if facts and facts[0][3]:
@@ -771,6 +869,24 @@ def blanket_restored(sources):
         ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = original
 
 
+def demotion_restored(sources):
+    """Ask the pre-round-5 question: does handing the local-command-line demotion back restore the row?
+
+    `_c22_sink_root_is_only_the_local_command_line` answering False for every record is the behaviour
+    these rows were booked under -- a resolved command-line root was an untrusted root like any other.
+    Patched in memory, scanned, restored in the `finally`; the same arm `local_cli_demotion_off` runs
+    as a falsification. It is a KEEP-LOUD direction only: the predicate can retire a row, so forcing
+    it False can never silence one.
+    """
+    original = ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line
+    ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = (
+        lambda self, record, sink: False)
+    try:
+        return {label: bool(scan_module(source)) for label, source in sources.items()}
+    finally:
+        ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = original
+
+
 def check_join_origins():
     """TIER 4c: Lever 2's own shapes, asserted as findings -- zero reach, measured, not assumed.
 
@@ -785,15 +901,21 @@ def check_join_origins():
     the claim the original tables made -- "unproven means loud" -- into the two halves the mandate
     keeps: `LEVER2_REFUSED_RETIRED_BY_OPEN_TAINT` is quiet now, and is booked against the blanket by
     `blanket_brought_back` measured right here (plus `open_taint_blanket_restored` as a falsification),
-    so nobody can re-tune it into the proven tables; `LEVER2_REFUSED_WITH_ROOT_DECLARED` is the same
-    three shapes with the root the walk is told to look for, and it MUST stay loud, because a win that
-    quiets a declared `parse_args()` namespace as readily as an unbound `options` is a hole, not a win.
+    so nobody can re-tune it into the proven tables.
+
+    Round 5 re-files the declared-root table the same way, one rule further along.
+    `LEVER2_REFUSED_WITH_ROOT_DECLARED` was written as the other half of that claim -- "a win that
+    quiets a declared `parse_args()` namespace as readily as an unbound `options` is a hole, not a win"
+    -- and the local-command-line demotion answers that a declared namespace of THIS program is exactly
+    what may be quiet, because the operator is the process owner. So it is now
+    `LEVER2_REFUSED_RETIRED_BY_LOCAL_CLI`, asserted quiet and booked against the demotion by
+    `demotion_brought_back` measured here (plus `local_cli_demotion_off` as a falsification). The
+    `request` roots stay in the refusal tables: a remote read is not this program's command line.
     """
     failures = []
     quiet = loud = not_claimed = 0
     for table, owns_silence in ((JOIN_BASE_PROVEN, True), (CLEANUP_TEMP_PROVEN, True),
-                                (JOIN_BASE_REFUSED, False), (CLEANUP_TEMP_REFUSED, False),
-                                (LEVER2_REFUSED_WITH_ROOT_DECLARED, False)):
+                                (JOIN_BASE_REFUSED, False), (CLEANUP_TEMP_REFUSED, False)):
         for label, source in sorted(table.items()):
             found = scan_module(source)
             if owns_silence and found:
@@ -823,9 +945,24 @@ def check_join_origins():
           f'quiet_as_booked={len(retired)} blanket_brought_back='
           f'{sum(1 for is_loud in brought.values() if is_loud)}'
           f'/{len(LEVER2_REFUSED_RETIRED_BY_OPEN_TAINT)}')
+    cli_retired = {}
+    for label, source in sorted(LEVER2_REFUSED_RETIRED_BY_LOCAL_CLI.items()):
+        found = scan_module(source)
+        if found:
+            failures.append(('re-filed refusal reported again without the demotion', label, found[:1]))
+        else:
+            cli_retired[label] = source
+    cli_brought = demotion_restored(cli_retired)
+    for label, is_loud in sorted(cli_brought.items()):
+        if not is_loud:
+            failures.append(('re-filed row does not come back under the retired demotion', label))
+    print(f'  refiled_by_local_cli={len(LEVER2_REFUSED_RETIRED_BY_LOCAL_CLI)} '
+          f'quiet_as_booked={len(cli_retired)} demotion_brought_back='
+          f'{sum(1 for is_loud in cli_brought.values() if is_loud)}'
+          f'/{len(LEVER2_REFUSED_RETIRED_BY_LOCAL_CLI)}')
     tables = (JOIN_BASE_PROVEN, JOIN_BASE_REFUSED, CLEANUP_TEMP_PROVEN, CLEANUP_TEMP_REFUSED,
               JOIN_BASE_QUIET_NOT_CLAIMED, LEVER2_REFUSED_RETIRED_BY_OPEN_TAINT,
-              LEVER2_REFUSED_WITH_ROOT_DECLARED)
+              LEVER2_REFUSED_RETIRED_BY_LOCAL_CLI)
     print(f'  shapes={sum(len(table) for table in tables)} quiet={quiet} loud={loud} '
           f'quiet_not_claimed={not_claimed}')
     return failures
@@ -878,13 +1015,16 @@ def check_wiring():
                 if isinstance(node, ast.Name) and node.id == 'CWE22_ENTRYPOINT_KEEP_LOUD']
     consulted = [lineno for lineno in pin_uses if lineno not in pin_defs]
     print(f'  pin_table_text_lines={pin_lines} pin_defs={pin_defs} consulted_from={consulted}')
-    # Two deciding rules consult the table today: the synthetic-source guard answers `return True` (the
-    # source is owed) and `_c22_open_sink_owes_proven_taint` answers `return False` (no proof is owed).
-    # Both are the keep-loud direction for their own question. The claim this tier pins is not the
-    # count -- it is that every reader of the table can only keep a row -- so the sites that sit inside
-    # those two predicates are checked as returns and any other site is checked as a shape.
+    # Three deciding rules consult the table today: the synthetic-source guard answers `return True`
+    # (the source is owed), `_c22_open_sink_owes_proven_taint` answers `return False` (no proof is
+    # owed), and round 5's `_c22_sink_root_is_only_the_local_command_line` answers `return False` (the
+    # root is not only this program's command line, so the row is not retired). All three are the
+    # keep-loud direction for their own question. The claim this tier pins is not the count -- it is
+    # that every reader of the table can only keep a row -- so the sites that sit inside those
+    # predicates are checked as returns and any other site is checked as a shape.
     keep_direction = {'_c22_synthetic_param_source_is_founded': True,
-                      '_c22_open_sink_owes_proven_taint': False}
+                      '_c22_open_sink_owes_proven_taint': False,
+                      '_c22_sink_root_is_only_the_local_command_line': False}
     owners = [methods.get(name) for name in keep_direction]
     inside = [lineno for lineno in consulted
               if any(node is not None and node.lineno <= lineno <= node.end_lineno
@@ -993,6 +1133,10 @@ def pinned_state(label):
         # some emitter's label and the successor retires altogether, so the only state a restored
         # blanket can move is "is this module reported at all".
         return bool(scan_module(BLANKET_BOOKED_ROWS[label]))
+    if label in LOCAL_CLI_BOOKED_ROWS:
+        # Same presence semantics, one rule further along: the demotion removes the sink, so the only
+        # state handing it back can move is "is this module reported at all".
+        return bool(scan_module(LOCAL_CLI_BOOKED_ROWS[label]))
     line, source = ALL_FIXTURES[label]
     return generic_at(scan_module(source), line)
 
@@ -1041,6 +1185,10 @@ _GUARD = ast_scanner.TaintTracker._c22_synthetic_param_source_is_founded
 # back and take it off again. It is the only arm in this file that weakens the ENGINE rather than the
 # classifier, and it exists because three refusals and two carriers are now booked as THIS rule's win.
 _OWES = ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint
+# Round 5's deciding predicate, captured for the same reason and used the same two ways: as the
+# `local_cli_demotion_off` falsification, and as the ambient answer for the arms that falsify a
+# classifier fact on a CLI-rooted carrier. Forcing it False is a KEEP-LOUD direction only.
+_DEMOTION = ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line
 
 MUTATIONS = {
     'guard_removed': {
@@ -1142,6 +1290,20 @@ MUTATIONS = {
                                    _OWES),
         'moves': sorted(BLANKET_BOOKED_ROWS),
     },
+    # Round 5's booked win, locked the same way. Forcing the demotion to False is the pre-round-5
+    # answer -- a resolved command-line root was an untrusted root like any other -- so every row this
+    # file re-files as that rule's win must come back when the rule is handed back. The four fact
+    # carriers are message-scoped (their synthetic source is what the guard decides) and the three
+    # Lever-2 refusals are presence-scoped, which is why `pinned_state` branches on both tables.
+    'local_cli_demotion_off': {
+        'what': 'the local-command-line demotion is handed back, so a CLI-rooted path sink may report',
+        'apply': lambda: setattr(ast_scanner.TaintTracker,
+                                 '_c22_sink_root_is_only_the_local_command_line',
+                                 lambda self, record, sink: False),
+        'restore': lambda: setattr(ast_scanner.TaintTracker,
+                                   '_c22_sink_root_is_only_the_local_command_line', _DEMOTION),
+        'moves': sorted(RETIRED_BY_LOCAL_CLI) + sorted(LOCAL_CLI_BOOKED_ROWS),
+    },
 }
 
 _PIN_TABLE = ast_scanner.CWE22_ENTRYPOINT_KEEP_LOUD
@@ -1162,6 +1324,16 @@ _PIN_TABLE = ast_scanner.CWE22_ENTRYPOINT_KEEP_LOUD
 _OPEN_TAINT_BLANKET_CONTEXT = ('guard_removed', 'import_time_accepts_any_binding',
                                'route_decorator_reads_any_attribute', 'harness_base_plain_mixin')
 
+# Round 5, the same discipline one rule further along. These two arms falsify a CLASSIFIER fact --
+# `main_guard` and `import_time_execution` -- against carriers whose only root is an inline or
+# module-level `parse_args()`. The demotion retires that root whatever the classifier answers, so
+# without the ambient answer the arms would report MISSED on two clauses that are very much still
+# load-bearing: TIER 4a pins their exact fact sets independently. With the demotion handed back the
+# shipped guard keeps the row loud and dropping the one fact takes the synthetic source away, which is
+# the only claim either arm ever made. `local_cli_demotion_off` is deliberately NOT in this set -- it
+# IS the demotion, and it runs against the engine as it stands.
+_LOCAL_CLI_DEMOTION_CONTEXT = ('facts_blind_main_guard', 'facts_blind_import_time_execution')
+
 
 def run_mutation(name):
     """Apply one in-memory weakening and check that the rows it should break actually move."""
@@ -1173,6 +1345,12 @@ def run_mutation(name):
         print('  context: `_c22_open_sink_owes_proven_taint` answers False, HEAD\'s provenance '
               'rule, so this arm falsifies its own clause and not the successor\'s')
         ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = (
+            lambda self, record, sink: False)
+    cli_ambient = name in _LOCAL_CLI_DEMOTION_CONTEXT
+    if cli_ambient:
+        print('  context: `_c22_sink_root_is_only_the_local_command_line` answers False, the '
+              'pre-round-5 answer, so this arm falsifies its own classifier fact and not the demotion')
+        ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = (
             lambda self, record, sink: False)
     try:
         # The baseline is captured before anything is weakened, so the comparison can never be made
@@ -1192,6 +1370,8 @@ def run_mutation(name):
     finally:
         if ambient:
             ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = _OWES
+        if cli_ambient:
+            ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = _DEMOTION
     moved = [label for label, did_move in outcomes if did_move]
     for label, did_move in outcomes:
         print(f"  {label:42s} {'MOVED' if did_move else 'unchanged'}")
@@ -1224,6 +1404,8 @@ def main() -> int:
           f'refiled_refusals_by_open_taint={len(LEVER2_REFUSED_RETIRED_BY_OPEN_TAINT)} '
           f'blanket_booked_rows={len(BLANKET_BOOKED_ROWS)} '
           f'loud_by_facts={len(LOUD_BY_FACT)} loud_by_reach={len(LOUD_BY_REACH)} '
+          f'retired_by_local_cli={len(RETIRED_BY_LOCAL_CLI)} '
+          f'local_cli_booked_rows={len(LOCAL_CLI_BOOKED_ROWS)} '
           f'locked_cwe22={sum(CWE22_LOCKED.values())} mutations={len(MUTATIONS)} '
           f'failures={len(failures)}')
     if failures:
@@ -1239,7 +1421,9 @@ def main() -> int:
           f'{len(SUPERSEDED_BY_OPEN_TAINT)} of them since retired by the successor open() taint rule, '
           f'{len(LEVER2_REFUSED_RETIRED_BY_OPEN_TAINT)} Lever-2 refusals re-filed and booked against '
           f'that retired blanket, {len(LOUD_BY_FACT)} fact grounds and {len(LOUD_BY_REACH)} reach '
-          f'grounds held loud, one consult site and a keep-only pin table confirmed.')
+          f'grounds held loud, {len(RETIRED_BY_LOCAL_CLI)} fact grounds still declared with their '
+          f'report retired by the local-command-line demotion and {len(LOCAL_CLI_BOOKED_ROWS)} Lever-2 '
+          f'refusals booked against it, one consult site and a keep-only pin table confirmed.')
     return 0
 
 

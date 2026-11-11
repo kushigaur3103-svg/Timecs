@@ -22,14 +22,20 @@ whether a registered CWE-22 path sink may EMIT at all. It does not ask what the 
 ("can I prove this safe?") but what the mandate asks ("does a value the operator or the network
 controls demonstrably reach one of these arguments?"). `runtime_read` is the row that shows the two
 questions are not the same. With a bare parameter as the path the fixture was loud on the blanket's
-say-so; it is loud now only because the argument carries the command line itself
+say-so; round 3 re-earned it loud because the argument carries the command line itself
 (`open(os.path.join(sys.argv[1], filename))`), measured `[2]` and 1 `sink_record` by
-`scratch/_c22_r3_partition_measure.py`, so the assertion this tier has always made about line 2 is
-unchanged. The same statement with no value reaching it -- a `def f(filename)` nobody in the file
-calls with argv, beside a module-level `print(sys.argv[1])` -- is `scratch/_c22_r3_engines.py --diff`
+`scratch/_c22_r3_partition_measure.py`. Round 5 then retired that report: the command-line half of
+condition (a) is exactly what the local-command-line demotion removes for standard file I/O, so the row
+is re-filed in `C22_LOCAL_CLI_RETIREMENT` at its measured live value (quiet, still 1 `sink_record`)
+with HEAD's `[2]` beside it, and `c22_local_cli_runtime_read_restored` brings it back. M17 runs with the
+demotion ambient-disabled so the blanket arm still measures the blanket alone. The same statement with
+no value reaching it -- a `def f(filename)` nobody in the file calls with argv, beside a module-level
+`print(sys.argv[1])` -- is `scratch/_c22_r3_engines.py --diff`
 head-only at line 2 and silent live; that row is booked in C22_BLANKET_RETIREMENT at its measured
 value (quiet, still 1 `sink_record`) with HEAD's line kept beside it, and the mutation
-`c22_open_taint_blanket_restored` brings it back. The literal rows are untouched by all of this: they
+`c22_open_taint_blanket_restored` brings it back. The two rows still separate the two rules: one is
+quiet because no root reaches it, the other because the only root that reaches it is the operator's own
+command line. The literal rows are untouched by all of this: they
 never reached a finding on either arm, so the owed rule is never asked about them.
 
 Slice B -- CWE-338, two value-domain proofs inside `_cwe338_display_only_draw`
@@ -154,15 +160,93 @@ path/folder blacklist is the forbidden instrument precisely because it does the 
 So the property this tier owns -- that no *suppression* is name-based -- moved to a carrier that earns
 its loudness from a resolved origin instead of inheriting a pin. `C22_NAME_BLIND_CARRIER` scans one
 byte-for-byte module under five names, `vendor/proto/v06bad.py` and `vendor/proto/v06good.py` among
-them: with `load(sys.argv[1])` present the open reports `[5, 8]` and 2 `sink_records` under EVERY name,
-and the same statement without a resolved origin is quiet ([], 1 record) under EVERY name
-(`scratch/_c22_r3_partition_measure.py`). Loudness and silence are both name-invariant for anything the
-owed rule decides; the only name dependence left in the engine points the keep-loud way. The mutation
+them: with `load(os.environ['PATH_IN'])` present the open reports `[5, 8]` and 2 `sink_records` under
+EVERY name, and the same statement without a resolved origin is quiet ([], 1 record) under EVERY name.
+Loudness and silence are both name-invariant for anything the owed rule decides; the only name
+dependence left in the engine points the keep-loud way. The mutation
 `c22_name_scoped_suppression_would_move_the_tier` installs the forbidden instrument -- owe the proof
 only when the path contains `vendor/proto` -- and the carrier's rows split by name, which is exactly
 what the tier would see. Called directly on the corpus, the predicate fires on 0 of the 19 `open()`
 nodes that sit on a blessed line; the other 5 keys are `os.remove`/`shutil.rmtree`/`Path.read_bytes`/
 `.extract()` sinks, and forcing the predicate True on them is the mutation that shows the tier can move.
+
+Round 5 -- the local command line is the operator, and the retirement needs a resolved binding
+----------------------------------------------------------------------------------------------
+`_c22_sink_root_is_only_the_local_command_line` retires a path sink whose only resolved root is this
+program's own command line: `--output_dir` in a local CLI tool is the invocation, not an attack vector.
+It is a differential -- the reach walk answers True, and the same walk with the four local-command-line
+recognitions blinded answers False -- and it refuses archive extraction, the frozen-corpus shield, both
+keep-loud pin tables, harness modules and modules with no caller-fed fact.
+
+The differential alone was UNSOUND, and this gate is what caught it. `_c22_path_sink_reaches_operator`
+is a presence walk over ANY binding: `_c22_bound_values` returns every assignment a name ever had and
+one root among them answers True, and `_c22_expr_is_untrusted_source` credits bare `argv` by spelling.
+Both are sound for the question round 3 asked of them, where True only ever keeps a row loud. Asked in
+the silencing direction they retire five shapes Slice E already refuses -- `args = fetch_from_socket()`
+after a parse, `args.dest = fetch_payload()`, `for args in scan_roots()`,
+`head, (args, tail) = split_request(body())`, and `argv = read_socket()` -- because a blinded False
+means "the walk found no root", never "the only root is the command line". Measured before the fix:
+all five answered `reach=True blind=False demote=True` and went quiet
+(`scratch/_c22_r5_partition_lab.py`).
+
+The repair is a conjunct, not a loosened assertion: `_c22_cli_retirement_is_proven` walks the argument's
+VALUE CHAIN (`_c22_value_origin_is_resolved`) and asks that every link be resolved, so a retirement now
+needs a resolved binding. It refuses at exactly two shapes -- a call the engine cannot classify as a path
+call (unknown wrapper, a bare path name with no import witness, a bare `mkdtemp`, an unqualified hub
+resolver, a function this file defines), and a command-line credit the value did not earn (a holder read
+failing the all-bindings namespace proof, a bare `argv` or click parameter rebound to something else).
+Everything else it is deliberately tolerant of: an unbound name, an imported constant, a cycle, the
+depth budget, a `BoolOp`, a loop target over `zip`. That tolerance is what the objective costs --
+demanding a POSITIVE proof of every leaf instead was measured to hand back 79 of the 85 arena
+retirements, because the engine cannot resolve imported constants or `pathlib.Path` at all. All five
+borrowed-authority rows came back with no carrier re-spelled.
+`c22_local_cli_binding_proof_is_load_bearing` hands the proof back as a constant True
+and must re-silence all five; M6 now runs with the demotion ambient-disabled so it measures the binding
+proof alone rather than two clauses at once.
+
+The local-def refusal is itself a caught false negative, not a design choice. The first cut classified
+any function the module defines, on the argument that "its body is in the tree the blinded walk reads".
+That argument is false: the walk resolves NAMES to bindings and never reads a callee's body, so
+`def hf_hub_download(repo, name): return requests.get(repo).text` handed a remote payload to `open()`
+while every argument still spelled the command line, and the row went QUIET
+(`scratch/_c22_r5_localdef_probe.py`, four shapes, all silent with the arm in and all loud with it out).
+Removing the arm closed that hole and restored slice D's `resolver_local_def_is_not_a_binding` veto at
+its asserted `[4]` with no re-file at all.
+
+Two more early returns of exactly that class went the same way, each measured before it was removed.
+Stopping at a `CWE22_PURE_CONTAINER_RESHAPE` leaf hid `zip(requests.get(...).text, tasks)`,
+`list(urlopen(root).read())` and `str(requests.get(root).text)` -- the walk resolves a loop target or a
+subscript to the reshaper CALL and never looks inside its arguments
+(`scratch/_c22_r5_reshape_probe.py`, 3 of 7 quiet with the early return, 0 of 7 without). Stopping at any
+`CWE22_OPERATOR_ROOT_CALLS` leaf hid `parse_json_file(root)` and `parse_yaml_file(root)` when `root` was
+handed `requests.get(...).text`: that set is the program parsers PLUS the file parsers, and the file
+parsers' own table comment says they are not a trust root on their own, so the walk must descend into
+the file argument (`scratch/_c22_r5_parseleaf_probe.py`). `C22_LOCAL_CLI_FN_SHIELDS` pins all seven
+rows loud, and M6e/M6f hand each early return back and must re-hide exactly its own rows. The remaining
+tolerant arms -- the depth budget, the cycle guard, an unbound name -- were audited the same way
+(`scratch/_c22_r5_tolerant_arms_probe.py`): the cycle and self-referential shapes stay loud, and the
+three deep-chain/imported-constant shapes are quiet with the demotion DISABLED too, so they are
+inherited reach-walk gaps rather than this round's false negatives.
+
+Three rows could not come back, and all three are re-filed rather than re-blessed.
+`no_main_guard_stays_loud` contradicts round 5 head-on: the main guard decides whether a module is a
+PROGRAM, never who typed argv, so `C22_RETIRED_BY_LOCAL_CLI` books its measured live value ([], 0
+registered, 2 records) with the pre-demotion answer beside it, and
+`c22_local_cli_no_main_guard_restored` must bring `[9]` / 2 / 2 back with the demotion off.
+`runtime_read` is the same supersession one tier earlier -- round 3 re-earned it on "the command line is
+IN the argument", which is the half of condition (a) round 5 removes -- and
+`C22_LOCAL_CLI_RETIREMENT` books it with `c22_local_cli_runtime_read_restored` bringing `[2]` / 1 back.
+`tempfile_leaf_with_argv_root` is re-filed in `cwe22_entrypoint_injection_probe.py`: `from tempfile
+import mkdtemp` then bare `mkdtemp()` is a call the engine cannot classify, by its own documented
+doctrine that a bare name could be anybody's function.
+
+The one row the conjunct does not restore is the carrier itself: `load(sys.argv[1])` really is a
+command-line-only root, so it is retired under every name. It is booked in `C22_NAME_BLIND_RETIRED` at
+its measured live value ([], 2 records, name-invariant) with the pre-demotion answer beside it, and
+`c22_local_cli_demotion_restored` must bring `[5, 8]` / 2 back under all five names while the earned
+environ carrier does not move. The earned carrier moved to `os.environ['PATH_IN']` because a quiet
+carrier cannot show that a name failed to silence an earned row; the proposition -- one answer under
+five names -- keeps its words.
 """
 from __future__ import annotations
 
@@ -217,18 +301,131 @@ C22_FIXTURES = {
                       "def f():\n"
                       + "    with open('vocab.json', 'w') as h:\n"
                       + "        h.write('x')\n", [], 1),
-    'runtime_read': ('src/m.py',
-                     "def f(filename):\n"
-                     + "    with open(os.path.join(sys.argv[1], filename)) as h:\n"
-                     + "        return h.read()\n"
-                     # EARNED, not inherited: this row used to be loud because the blanket read an
-                     # unproven runtime path as untrusted. It is loud now because the command line is
-                     # IN the argument, which is the mandate's condition (a), and the asserted line is
-                     # still [2] with the same single registration. Measured by
-                     # scratch/_c22_r3_partition_measure.py; the same statement without the argv value
-                     # is head-only at 2 and quiet live, and lives in C22_BLANKET_RETIREMENT.
-                     + "import os\n"
-                     + "import sys\n", [2], 1),
+    # `runtime_read` left this table for `C22_LOCAL_CLI_RETIREMENT` below: round 5 demotes the very
+    # root its loudness was earned from, and the proposition it used to assert -- "the command line is
+    # IN the argument" -- is the half of round 3's condition (a) that the mandate retires.
+}
+
+# ── Round 5 re-filed: the slice A row whose REPORT the local-command-line demotion retires ──────────
+# `runtime_read` was EARNED loud in round 3, not inherited: the blanket used to read an unproven
+# runtime path as untrusted, and when that blanket was retired the row was re-earned on the ground
+# that `sys.argv[1]` is IN the argument -- round 3's condition (a), "a direct command-line or remote
+# root". Round 5 splits condition (a) in two and keeps only the remote half for standard file I/O:
+# in a local CLI program the operator who typed `--output_dir` is the process owner, not a remote
+# attacker. So the ground this row was re-earned on is the ground the mandate removes, and the row is
+# re-filed rather than deleted -- its bytes are unchanged, its registration is unchanged (1
+# sink_record: the demotion removes the sink, never the record), and
+# `c22_local_cli_runtime_read_restored` hands the demotion back and must bring [2] / 1 back.
+#
+# The sibling `runtime_read_unproven` in C22_BLANKET_RETIREMENT is the same statement WITHOUT the argv
+# value, and it stays there: it is quiet under the retired blanket and the demotion never claimed it,
+# so the two rows still separate the two rules exactly as they did before.
+C22_LOCAL_CLI_RETIREMENT = {
+    'runtime_read_was_loud': ('src/m.py',
+                              "def f(filename):\n"
+                              + "    with open(os.path.join(sys.argv[1], filename)) as h:\n"
+                              + "        return h.read()\n"
+                              + "import os\n"
+                              + "import sys\n", [], 1, 2),
+    # The control for the two remote-config shields below: the SAME parser pointed at a file the
+    # operator chose. Its silence is the retirement working, not a hole -- the file argument resolves
+    # to `sys.argv[1]`, so the chain clears exactly as `CWE22_OPERATOR_FILE_PARSERS`' comment requires.
+    'parse_json_file_operator_cfg': ('src/m.py',
+                                     "import sys\n"
+                                     + "from transformers.utils import parse_json_file\n"
+                                     + "def run(root):\n"
+                                     + "    cfg = parse_json_file(root)\n"
+                                     + "    with open(cfg['out'], 'w') as h:\n"
+                                     + "        h.write('x')\n"
+                                     + "run(sys.argv[1])\n", [], 1, 5),
+}
+
+# ── Round 5: the two false negatives the resolved-origin proof caught, pinned LOUD ─────────────────
+# Both were introduced by an early `return True` that trusted the blinded reach walk to cover a shape
+# it does not cover, and both were measured rather than reasoned about. The walk resolves NAMES to
+# their bindings; it never reads a callee's body and never looks inside a call's arguments. So:
+#
+#   * a function this module DEFINES is an unknown wrapper. `def hf_hub_download(repo, name): return
+#     requests.get(repo).text` hands a remote payload to `open()` while every argument still spells the
+#     command line. Classifying local defs retired it (`scratch/_c22_r5_localdef_probe.py`).
+#   * a container reshaper must be DESCENDED into, not stopped at. `zip(requests.get(...).text, tasks)`,
+#     `list(urlopen(root).read())` and `str(requests.get(root).text)` all went quiet when the walk
+#     returned True at the reshaper, and all seven shapes are loud with the whole demotion disabled --
+#     so the demotion owned those silences (`scratch/_c22_r5_reshape_probe.py`).
+#
+# Every row here declares a CLI fact, so the demotion is reachable and the silence would be its doing.
+# Three mutations hand the three early returns back, and each must re-hide exactly its own rows:
+# `c22_local_cli_unclassified_call_refusal_is_load_bearing` forces the classifier to True (all seven go
+# quiet), `c22_local_cli_reshaper_descent_is_load_bearing` stops the walk at a reshaper (the three
+# reshaper rows go quiet, the rest stay loud), and
+# `c22_local_cli_file_parser_descent_is_load_bearing` stops it at any root-call leaf (the two
+# remote-config rows go quiet, the operator-pointed control stays quiet). A refusal nobody can falsify
+# is a decoration.
+C22_LOCAL_CLI_FN_SHIELDS = {
+    'local_def_fetches_remote': ('src/m.py',
+                                 "import requests\n"
+                                 + "def hf_hub_download(repo, name):\n"
+                                 + "    return requests.get(repo).text\n"
+                                 + "def get_labels(repo_id, filename):\n"
+                                 + "    with open(hf_hub_download(repo_id, filename), 'r') as h:\n"
+                                 + "        return h.read()\n"
+                                 + "import sys\n"
+                                 + "print(get_labels(sys.argv[1], sys.argv[2]))\n", [5]),
+    'local_def_reads_socket': ('src/m.py',
+                               "import socket\n"
+                               + "def resolve(repo, name):\n"
+                               + "    s = socket.socket()\n"
+                               + "    return s.recv(4096).decode()\n"
+                               + "def get_labels(repo_id, filename):\n"
+                               + "    with open(resolve(repo_id, filename), 'r') as h:\n"
+                               + "        return h.read()\n"
+                               + "import sys\n"
+                               + "print(get_labels(sys.argv[1], sys.argv[2]))\n", [6]),
+    'zip_hides_request': ('src/m.py',
+                          "import sys, requests\n"
+                          + "def run(tasks):\n"
+                          + "    for payload, task in zip(requests.get(sys.argv[1]).text, tasks):\n"
+                          + "        with open(payload) as h:\n"
+                          + "            h.read()\n"
+                          + "run(sys.argv[2])\n", [4]),
+    'list_hides_urlopen': ('src/m.py',
+                           "import sys\n"
+                           + "from urllib.request import urlopen\n"
+                           + "def run(root):\n"
+                           + "    parts = list(urlopen(root).read())\n"
+                           + "    with open(parts[0]) as h:\n"
+                           + "        h.read()\n"
+                           + "run(sys.argv[1])\n", [5]),
+    'str_hides_request': ('src/m.py',
+                          "import sys, requests\n"
+                          + "def run(root):\n"
+                          + "    name = str(requests.get(root).text)\n"
+                          + "    with open(name) as h:\n"
+                          + "        h.read()\n"
+                          + "run(sys.argv[1])\n", [4]),
+    # A config file the NETWORK chose is not the operator's. `CWE22_OPERATOR_FILE_PARSERS`' own table
+    # comment says the chain only clears when the file argument is itself operator-supplied, and the
+    # parse-leaf early return skipped that check -- both rows went quiet until the leaf was made to
+    # descend (`scratch/_c22_r5_parseleaf_probe.py`). The operator-pointed twin is the control, booked
+    # in C22_LOCAL_CLI_RETIREMENT: it must STAY quiet, or the fix is a blanket rather than a proof.
+    'parse_json_file_remote_cfg': ('src/m.py',
+                                   "import sys\n"
+                                   + "from transformers.utils import parse_json_file\n"
+                                   + "def run(root):\n"
+                                   + "    cfg = parse_json_file(root)\n"
+                                   + "    with open(cfg['out'], 'w') as h:\n"
+                                   + "        h.write('x')\n"
+                                   + "import requests\n"
+                                   + "run(requests.get(sys.argv[1]).text)\n", [5]),
+    'parse_yaml_file_remote_cfg': ('src/m.py',
+                                   "import sys\n"
+                                   + "from transformers.utils import parse_yaml_file\n"
+                                   + "def run(root):\n"
+                                   + "    cfg = parse_yaml_file(root)\n"
+                                   + "    with open(cfg['out'], 'w') as h:\n"
+                                   + "        h.write('x')\n"
+                                   + "import requests\n"
+                                   + "run(requests.get(sys.argv[1]).text)\n", [5]),
 }
 
 # Slice D fixtures: the hub cache-resolver origin proof. (path, source, loud lines, sink_records).
@@ -394,9 +591,9 @@ C22_OPERATOR_FIXTURES = {
                                   + "\n" + OP_MAIN + "    convert(args.model_dir)\n",
                                   'CWE-22', [], 1),
     # Every one of these is an absence or an unresolvable value: loud, and still registered.
-    'no_main_guard_stays_loud': ('src/m.py', OP_ARGV + OP_WRITE
-                                 + "\nargs = parser.parse_args()\nconvert(args.checkpoint)\n",
-                                 'CWE-22', [9], 2),
+    # `no_main_guard_stays_loud` left this table for `C22_RETIRED_BY_LOCAL_CLI` below: round 5's
+    # local-command-line demotion retires its report, and the reason it used to be loud -- Slice E's
+    # proof needs BOTH presence facts -- is still asserted, by M1 with the demotion ambient-disabled.
     # ── 2026-11-10 supersession: three rows this tier used to pin LOUD on "unknown is loud" ──────
     # The sink-generalisation slice ended the entrypoint blanket: a `main_guard` module no longer
     # lends a proof to a sink it cannot connect to a command line, and an ABSENCE of a caller is now
@@ -484,6 +681,26 @@ C22_OPERATOR_FIXTURES = {
                                 + "\n\ndef peek(chkpt):\n    args = chkpt[\"cfg\"]\n"
                                 + "    return args\n" + OP_MAIN + "    convert(args.checkpoint)\n",
                                 'CWE-22', [], 1),
+}
+
+# ── Round 5 re-filed: the one Slice E row whose REPORT the local-command-line demotion retires ──────
+# `no_main_guard_stays_loud` was loud because Slice E's operator-program proof demands BOTH presence
+# facts, and this module has no `if __name__ == '__main__':`. That proposition is untouched and M1
+# still falsifies it -- with the demotion ambient-disabled, forcing the guard fact at the tree-level
+# source still turns [9] into []. What moved is only the report: the value reaching the sink is
+# `args.checkpoint`, `args` is bound to this program's own `parser.parse_args()`, and the mandate says
+# the operator who typed that command line is the process owner, not a remote attacker. The main guard
+# decides whether a module is a PROGRAM; it does not decide who typed the argv that `parse_args()`
+# read, and round 5's question is the second one.
+#
+# Re-filed, not re-blessed: the row is asserted at its measured live value ([], 0 registered, 2
+# sink_records -- the demotion removes the sink, never the record), and
+# `c22_local_cli_no_main_guard_restored` hands the retired rule back and must restore
+# [9] / 2 registered / 2 records. The source is the same bytes the table above used to carry.
+C22_RETIRED_BY_LOCAL_CLI = {
+    'no_main_guard_was_loud': ('src/m.py', OP_ARGV + OP_WRITE
+                               + "\nargs = parser.parse_args()\nconvert(args.checkpoint)\n",
+                               'CWE-22', [], 0, 2, [9], 2),
 }
 
 # The `f.read()` under a muted operator-program open(): the CWE-22 row is gone, so the unbounded
@@ -636,12 +853,22 @@ BLESSED_C22_BASELINE_NAME = {
 }
 
 # The carrier the name-blindness property now rides on: one module, five different names, and a
-# loudness that comes from a resolved command-line origin instead of from an identity pin. Both
-# spellings are measured in scratch/_c22_r3_partition_measure.py: with `load(sys.argv[1])` in the file
-# the row is [5, 8] / 2 sink_records under EVERY name, and without it [] / 1 sink_record under EVERY
-# name. The names include the two `vendor/proto/...` spellings the v06 parity bytes lost their pin
-# under, so the same keys that made the corpus rows name-sensitive are shown to make an earned row
-# and an unearned row name-invariant -- which is the only direction a suppression is allowed to go.
+# loudness that comes from a resolved origin instead of from an identity pin. Both spellings are
+# measured on the shipped bytes: with `load(os.environ['PATH_IN'])` in the file the row is [5, 8] / 2
+# sink_records under EVERY name, and without it [] / 1 sink_record under EVERY name. The names include
+# the two `vendor/proto/...` spellings the v06 parity bytes lost their pin under, so the same keys that
+# made the corpus rows name-sensitive are shown to make an earned row and an unearned row
+# name-invariant -- which is the only direction a suppression is allowed to go.
+#
+# Round 5 moved the earned carrier off `sys.argv[1]`. The local-command-line demotion retires a sink
+# whose only resolved root is this program's own command line, so `load(sys.argv[1])` is now [] / 2
+# under every one of these names -- still name-invariant, but quiet, and a quiet carrier cannot show
+# that a name failed to silence an earned row. `os.environ` is a resolved origin the demotion's blinded
+# walk still sees, so the loudness is earned exactly as before and the proposition keeps its words. The
+# argv spelling is kept beside it as a measured retirement: it must be [] / 2 under every name, and
+# `c22_local_cli_demotion_restored` hands the rule back and must return [5, 8] / 2 under every name.
+CARRIER_OPEN_ENV = ("import os\nimport sys\n\ndef load(path):\n    with open(path) as h:\n"
+                    "        return h.read()\n\nload(os.environ['PATH_IN'])\n")
 CARRIER_OPEN_ARGV = ("import os\nimport sys\n\ndef load(path):\n    with open(path) as h:\n"
                      "        return h.read()\n\nload(sys.argv[1])\n")
 CARRIER_OPEN_UNPROVEN = ("import os\nimport sys\n\ndef load(path):\n    with open(path) as h:\n"
@@ -649,8 +876,13 @@ CARRIER_OPEN_UNPROVEN = ("import os\nimport sys\n\ndef load(path):\n    with ope
 NAME_BLIND_KEYS = ('vendor/proto/v06bad.py', 'vendor/proto/v06good.py',
                    'src/convert_x_to_pytorch.py', 'tools/one.py', 'm.py')
 C22_NAME_BLIND_CARRIER = (
-    ('carrier_open_argv', CARRIER_OPEN_ARGV, [5, 8], 2),
+    ('carrier_open_env', CARRIER_OPEN_ENV, [5, 8], 2),
     ('carrier_open_unproven', CARRIER_OPEN_UNPROVEN, [], 1),
+)
+# The spelling round 5 retired, at its measured live value under every name. `HEAD` here is the
+# pre-demotion answer, which is what the restoration mutation has to bring back.
+C22_NAME_BLIND_RETIRED = (
+    ('carrier_open_argv', CARRIER_OPEN_ARGV, [], 2, [5, 8]),
 )
 # The single line tier 10's forced-True mutant must silence, and the file it is read from.
 REACH_MUTATION_LEAF = 'tests__test_modeling_common.py'
@@ -764,6 +996,26 @@ def check_slice_a() -> list:
             failures.append(f'{name}: {records} CWE-22 sink_records, expected {expected_records}; '
                             'the registration prune is the whole yield of this slice')
     print('  tier2 slice A fixtures checked:', len(C22_FIXTURES))
+    for name, (path, source, expected_loud, expected_records, head_line) in sorted(
+            C22_LOCAL_CLI_RETIREMENT.items()):
+        loud, _registered, records = scan({path: source}, 'CWE-22')
+        if loud != expected_loud:
+            failures.append(f'{name}: CWE-22 lines {loud}, expected {expected_loud} (HEAD line '
+                            f'{head_line}); the local-command-line demotion is off, so a CLI-rooted '
+                            'path sink is being reported as untrusted again')
+        if records != expected_records:
+            failures.append(f'{name}: {records} CWE-22 sink_records, expected {expected_records} '
+                            '(the demotion removes the sink, not the record)')
+    print('  tier2b slice A reports retired by the local CLI rule:',
+          len(C22_LOCAL_CLI_RETIREMENT))
+    for name, (path, source, expected_loud) in sorted(C22_LOCAL_CLI_FN_SHIELDS.items()):
+        loud, _registered, _records = scan({path: source}, 'CWE-22')
+        if loud != expected_loud:
+            failures.append(f'{name}: CWE-22 lines {loud}, expected {expected_loud}; a remote root is '
+                            'hiding behind an unanalysed call or a container reshaper, which is the '
+                            'false negative the resolved-origin proof exists to refuse')
+    print('  tier2c remote roots the CLI demotion must not hide:',
+          len(C22_LOCAL_CLI_FN_SHIELDS))
     return failures
 
 
@@ -892,6 +1144,17 @@ def check_slice_e() -> list:
             failures.append(f'{name}: {records} {cwe} sink_records, expected {expected_records} '
                             '(the mandate is registration, not emission)')
     print('  tier10 slice E fixtures checked:', len(rows))
+    for name, (path, source, cwe, expected, registered, records,
+               _head_lines, _head_registered) in sorted(C22_RETIRED_BY_LOCAL_CLI.items()):
+        loud, reg, rec = scan({path: source}, cwe)
+        if loud != expected:
+            failures.append(f'{name}: {cwe} lines {loud}, expected {expected} '
+                            '(retired by the local-command-line demotion)')
+        if reg != registered or rec != records:
+            failures.append(f'{name}: {reg} registered / {rec} sink_records, expected '
+                            f'{registered} / {records} (the demotion removes the sink, not the record)')
+    print('  tier10b slice E reports retired by the local CLI rule:',
+          len(C22_RETIRED_BY_LOCAL_CLI))
     return failures
 
 
@@ -1025,13 +1288,20 @@ def check_name_blind_partition() -> list:
     requirement; a path/folder blacklist is the forbidden instrument because it subtracts.
 
     What must not move with a name is therefore the SILENCE, and it is measured here on bytes whose
-    loudness is earned rather than pinned. With `load(sys.argv[1])` in the module the open reports
-    `[5, 8]` with 2 `sink_records` under every key in `NAME_BLIND_KEYS`, and the same statement with no
-    resolved origin is `[]` with 1 `sink_record` under every one of those keys -- including the two
-    `vendor/proto/...` names under which the v06 parity bytes lost their pin
-    (`scratch/_c22_r3_partition_measure.py`). If a name ever decided whether a sink owes its proof,
-    these rows would split, and the mutation `c22_name_scoped_suppression_would_move_the_tier`
-    installs exactly such a blacklist to show this tier would see it.
+    loudness is earned rather than pinned. With `load(os.environ['PATH_IN'])` in the module the open
+    reports `[5, 8]` with 2 `sink_records` under every key in `NAME_BLIND_KEYS`, and the same statement
+    with no resolved origin is `[]` with 1 `sink_record` under every one of those keys -- including the
+    two `vendor/proto/...` names under which the v06 parity bytes lost their pin. If a name ever decided
+    whether a sink owes its proof, these rows would split, and the mutation
+    `c22_name_scoped_suppression_would_move_the_tier` installs exactly such a blacklist to show this
+    tier would see it.
+
+    Round 5 retired the argv spelling of this carrier, and the retirement is measured here too rather
+    than deleted: `load(sys.argv[1])` is `[]` / 2 under every one of the same five names, because the
+    only resolved root reaching that open is this program's own command line. Name-invariance is the
+    proposition, so a retired carrier still has to satisfy it -- and `c22_local_cli_demotion_restored`
+    hands the rule back and must return `[5, 8]` / 2 under every name, which is what keeps the
+    retirement from being a row this tier simply stopped looking at.
     """
     failures = []
     for name, source, expected_loud, expected_records in C22_NAME_BLIND_CARRIER:
@@ -1042,8 +1312,18 @@ def check_name_blind_partition() -> list:
                     f'{name}@{key}: CWE-22 lines {loud} / {records} sink_records, expected '
                     f'{expected_loud} / {expected_records}; a module name changed the answer, so a '
                     'name -- not the resolved origin -- is deciding whether this sink owes its proof')
+    for name, source, expected_loud, expected_records, _restored in C22_NAME_BLIND_RETIRED:
+        for key in NAME_BLIND_KEYS:
+            loud, _registered, records = scan({key: source}, 'CWE-22')
+            if loud != expected_loud or records != expected_records:
+                failures.append(
+                    f'{name}@{key}: CWE-22 lines {loud} / {records} sink_records, expected '
+                    f'{expected_loud} / {expected_records}; the retired local-command-line carrier '
+                    'moved, so either the demotion stopped being name-invariant or a name bought '
+                    'silence that the resolved origin did not')
     print(f'  tier9b name-blind carrier: {len(C22_NAME_BLIND_CARRIER)} spellings x '
-          f'{len(NAME_BLIND_KEYS)} module names, one answer each')
+          f'{len(NAME_BLIND_KEYS)} module names, one answer each; '
+          f'{len(C22_NAME_BLIND_RETIRED)} retired spelling x {len(NAME_BLIND_KEYS)} names')
     return failures
 
 
@@ -1413,15 +1693,21 @@ def run_mutations() -> list:
 
     # M1: the `__main__` guard conjunct is the fact that separates a program from a library. The
     # mutant forces it at the tree-level fact source and keeps the names the file really parsed, so
-    # it tests the conjunct and not the token screen that reads the same two facts.
+    # it tests the conjunct and not the token screen that reads the same two facts. It runs with the
+    # round-5 demotion ambient-disabled: that rule retires this carrier's report at baseline, so
+    # without the ambient answer the row would already be quiet and the mutant would measure nothing.
+    shipped_demotion = ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line
+    ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = (
+        lambda self, record, sink: False)
     ast_scanner.TaintTracker._c22_operator_facts_on = lambda self, tree: (
         True, shipped_facts_build(self, tree)[1])
     try:
-        loud, _r, _c = scan({'src/m.py': C22_OPERATOR_FIXTURES['no_main_guard_stays_loud'][1]},
+        loud, _r, _c = scan({'src/m.py': C22_RETIRED_BY_LOCAL_CLI['no_main_guard_was_loud'][1]},
                             'CWE-22')
         results.append(('c22_main_guard_conjunct_is_load_bearing', loud == []))
     finally:
         ast_scanner.TaintTracker._c22_operator_facts_on = shipped_facts_on
+        ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = shipped_demotion
 
     # M2: presence facts with the value chain dropped -- the Rung-1 form the doctrine forbids. Every
     # fixture below is an absence or an unresolvable value, and only the two environ-rooted rows,
@@ -1493,6 +1779,15 @@ def run_mutations() -> list:
     # M6: the holder trust is a proof about the binding, not about the spelling of the name. Reduced
     # to "this name is fed a parse_args() somewhere" it silences every borrowed-authority fixture at
     # once -- exactly the false negative the scope tables exist to prevent.
+    #
+    # Round 5 added a second rule that reads the same binding proof, so this arm runs with the
+    # local-command-line demotion ambient-disabled: otherwise the demotion retires the rebound row's
+    # call-site record too and the arm measures two clauses at once. With the successor off, the
+    # booked answer is exactly the one this mutation was written against -- four borrowed fixtures
+    # quiet, `holder_rebound` down to [15].
+    shipped_demotion = ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line
+    ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = (
+        lambda self, record, sink: False)
     ast_scanner.TaintTracker._c22_is_namespace_root = (
         lambda self, tree, node, name, argparse_names, path=None, seen=None: name in argparse_names)
     try:
@@ -1510,6 +1805,139 @@ def run_mutations() -> list:
                         all(borrowed) and rebound == [15]))
     finally:
         ast_scanner.TaintTracker._c22_is_namespace_root = shipped_ns_root
+        ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = shipped_demotion
+
+    # M6b: the demotion's own binding conjunct. `_c22_path_sink_reaches_operator` is a presence walk
+    # over ANY binding, so on its own it credits `args = parser.parse_args()` even after
+    # `args = fetch_from_socket()`, and credits bare `argv` even when it is bound to `read_socket()`.
+    # Handing the resolved-origin proof back as a constant True restores exactly that unsound reading,
+    # and every borrowed-authority fixture the proof keeps loud must go quiet under it. This is the
+    # mutation that proves the proof is load-bearing rather than decorative: without it the
+    # demotion is a false negative on five shapes Slice E already refuses.
+    shipped_leaves = ast_scanner.TaintTracker._c22_cli_retirement_is_proven
+    ast_scanner.TaintTracker._c22_cli_retirement_is_proven = (
+        lambda self, node, tree: True)
+    try:
+        unsound = []
+        for fixture in ('holder_rebound_stays_loud', 'holder_field_written_stays_loud',
+                        'loop_target_shadows_stays_loud', 'nested_tuple_rebind_stays_loud',
+                        'argv_from_socket_stays_loud'):
+            loud, _r, _c = scan({'src/m.py': C22_OPERATOR_FIXTURES[fixture][1]}, 'CWE-22')
+            unsound.append(loud == [])
+        results.append(('c22_local_cli_binding_proof_is_load_bearing', all(unsound)))
+    finally:
+        ast_scanner.TaintTracker._c22_cli_retirement_is_proven = shipped_leaves
+
+    # M6e: the two early returns the resolved-origin proof had to give up. Each trusted the blinded
+    # reach walk to cover a shape it does not cover -- a callee's body, and the inside of a call's
+    # arguments -- and each was measured to hide a remote root (`C22_LOCAL_CLI_FN_SHIELDS`). Forcing
+    # the classifier to True restores the local-def arm and hides all five. Stopping the walk at a
+    # container reshaper restores the other and hides exactly the three reshaper rows, leaving the two
+    # local-def rows loud -- the refusals are independent, and each arm names its own rows.
+    shipped_classifier = ast_scanner.TaintTracker._c22_call_is_classified_path_call
+    ast_scanner.TaintTracker._c22_call_is_classified_path_call = lambda self, tree, call: True
+    try:
+        hidden = []
+        for _name, (path, source, _expected) in sorted(C22_LOCAL_CLI_FN_SHIELDS.items()):
+            loud, _r, _c = scan({path: source}, 'CWE-22')
+            hidden.append(loud == [])
+        results.append(('c22_local_cli_unclassified_call_refusal_is_load_bearing', all(hidden)))
+    finally:
+        ast_scanner.TaintTracker._c22_call_is_classified_path_call = shipped_classifier
+
+    shipped_origin = ast_scanner.TaintTracker._c22_value_origin_is_resolved
+
+    def reshaper_stop(self, tree, expr, argparse_names, cli_names, depth=0, seen=None):
+        if isinstance(expr, ast.Call):
+            leaf = (ast_scanner.dotted_name(expr.func) or "").rsplit(".", 1)[-1]
+            if leaf in ast_scanner.CWE22_PURE_CONTAINER_RESHAPE:
+                return True
+        return shipped_origin(self, tree, expr, argparse_names, cli_names, depth, seen)
+
+    reshaper_rows = ('zip_hides_request', 'list_hides_urlopen', 'str_hides_request')
+    ast_scanner.TaintTracker._c22_value_origin_is_resolved = reshaper_stop
+    try:
+        hidden = []
+        held = []
+        for name, (path, source, expected) in sorted(C22_LOCAL_CLI_FN_SHIELDS.items()):
+            loud, _r, _c = scan({path: source}, 'CWE-22')
+            if name in reshaper_rows:
+                hidden.append(loud == [])
+            else:
+                held.append(loud == expected)
+        results.append(('c22_local_cli_reshaper_descent_is_load_bearing',
+                        all(hidden) and all(held)))
+    finally:
+        ast_scanner.TaintTracker._c22_value_origin_is_resolved = shipped_origin
+
+    # M6f: the third early return of the same class. `CWE22_OPERATOR_ROOT_CALLS` is the program parsers
+    # PLUS the file parsers, and the file parsers are not a trust root on their own -- their own table
+    # comment says the chain only clears when the file argument is operator-supplied. Stopping at any
+    # root-call leaf skips that check, so a config file the network chose is credited to the operator.
+    # Restoring the stop must re-silence both remote-config shields and leave the operator-pointed
+    # control quiet, which is what separates this refusal from a blanket.
+    shipped_origin_f = ast_scanner.TaintTracker._c22_value_origin_is_resolved
+
+    def parseleaf_stop(self, tree, expr, argparse_names, cli_names, depth=0, seen=None):
+        if isinstance(expr, ast.Call):
+            leaf = (ast_scanner.dotted_name(expr.func) or "").rsplit(".", 1)[-1]
+            if leaf in ast_scanner.CWE22_OPERATOR_ROOT_CALLS:
+                return True
+        return shipped_origin_f(self, tree, expr, argparse_names, cli_names, depth, seen)
+
+    ast_scanner.TaintTracker._c22_value_origin_is_resolved = parseleaf_stop
+    try:
+        hidden = []
+        for name in ('parse_json_file_remote_cfg', 'parse_yaml_file_remote_cfg'):
+            path, source, _expected = C22_LOCAL_CLI_FN_SHIELDS[name]
+            loud, _r, _c = scan({path: source}, 'CWE-22')
+            hidden.append(loud == [])
+        control_path, control_src, control_live, _rec, _head = (
+            C22_LOCAL_CLI_RETIREMENT['parse_json_file_operator_cfg'])
+        control_loud, _r, _c = scan({control_path: control_src}, 'CWE-22')
+        results.append(('c22_local_cli_file_parser_descent_is_load_bearing',
+                        all(hidden) and control_loud == control_live))
+    finally:
+        ast_scanner.TaintTracker._c22_value_origin_is_resolved = shipped_origin_f
+
+    # M6d: the row round 5 re-filed out of tier 10. Handing the demotion back must restore
+    # `no_main_guard`'s report at exactly the answer the fixture used to carry -- [9] loud, 2
+    # registered, 2 sink_records -- so the retirement is provably the demotion's doing and not a
+    # silently weakened Slice E. The proposition Slice E asserted is measured separately by M1,
+    # which forces the guard fact with the demotion off.
+    ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = (
+        lambda self, record, sink: False)
+    try:
+        restored_rows = []
+        for _key, (path, source, cwe, _live_loud, _live_reg, sink_records,
+                   head_loud, head_registered) in sorted(C22_RETIRED_BY_LOCAL_CLI.items()):
+            loud, registered, records = scan({path: source}, cwe)
+            restored_rows.append(loud == head_loud and registered == head_registered
+                                 and records == sink_records)
+        results.append(('c22_local_cli_no_main_guard_restored', all(restored_rows)))
+    finally:
+        ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = shipped_demotion
+
+    # M6c: the retirement itself, on the carrier tier 9b books. With the demotion off, the argv
+    # spelling must report [5, 8] with 2 sink_records under EVERY name in NAME_BLIND_KEYS -- the
+    # answer it had before round 5 -- and the earned environ carrier must not move, because its
+    # loudness comes from a root the demotion never claimed.
+    ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = (
+        lambda self, record, sink: False)
+    try:
+        restored = []
+        for _name, source, _quiet, expected_records, head_lines in C22_NAME_BLIND_RETIRED:
+            for key in NAME_BLIND_KEYS:
+                loud, _r, records = scan({key: source}, 'CWE-22')
+                restored.append(loud == head_lines and records == expected_records)
+        earned_still = []
+        for _name, source, expected_loud, expected_records in C22_NAME_BLIND_CARRIER:
+            loud, _r, records = scan({'m.py': source}, 'CWE-22')
+            earned_still.append(loud == expected_loud and records == expected_records)
+        results.append(('c22_local_cli_demotion_restored',
+                        all(restored) and all(earned_still)))
+    finally:
+        ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = shipped_demotion
 
     # M7: mixing scopes lets one function's `args = chkpt["cfg"]` poison a different function's
     # command line. The merged table has to move the converter-shaped fixture and nothing else.
@@ -1632,8 +2060,16 @@ def run_mutations() -> list:
     # not one of the earned fixtures, whose loudness comes from a value in the argument and would be
     # loud under either answer. That asymmetry is the booked win, measured by
     # scratch/_c22_r3_partition_measure.py --mut=blanket.
+    #
+    # Round 5 added a second retirement that reads the same rows, so this arm runs with the
+    # local-command-line demotion ambient-disabled: `runtime_read` is re-filed in
+    # C22_LOCAL_CLI_RETIREMENT because the demotion owns its silence now, and leaving the demotion on
+    # would make this arm measure two clauses at once instead of the blanket it was written against.
     shipped_owed = ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint
+    shipped_demotion_m17 = ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line
     ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = lambda self, record, sink: False
+    ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = (
+        lambda self, record, sink: False)
     try:
         revived = []
         for _name, (path, source, _expected, _records, head_line) in sorted(
@@ -1647,11 +2083,27 @@ def run_mutations() -> list:
             loud, _r, _c = scan({path: source}, 'CWE-22')
             earned.append(loud == expected)
         literal_read, _lr, _lc = scan(
-            {'src/m.py': C22_FIXTURES['runtime_read'][1]}, 'CWE-22')
+            {'src/m.py': C22_LOCAL_CLI_RETIREMENT['runtime_read_was_loud'][1]}, 'CWE-22')
         results.append(('c22_open_taint_blanket_restored',
                         all(revived) and all(earned) and literal_read == [2]))
     finally:
         ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = shipped_owed
+        ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = shipped_demotion_m17
+
+    # M17b: the slice A row round 5 re-filed. Handing the demotion back must restore `runtime_read`'s
+    # report at exactly the answer the fixture used to carry -- [2] loud, 1 sink_record -- so the
+    # retirement is provably the demotion's doing and not a weakened round-3 condition (a).
+    ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = (
+        lambda self, record, sink: False)
+    try:
+        cli_restored = []
+        for _name, (path, source, _live, sink_records, head_line) in sorted(
+                C22_LOCAL_CLI_RETIREMENT.items()):
+            loud, _r, records = scan({path: source}, 'CWE-22')
+            cli_restored.append(loud == [head_line] and records == sink_records)
+        results.append(('c22_local_cli_runtime_read_restored', all(cli_restored)))
+    finally:
+        ast_scanner.TaintTracker._c22_sink_root_is_only_the_local_command_line = shipped_demotion_m17
 
     # M18: tier 9b is the instrument that would catch a folder blacklist, so a blacklist has to be
     # able to move it. Owing the proof only under one path prefix silences the earned carrier's open()
@@ -1672,7 +2124,7 @@ def run_mutations() -> list:
     finally:
         ast_scanner.TaintTracker._c22_open_sink_owes_proven_taint = shipped_owed
     results.append(('c22_name_scoped_suppression_would_move_the_tier',
-                    blinded['carrier_open_argv'] != [C22_NAME_BLIND_CARRIER[0][2]]
+                    blinded['carrier_open_env'] != [C22_NAME_BLIND_CARRIER[0][2]]
                     and blinded['carrier_open_unproven'] == [C22_NAME_BLIND_CARRIER[1][2]] * 5))
 
     # M13/M14: the two value caches move no finding row on their own -- they are pure caching -- so

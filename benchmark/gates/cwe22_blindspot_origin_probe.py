@@ -63,12 +63,16 @@ poisoning of the parameter proof, not the argv root.
 
 The fifth row is not re-filed, because its proposition was never the blanket.
 `relative_literal_caller_stays_loud` keeps its `want True` verbatim and now spells the caller as
-`_read(os.path.join(sys.argv[1], "weights/config.json"))` under `import os, sys`. The relative literal
+`_read(os.path.join(os.environ["ROOT"], "weights/config.json"))` under `import os, sys`. The relative literal
 stays loud because an operator value demonstrably reaches the parameter the `open()` reads, via
 `_c22_path_sink_reaches_operator`; that is why the `no_operator_walk` arm is the only arm that can
 silence this row, and why the `retired_blanket` arm leaves it exactly as loud as it was -- not because
-the engine could not prove the parameter safe. HEAD reports the same spelling, so the loudness is
-earned by the value rather than borrowed from an assumption.
+the engine could not prove the parameter safe. Round 5 moved that carrier off `sys.argv[1]` for the same
+reason it moved the rule: a standalone script's own command line is the process owner's invocation, so the
+demotion retires an argv-fed `open()` there, while an environment read stays an untrusted root. The
+proposition is the parameter proof, not the spelling of the root, so it survives the move unchanged, and
+HEAD reports the same spelling -- the loudness is earned by the value rather than borrowed from an
+assumption.
 
 Why the mandated `def _*(...)` axis is not what shipped
 ------------------------------------------------------
@@ -108,12 +112,12 @@ def helper(name='_read', body='    return open(cfg).read()\n'):
 
 
 # Earned, not re-filed: the relative literal stays loud because an operator value reaches the parameter
-# the `open()` reads -- `sys.argv[1]` rooted through `os.path.join` -- and NOT because the engine could
-# not prove the parameter safe, which is the blanket this round retired. `scratch/_c22_r3_engines.py
+# the `open()` reads -- `os.environ["ROOT"]` rooted through `os.path.join` -- and NOT because the engine
+# could not prove the parameter safe, which is the blanket round 3 retired. `scratch/_c22_r3_engines.py
 # --diff` reports this exact spelling under HEAD and under live alike, so the loudness is the value's,
 # not an engine gift, and the `no_operator_walk` arm below is the only arm that can take it away.
-ARGV_ROOTED_RELATIVE = ('import os, sys\n' + helper()
-                        + '_read(os.path.join(sys.argv[1], "weights/config.json"))\n')
+OPERATOR_ROOTED_RELATIVE = ('import os, sys\n' + helper()
+                            + '_read(os.path.join(os.environ["ROOT"], "weights/config.json"))\n')
 
 
 # (label, source, want_emitted_under_shipped, arm_that_must_move_it)
@@ -123,7 +127,7 @@ FIXTURES = [
      False, 'no_origin_proof'),
     ('absolute_literal_caller', helper() + '_read("/srv/weights/config.json")\n',
      False, 'no_origin_proof'),
-    ('relative_literal_caller_stays_loud', ARGV_ROOTED_RELATIVE, True, None),
+    ('relative_literal_caller_stays_loud', OPERATOR_ROOTED_RELATIVE, True, None),
     ('tempfile_root_caller', 'import tempfile\n' + helper() + '_read(tempfile.mkdtemp())\n',
      False, 'no_origin_proof'),
     ('untrusted_caller', REQ + helper() + '_read(request.args["f"])\n', True, None),
@@ -158,8 +162,8 @@ REFILED_QUIET = {
 
 # Rows whose loudness the round-3 clause left standing because the value now earns it. Under
 # `no_operator_walk` the operator reach stops answering and the row MUST go quiet: that is the proof
-# that it is loud because `sys.argv[1]` reaches the parameter, not because the engine could not prove
-# the parameter safe.
+# that it is loud because `os.environ["ROOT"]` reaches the parameter, not because the engine could not
+# prove the parameter safe.
 EARNED_BY_OPERATOR = {'relative_literal_caller_stays_loud'}
 
 # This fixture's reported row is already quiet through the taint funnel, so it cannot carry a
@@ -372,7 +376,7 @@ def main() -> int:
           'the synthetic CWE-22 source only when every caller hands the parameter a proven origin, the '
           'public twin answers identically, the splat, kwargs-splat, skipped-argument and no-caller '
           'fixtures still get the source stamped but report only on a resolved origin the way the '
-          'round-3 sink clause decides, the relative literal is loud because `sys.argv[1]` reaches it, '
+          'round-3 sink clause decides, the relative literal is loud because `os.environ["ROOT"]` reaches it, '
           'and 0 of the 24 blessed keys were quieted.')
     return 0
 

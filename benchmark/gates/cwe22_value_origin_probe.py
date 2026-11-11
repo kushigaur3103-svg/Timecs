@@ -124,12 +124,23 @@ PRE_CLI = 'import json\nimport sys\nimport tempfile\nimport unittest\nfrom pathl
 HUB = 'from huggingface_hub import hf_hub_download\n'
 REQ = 'from flask import request\n'
 UNTRUSTED = 'request.args["name"]'
-# Where a CLI value may sit for the walk to see it. `sys.argv[2]` inline in any argument resolves, and
-# in the fixtures whose path the clause proves safe it is deliberately placed in the sink's NON-path
+# Where an operator value may sit for the walk to see it. `sys.argv[2]` inline in any argument resolves,
+# and in the fixtures whose path the clause proves safe it is deliberately placed in the sink's NON-path
 # argument: `_c22_bound_values` answers the reach question and the value-proof question from the same
 # node, so one name cannot be proven program-created and operator-steered at once. A quiet fixture
 # therefore keeps its proven path and buys its liveness from the argument beside it, which the
 # argument-wide (and so fail-closed) reach test accepts.
+#
+# Round 5 splits that carrier by module shape, and the split is the rule's own: the harness fixtures
+# (a `unittest.TestCase` in the tree) keep `encoding=sys.argv[2]`, because a suite is handed paths by
+# whatever runs it and the demotion refuses to touch it. The five plain-module fixtures --
+# `resolver_plain_local`, `resolver_in_if_branch`, `resolver_loop_bare_positional`,
+# `name_never_written_here`, `resolver_leaf_not_hub` -- now read `encoding=os.environ["ENC"]`. Their
+# only root was this program's own command line, which the demotion retires by design, so an argv
+# carrier left them with no row for the clause to decide and the gate called them decorative. An
+# environment read is written by whoever installed the service and survives the blinding, so the
+# liveness is earned again without moving a single expectation: the same five rows are quiet/loud as
+# before, and `arm_removed` still brings all five back.
 
 FIXTURES = {
     # --- earned: loud before this clause, quiet after it ---------------------------------------
@@ -148,29 +159,29 @@ FIXTURES = {
         '        config_tmpfile = Path(tmpdirname) / "config.json"\n'
         '        json.dump({"model_type": "clip"},\n'
         '                  open(config_tmpfile, "w", encoding=sys.argv[2]))\n'),
-    'resolver_plain_local': HUB + 'import json\nimport sys\n' + (
+    'resolver_plain_local': HUB + 'import json\nimport os\n' + (
         'def convert_checkpoint(language):\n'
         '    config_file = hf_hub_download(repo_id="facebook/mms-tts", filename="config.json")\n'
-        '    with open(config_file, "r", encoding=sys.argv[2]) as handle:\n'
+        '    with open(config_file, "r", encoding=os.environ["ENC"]) as handle:\n'
         '        return json.loads(handle.read())\n'),
-    'resolver_in_if_branch': HUB + 'import json\nimport sys\n' + (
+    'resolver_in_if_branch': HUB + 'import json\nimport os\n' + (
         'def convert_checkpoint(out_dir, checkpoint_path=None, language=None):\n'
         '    if checkpoint_path is None:\n'
         '        config_file = hf_hub_download(\n'
         '            repo_id="facebook/mms-tts", filename="config.json",\n'
         '            subfolder=f"models/{language}",\n'
         '        )\n'
-        '        with open(config_file, "r", encoding=sys.argv[2]) as handle:\n'
+        '        with open(config_file, "r", encoding=os.environ["ENC"]) as handle:\n'
         '            hps = json.loads(handle.read())\n'
         '    else:\n'
         '        print("skip")\n'),
-    'resolver_loop_bare_positional': HUB + 'import json\nimport sys\n' + (
+    'resolver_loop_bare_positional': HUB + 'import json\nimport os\n' + (
         'def get_remote_tools(organization):\n'
         '    tools = {}\n'
         '    for space_info in list_spaces(author=organization):\n'
         '        repo_id = space_info.id\n'
         '        resolved_config_file = hf_hub_download(repo_id, "tool_config.json")\n'
-        '        with open(resolved_config_file, encoding=sys.argv[2]) as reader:\n'
+        '        with open(resolved_config_file, encoding=os.environ["ENC"]) as reader:\n'
         '            tools[repo_id] = json.load(reader)\n'
         '    return tools\n'),
     # --- refused: the positive proof is missing, so the row stays loud -------------------------
@@ -226,14 +237,14 @@ FIXTURES = {
         '            return json.load(handle)\n'
         '    poison()\n'
         '    return read_it()\n'),
-    'name_never_written_here': 'import json\nimport sys\n' + (
+    'name_never_written_here': 'import json\nimport os\n' + (
         'def read_it():\n'
-        '    with open(config_file, "r", encoding=sys.argv[2]) as handle:\n'
+        '    with open(config_file, "r", encoding=os.environ["ENC"]) as handle:\n'
         '        return json.load(handle)\n'),
-    'resolver_leaf_not_hub': 'from .utils import hf_hub_download\nimport json\nimport sys\n' + (
+    'resolver_leaf_not_hub': 'from .utils import hf_hub_download\nimport json\nimport os\n' + (
         'def convert_checkpoint(language):\n'
         '    config_file = hf_hub_download(repo_id="facebook/mms-tts", filename="config.json")\n'
-        '    with open(config_file, "r", encoding=sys.argv[2]) as handle:\n'
+        '    with open(config_file, "r", encoding=os.environ["ENC"]) as handle:\n'
         '        return json.loads(handle.read())\n'),
     'subscript_not_bare_ident': PRE_CLI + (
         'class Holder(unittest.TestCase):\n'

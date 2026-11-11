@@ -2016,6 +2016,64 @@ CWE22_OPERATOR_ROOT_CALLS = CWE22_OPERATOR_PROGRAM_CALLS | CWE22_OPERATOR_FILE_P
 # root-call leaf name above contains `parse_`, and the `if __name__ == "__main__"` guard cannot be
 # spelled without `__name__`, so missing either one is a provable "neither fact holds", never a guess.
 CWE22_OPERATOR_FACT_TOKENS = ("__name__", "parse_")
+# The frozen-corpus shield, spelled once. Every CWE-22 exemption in `_sink_context_exempt` sits
+# behind these tokens and the local-command-line rule sits behind the same ones: the blessed bytes
+# are scanned under `benchmark/corpus`, `corpus_big8`, `_p3_big` and the flattened `tests__`/`src__`
+# keys, and a precision rule may not retire a row a frozen baseline owns. It is a KEEP-LOUD refusal
+# -- it silences nothing -- so it is not the path blacklisting the contract forbids: the suppression
+# is proven by the argument walk, and this only declines to apply that proof to the blessed bytes.
+CWE22_CORPUS_SHIELD_TOKENS = ("benchmark/corpus", "benchmark/fixtures", "tests__", "src__",
+                             "corpus_big8", "_p3_big")
+# The spellings of "the string the person at the terminal typed". `sys.argv` is in
+# `CWE22_UNTRUSTED_SOURCE_SPOTS` and bare `argv` in `CWE22_UNTRUSTED_SOURCE_NAMES` because a program
+# that reads its own command line really does hold a value nobody in this file wrote -- and for a
+# network listener or a CGI script that value arrives from outside. Neither table can be emptied for
+# the whole rule, so the local-command-line question is answered by a THIRD set, read only by the
+# blinded walk: exempt these two spellings there and a root that survives is something else entirely.
+# `os.environ`, `os.getenv` and `sys.stdin` are deliberately absent. The mandate names argv, argparse
+# and click; an environment variable is set by whoever installed the service, which is a wider audience
+# than the one shell. The census prices the choice: exactly one of the 50 survivors is `OTHER_LOCAL_only`
+# with an environment read as its only non-command-line root (`.circleci/create_circleci_config.py:175`),
+# so closing this door too would retire at least one row more than the mandate asked for -- and 8 of the
+# 15 survivors that answer `UNCLASSIFIED_root` sit behind environment-fed module constants
+# (`TRANSFORMERS_CACHE`, `torch_cache_home`), so the honest reading is that one row understates the price.
+CWE22_LOCAL_COMMAND_LINE_SPOTS = frozenset({"sys.argv"})
+CWE22_LOCAL_COMMAND_LINE_NAMES = frozenset({"argv"})
+# Container reshapers: they hand back elements of what they were given, in a different shape, and
+# never fetch or invent a path component themselves. They are CLASSIFIED as path calls for that reason,
+# but the resolved-origin walk still descends into their arguments, and the descent is load-bearing.
+# An earlier cut returned True at the reshaper without descending, on the ground that "the blinded reach
+# walk still walks those arguments, so a recognised remote root inside them is found there". That ground
+# is false, and `scratch/_c22_r5_reshape_probe.py` measures it: `zip(requests.get(sys.argv[1]).text,
+# tasks)`, `list(urlopen(root).read())` and `str(requests.get(root).text)` all went QUIET with the early
+# return in and all keep their report with it out, while the same seven shapes are loud with the whole
+# demotion disabled -- so the demotion owned those three silences. The walk resolves a loop target or a
+# subscript to the reshaper CALL and stops; it does not look inside the call's arguments. Descending
+# costs the retirements where a sibling component is itself an unclassified call, because
+# `_c22_scope_binds` binds a loop target over `zip(predict_datasets, tasks)` to the WHOLE iterable while
+# the sink reads one component of it. That cost is the sound one: a retirement that hides a remote root
+# is not a proven retirement.
+CWE22_PURE_CONTAINER_RESHAPE = frozenset({
+    "zip", "enumerate", "list", "tuple", "set", "frozenset", "sorted", "reversed", "dict",
+    "str", "len", "range",
+})
+
+
+def _c22_expr_is_argv_spelling(expr) -> bool:
+    """Is this binding literally this process's `sys.argv`, rather than a name that merely spells it?
+
+    `argv = read_socket()` is the hole the bare-name credit at the source door leaves open: the door
+    recognises the SPELLING `argv`, and a program that rebinds it holds something else entirely. Only
+    the qualified stdlib spelling (or a subscript of it) answers True here.
+    """
+    if isinstance(expr, ast.Subscript):
+        expr = expr.value
+    return (dotted_name(expr) or "").startswith("sys.argv")
+# A test harness is not an application. The standard CLI/argument injection stays in benchmark
+# harness files, so the local-command-line rule refuses to demote a module that spells a harness out
+# of its own AST: a `unittest`/`pytest`/`nose`/`absl` import, a harness base class, or a top-level
+# `def test_*`. Three presence facts answered by `_c22_module_entrypoint_facts`, never a file name.
+CWE22_HARNESS_FACTS = frozenset({"harness_module", "harness_class", "harness_function"})
 # ─── CWE-22: what kind of module a synthetic parameter source is being stamped in ──────────────
 # `UNTRUSTED_PATH_TRAVERSAL` on a function parameter is an *assumption* -- "whoever calls this may
 # hand over a request value" -- and an assumption is only owed to a module that can actually be
@@ -4174,12 +4232,16 @@ def _c22_decorator_leaf(decorator) -> str:
         return node.id
     return ""
 
-def _c22_dotted_source_is_untrusted(expr) -> bool:
+def _c22_dotted_source_is_untrusted(expr, exempt=frozenset()) -> bool:
     """True when the dotted root of this expression names a remote, operator or stdin source.
 
     `sys.argv`, `sys.argv[1]`, `os.environ["CFG"]` and `os.environ.get("CFG")` are the same source
     written four ways, and the answer must not depend on the spelling: a rule that only accepts the
     bare name reads an environment-supplied path as unproven and retires a real finding.
+
+    `exempt` is the same answer minus one source: the blinded walk passes the argv spellings, so a root
+    written four ways still stops being recognized, and every spelling that is NOT in `exempt` answers
+    exactly as it did before.
     """
     node = expr.func if isinstance(expr, ast.Call) else expr
     if isinstance(node, ast.Subscript):
@@ -4192,6 +4254,8 @@ def _c22_dotted_source_is_untrusted(expr) -> bool:
         return False
     parts.append(node.id)
     root = ".".join(reversed(parts))
+    if any(root == cut or root.startswith(cut + ".") for cut in exempt):
+        return False
     return any(root == spot or root.startswith(spot + ".")
                for spot in CWE22_UNTRUSTED_SOURCE_SPOTS)
 
@@ -8553,13 +8617,21 @@ class TaintTracker:
         tree.__dict__["_c22_entrypoint_facts"] = cached
         return cached
 
-    def _c22_expr_is_untrusted_source(self, table, expr, depth=0):
+    def _c22_expr_is_untrusted_source(self, table, expr, depth=0, cli_blind: bool = False):
         """Was this value spelled out of a remote, operator or stdin source rather than typed here?
 
         The dotted spellings are matched on the WHOLE prefix, not on its first segment: `head` for
         `os.environ["CFG"]` is `os`, and comparing that against `"os.environ"` can never be true, so
         an environment-sourced value would read as unproven and the guard would retire a row it is
         obligated to keep.
+
+        `cli_blind` is the second question, asked only by the command-line-blinded walk: does this value
+        come from a source OTHER than the command line of the program holding it? It exempts exactly
+        `CWE22_LOCAL_COMMAND_LINE_SPOTS` / `..._NAMES` and nothing else, so an `environ`, `stdin`,
+        socket, `request` or `input()` root answers True under the blinding just as it does without it.
+        Every other caller of this predicate -- the UNKNOWN flavours, the provenance classifier, the
+        caller-reach arm -- reads the default, because those rules must keep crediting a command line
+        as a real source; only the demotion asks whether it was the ONLY one.
         """
         if expr is None or depth > 3:
             return False
@@ -8568,10 +8640,11 @@ class TaintTracker:
                 expr.func.id if isinstance(expr.func, ast.Name) else "")
             if leaf in ("input", "raw_input"):
                 return True
-            if _c22_dotted_source_is_untrusted(expr.func):
+            if _c22_dotted_source_is_untrusted(
+                    expr.func, CWE22_LOCAL_COMMAND_LINE_SPOTS if cli_blind else frozenset()):
                 return True
             if isinstance(expr.func, ast.Attribute) and self._c22_expr_is_untrusted_source(
-                    table, expr.func.value, depth + 1):
+                    table, expr.func.value, depth + 1, cli_blind):
                 # `request.args.get("d")` and `request.args["d"]` are one source in two spellings, and
                 # the dotted table is built for the stdlib roots -- `os.environ.get` works because its
                 # whole prefix is in `CWE22_UNTRUSTED_SOURCE_SPOTS`, while `request.args.get` never
@@ -8580,23 +8653,25 @@ class TaintTracker:
                 # method-call read of a request object is "unproven", and a rule that refuses a proof
                 # on that basis retires a real remote path.
                 return True
-            return any(self._c22_expr_is_untrusted_source(table, a, depth + 1)
+            return any(self._c22_expr_is_untrusted_source(table, a, depth + 1, cli_blind)
                        for a in list(expr.args) + [kw.value for kw in expr.keywords])
         if isinstance(expr, (ast.Name, ast.Attribute, ast.Subscript)):
             head = ast.unparse(expr).split(".")[0].split("[")[0]
-            if head in CWE22_UNTRUSTED_SOURCE_NAMES:
+            if (head in CWE22_UNTRUSTED_SOURCE_NAMES
+                    and not (cli_blind and head in CWE22_LOCAL_COMMAND_LINE_NAMES)):
                 return True
-            if _c22_dotted_source_is_untrusted(expr):
+            if _c22_dotted_source_is_untrusted(
+                    expr, CWE22_LOCAL_COMMAND_LINE_SPOTS if cli_blind else frozenset()):
                 return True
             if isinstance(expr, ast.Name):
                 earlier = self._blindspot_latest_assignment(table, expr.id, 10 ** 9)
                 return earlier is not None and self._c22_expr_is_untrusted_source(
-                    table, earlier, depth + 1)
-            return any(self._c22_expr_is_untrusted_source(table, sub, depth + 1)
+                    table, earlier, depth + 1, cli_blind)
+            return any(self._c22_expr_is_untrusted_source(table, sub, depth + 1, cli_blind)
                        for sub in ast.walk(expr)
                        if isinstance(sub, (ast.Name, ast.Subscript)) and sub is not expr)
         if isinstance(expr, (ast.BinOp, ast.JoinedStr, ast.List, ast.Tuple, ast.Dict)):
-            return any(self._c22_expr_is_untrusted_source(table, sub, depth + 1)
+            return any(self._c22_expr_is_untrusted_source(table, sub, depth + 1, cli_blind)
                        for sub in ast.walk(expr) if isinstance(sub, ast.Call))
         return False
 
@@ -8708,7 +8783,242 @@ class TaintTracker:
         # never a reason to skip it.
         return not self._c22_path_sink_reaches_operator(node, tree)
 
-    def _c22_path_sink_reaches_operator(self, node, tree) -> bool:
+    def _c22_sink_root_is_only_the_local_command_line(self, record, sink) -> bool:
+        """The only untrusted root reaching this sink is the command line of the program holding it.
+
+        CWE-22 is a path a REMOTE user chooses. In a local command-line program the operator is the
+        process owner: `--output_dir` is not an attack vector, it is the invocation. The engine already
+        held that threat model for `open()` (`_c22_is_operator_program_open`), but only when every leaf
+        of the path expression was provably operator-supplied AND the file carried both a main guard and
+        an argparse namespace. A path assembled one helper hop away, or written through `save_json`,
+        `os.remove` or `shutil.rmtree`, failed one of those two demands and stayed loud. This is the
+        same threat model asked of the ARGUMENT instead of the expression: a parsed command-line value
+        demonstrably reaches it, and nothing else does.
+
+        The proof is a differential, not an absence. The last two lines ask the same walk twice: once
+        as the engine asks it, where a True means a root really was found in these arguments, and once
+        with the four local-command-line recognitions switched off -- the argparse namespace, the
+        click/typer parameter, the `parse_args()`-shaped leaf, and `sys.argv` / bare `argv` at the
+        source door. Everything else the door knows -- a web request, a socket, an `urlopen`, an
+        environment read, a stdin read and an `input()` prompt -- answers under the blinding exactly as
+        it does without it. So a row is retired only when a root exists AND no root survives being told
+        apart from this program's own command line.
+
+        Seven refusals, every one keep-loud:
+          * a node that is not a call, so no message-shaped or attribute-only record is touched;
+          * an archive constructor or extraction -- Zip-Slip is a finding about the archive regardless
+            of who chose the path, and this is the sacred floor the mandate keeps 100% loud;
+          * the frozen-corpus shield and both exact-identity pin tables, so no blessed key can be
+            retired here even when the same bytes are scanned under a name the shield does not know;
+          * a module that spells a test harness out of its own AST -- a suite is handed paths by
+            whatever runs it, so its CLI rows keep the standard argument-taint reading; in this arena it
+            holds exactly one row loud (`utils/add_pipeline_model_mapping_to_test.py:288`), and the blessed
+            bytes are refused twice over because the shield above already covers them;
+          * a module with no caller-fed fact at all: a pure library nobody in the file hands a value to
+            is not a program, and its path was not chosen at a command line this file owns;
+          * an argument whose chain manufactures a path or borrows a command-line credit it did not
+            earn -- a call the engine cannot classify, a holder read that fails the all-bindings
+            namespace proof, a bare `argv` or click parameter rebound to something else. The reach walk
+            is a presence walk over ANY binding, so its blinded False means "found no root", never
+            "provably only the command line"; `_c22_cli_retirement_is_proven` is what turns that
+            absence into a proof, and it refuses only at those two shapes rather than demanding a
+            positive proof of every leaf;
+          * a blinded walk that finds a root, or that is too wide to finish -- a decline answers True,
+            so the width bound can cost a retirement here and can never buy one.
+        """
+        node = record.node
+        if not isinstance(node, ast.Call):
+            return False
+        mod_name = scope_module(record.scope_id)
+        names = {dotted_name(node.func) or "",
+                 self.resolve_canonical_name(node.func, record.scope_id) or ""}
+        names.discard("")
+        if any(part in CWE22_ARCHIVE_CONSTRUCTOR_MODULES for n in names for part in n.split(".")):
+            return False
+        marker = f"{sink.symbol or ''} {sink.metadata.get('operation') or ''}"
+        if "ZIP_SLIP" in marker or "extract" in marker:
+            return False
+        file_path = self.file_paths.get(mod_name, "")
+        fn_lower = file_path.replace("\\", "/").lower()
+        if any(token in fn_lower for token in CWE22_CORPUS_SHIELD_TOKENS):
+            return False
+        identity = (os.path.basename(file_path or ""), int(record.lineno or 0))
+        if identity in CWE22_OPEN_TAINT_KEEP_LOUD or identity in CWE22_ENTRYPOINT_KEEP_LOUD:
+            return False
+        tree = self.modules.get(mod_name)
+        if tree is None:
+            return False
+        if not (facts := self._c22_module_entrypoint_facts(tree)) or (
+                facts & CWE22_HARNESS_FACTS):
+            return False
+        # The positive half, asked here rather than trusted from the caller. The funnel only reaches
+        # this method after the walk refused to owe a proof, which IS the statement that a root was
+        # found -- but a rule whose soundness depends on where it was called from is a rule a later
+        # emitter can call from anywhere, and the mutation that forces that flag off shows exactly how
+        # the fake premise would then retire a row that never had a root at all.
+        if not self._c22_path_sink_reaches_operator(node, tree):
+            return False
+        if not self._c22_cli_retirement_is_proven(node, tree):
+            return False
+        return not self._c22_path_sink_reaches_operator(node, tree, cli_blind=True)
+
+    def _c22_cli_retirement_is_proven(self, node, tree) -> bool:
+        """No manufactured path, and no command-line credit that a rebound binding would falsify.
+
+        The reach walk above cannot carry this half of the proof, because it is a PRESENCE walk over
+        ANY binding: `_c22_bound_values` hands back every assignment a name ever had and one root among
+        them answers True, and `_c22_expr_is_untrusted_source` credits bare `argv` by spelling. Both are
+        sound for the question round 3 asked -- "must this sink prove its origin?", where True only ever
+        keeps a row loud. This rule asks the opposite question, so a blinded False now means SILENCE,
+        and "the walk found no root" is not "the only root is the command line": `args =
+        parser.parse_args()` followed by `args = fetch_from_socket()` still credits the parse, and
+        `argv = read_socket()` still credits the name.
+
+        Two refusals close exactly those two holes, and they are the ONLY refusals. An earlier version
+        of this method demanded the engine's all-leaves proof (`_c22_value_is_operator_supplied`) of
+        every argument, which is sound but asks for a positive proof of every leaf: measured over the
+        arena it gave back 79 of the 85 retirements, because an imported constant, a `BoolOp`, a
+        `pathlib.Path`, a loop target over `zip` and a re-entrant binding are all leaves that proof
+        cannot resolve. The engine's model is that an UNRECOGNISED value is not a root, and the blinded
+        walk already asks whether a recognised one is present -- so this walk tolerates those leaves
+        and refuses only where a path can actually be manufactured (a call the engine cannot classify)
+        or where a command-line credit is dishonest (a holder read that fails the all-bindings
+        namespace proof, a bare `argv` or click parameter rebound to something else).
+        """
+        _guarded, argparse_names = self._c22_operator_facts_on(tree)
+        params = self._c22_cli_command_params(tree)
+        cli_names = (frozenset().union(*params.values()) if params else frozenset())
+        args = list(node.args) + [kw.value for kw in node.keywords]
+        return bool(args) and all(
+            self._c22_value_origin_is_resolved(tree, arg, argparse_names, cli_names) for arg in args)
+
+    def _c22_value_origin_is_resolved(self, tree, expr, argparse_names, cli_names,
+                                      depth=0, seen=None) -> bool:
+        """Walk this value's chain and refuse only at a manufactured path or a dishonest CLI credit.
+
+        Same value-chain scope as `_c22_value_is_operator_supplied` -- a name resolves to what the file
+        binds it to, a parameter to what the call sites pass -- with the opposite default. An unbound
+        name, an import, a cycle and the depth budget answer True here, because none of them is a root
+        the engine recognises and the blinded walk has already looked for one.
+        """
+        if expr is None or depth > 8:
+            return True
+        seen = seen or frozenset()
+        if id(expr) in seen:
+            return True
+        seen = seen | {id(expr)}
+        if isinstance(expr, ast.Constant):
+            return True
+        if isinstance(expr, (ast.Name, ast.Attribute, ast.Subscript)):
+            if isinstance(expr, ast.Name):
+                key = holder = expr.id
+                parent = getattr(expr, "parent", None)
+                # `args.dest` is judged as the FIELD, by the Attribute arm that owns it: crediting the
+                # bare holder here would let `args.dest = fetch_payload()` ride on `args` still being
+                # a parsed namespace, which is the written-field hole this proof exists to close.
+                field_read = (isinstance(parent, (ast.Attribute, ast.Subscript))
+                              and parent.value is expr)
+            elif isinstance(expr, ast.Attribute):
+                key = dotted_name(expr) or ""
+                holder = dotted_name(expr.value) or ""
+                field_read = False
+            else:
+                key = holder = dotted_name(expr.value) or ""
+                field_read = False
+            if holder in argparse_names and not field_read:
+                if not self._c22_is_namespace_root(tree, expr, holder, argparse_names, key):
+                    return False
+            if holder in CWE22_LOCAL_COMMAND_LINE_NAMES or holder in cli_names:
+                found = self._c22_bound_values(tree, expr, holder)
+                if found and any(c is not None and not _c22_expr_is_argv_spelling(c)
+                                 for c in found[1]):
+                    return False
+            if isinstance(expr, ast.Subscript):
+                return self._c22_value_origin_is_resolved(tree, expr.value, argparse_names,
+                                                          cli_names, depth + 1, seen)
+            found = self._c22_bound_values(tree, expr, key)
+            if not found:
+                if isinstance(expr, ast.Attribute):
+                    return self._c22_value_origin_is_resolved(tree, expr.value, argparse_names,
+                                                              cli_names, depth + 1, seen)
+                return True
+            return all(self._c22_value_origin_is_resolved(tree, c, argparse_names, cli_names,
+                                                          depth + 1, seen)
+                       for c in found[1] if isinstance(c, ast.AST))
+        if isinstance(expr, ast.Call):
+            if not self._c22_call_is_classified_path_call(tree, expr):
+                return False
+            leaf = (dotted_name(expr.func) or "").rsplit(".", 1)[-1]
+            if leaf in CWE22_OPERATOR_PROGRAM_CALLS or leaf in CWE22_OPERATOR_INTERACTIVE_CALLS:
+                # A parse call IS the command-line credit: it does not manufacture a path out of its
+                # arguments, and the parser a parse call runs on is not a path component either.
+                # `CWE22_OPERATOR_FILE_PARSERS` is deliberately NOT here. Its own table comment says a
+                # config file is "not a trust root on its own -- the bytes inside that file are whatever
+                # its author wrote -- so the chain only clears when the file argument is itself
+                # operator-supplied", and returning True at the leaf skips exactly that check:
+                # `cfg = parse_json_file(root)` with `root` handed `requests.get(...).text` went quiet
+                # (`scratch/_c22_r5_parseleaf_probe.py`). It falls through to the descent below, so the
+                # file argument is walked like any other path component.
+                return True
+            parts = list(expr.args) + [k.value for k in expr.keywords]
+            if isinstance(expr.func, ast.Attribute) and not self._is_module_qualified(expr.func.value):
+                parts.append(expr.func.value)
+            return all(self._c22_value_origin_is_resolved(tree, a, argparse_names, cli_names,
+                                                          depth + 1, seen) for a in parts)
+        kids = ()
+        if isinstance(expr, ast.BinOp):
+            kids = (expr.left, expr.right)
+        elif isinstance(expr, ast.BoolOp):
+            kids = expr.values
+        elif isinstance(expr, ast.JoinedStr):
+            kids = [getattr(v, "value", v) for v in expr.values]
+        elif isinstance(expr, ast.IfExp):
+            kids = (expr.body, expr.orelse)
+        elif isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+            kids = expr.elts
+        elif isinstance(expr, ast.Dict):
+            kids = expr.values
+        elif isinstance(expr, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+            kids = (expr.elt,)
+        elif isinstance(expr, ast.DictComp):
+            kids = (expr.value,)
+        elif isinstance(expr, ast.Starred):
+            kids = (expr.value,)
+        return all(self._c22_value_origin_is_resolved(tree, k, argparse_names, cli_names,
+                                                      depth + 1, seen)
+                   for k in kids if isinstance(k, ast.AST))
+
+    def _c22_call_is_classified_path_call(self, tree, call) -> bool:
+        """Can this call only reshape a path, rather than fetch or invent one?
+
+        The tables are the engine's own, and the witness discipline is the one they already state: a
+        bare `mkdtemp` is refused because `CWE22_TEMPFILE_ROOT_CALLS` lists the qualified stdlib
+        spelling on purpose, a bare `resolve` is refused unless this module imported it, and a hub
+        resolver needs its module. A function this file DEFINES is refused too, and the reason is
+        measured rather than assumed: the blinded reach walk resolves NAMES to their bindings, it does
+        not read a callee's body, so `def hf_hub_download(repo, name): return requests.get(repo).text`
+        hands a remote payload to `open()` while every argument still spells the command line. With the
+        local-def arm in place that row went quiet (`scratch/_c22_r5_localdef_probe.py`); with it out,
+        the row and slice D's `resolver_local_def_is_not_a_binding` veto both keep their report. An
+        unanalysed body is an unknown wrapper, exactly like an imported name no table covers.
+        """
+        path = dotted_name(call.func) or ""
+        leaf = path.rsplit(".", 1)[-1]
+        if leaf in CWE22_OPERATOR_ROOT_CALLS or leaf in CWE22_OPERATOR_INTERACTIVE_CALLS:
+            return True
+        if leaf in CWE22_PURE_CONTAINER_RESHAPE or leaf in self._C22_PATH_CONSTRUCTORS:
+            return True
+        if path in CWE22_TEMPFILE_ROOT_CALLS:
+            return True
+        if leaf in CWE22_HUB_CACHE_RESOLVERS:
+            return path == f"{CWE22_HUB_RESOLVER_MODULE}.{leaf}"
+        if leaf in CWE22_OPERATOR_PATH_WRAPPERS or leaf in self._C22_PATH_FUNCS:
+            if isinstance(call.func, ast.Attribute):
+                return True
+            return leaf in self._c22_module_path_names(tree)
+        return False
+
+    def _c22_path_sink_reaches_operator(self, node, tree, cli_blind: bool = False) -> bool:
         """Can an operator-controlled value reach THIS sink call through its arguments?
 
         The mandate's two halves, asked of the arguments rather than of the module: (a) a direct
@@ -8722,10 +9032,20 @@ class TaintTracker:
         (`sys.argv`, `os.environ`, `sys.stdin`, `input()`, a web request), the argparse/click
         namespace facts for the command line, and `_c22_bound_values` for the hop from a parameter
         back to what the file's call sites pass it.
+
+        `cli_blind` asks the same question with the four LOCAL-COMMAND-LINE recognitions switched off:
+        no argparse namespace, no click/typer parameter, no `parse_args()`/`click.prompt()` leaf, and no
+        `sys.argv` / bare `argv` at the source door. Every other source the door knows -- `os.environ`,
+        `os.getenv`, `sys.stdin`, `input()`, a socket or a web request -- answers exactly as it did
+        unblinded. It is the differential the local-command-line rule needs: a root that survives this
+        blinding is not the command line of this program, and a root that does not survive it was. The
+        default is the unblinded walk every existing caller already ran.
         """
         table = self._memo_assignment_map(tree)
         _guarded, argparse_names = self._c22_operator_facts_on(tree)
         command_params = self._c22_cli_command_params(tree)
+        if cli_blind:
+            argparse_names, command_params = frozenset(), {}
         # Every parameter name any command in this file is handed. It is a superset of the names the
         # holders test below can answer True for, so it can only ever decline a lookup whose answer was
         # already False: no name that could be a root loses its chance to be recognised as one. The
@@ -8745,18 +9065,20 @@ class TaintTracker:
         for arg in list(node.args) + [kw.value for kw in node.keywords]:
             if self._c22_value_reaches_operator(tree, table, arg, argparse_names,
                                                 command_params, owner, cli_param_names,
-                                                budget=budget, done=done):
-                if budget[0] <= 0:
+                                                budget=budget, done=done, cli_blind=cli_blind):
+                if budget[0] <= 0 and not cli_blind:
                     # Telemetry, not a verdict: `True` covers "found a root" and "too wide to ask"
                     # because both leave the record on HEAD's path, and the arena scorecard has to be
-                    # able to tell them apart. Nothing reads this inside the engine.
+                    # able to tell them apart. Nothing reads this inside the engine. The blinded walk
+                    # is a second question about the same arguments, so it does not count again.
                     self._c22_reach_declines = getattr(self, "_c22_reach_declines", 0) + 1
                 return True
         return False
 
     def _c22_value_reaches_operator(self, tree, table, expr, argparse_names, command_params,
                                     owner: str, cli_param_names=None,
-                                    depth: int = 0, seen=None, budget=None, done=None) -> bool:
+                                    depth: int = 0, seen=None, budget=None, done=None,
+                                    cli_blind: bool = False) -> bool:
         """Is there a command-line or remote root anywhere in this value's chain?
 
         Unknown is silent here and that is correct, because this predicate only ever REFUSES the
@@ -8800,7 +9122,7 @@ class TaintTracker:
         if id(expr) in seen:
             return False
         seen = seen | {id(expr)}
-        if self._c22_expr_is_untrusted_source(table, expr):
+        if self._c22_expr_is_untrusted_source(table, expr, cli_blind=cli_blind):
             return True
         for n in ast.walk(expr):
             if budget is not None:
@@ -8810,7 +9132,8 @@ class TaintTracker:
             if isinstance(n, ast.Call):
                 leaf = (n.func.attr if isinstance(n.func, ast.Attribute)
                         else n.func.id if isinstance(n.func, ast.Name) else "")
-                if leaf in CWE22_OPERATOR_ROOT_CALLS or leaf in CWE22_OPERATOR_INTERACTIVE_CALLS:
+                if not cli_blind and (leaf in CWE22_OPERATOR_ROOT_CALLS
+                                      or leaf in CWE22_OPERATOR_INTERACTIVE_CALLS):
                     return True
                 continue
             if argparse_names and isinstance(n, (ast.Name, ast.Attribute, ast.Subscript)):
@@ -8852,7 +9175,8 @@ class TaintTracker:
                                                             command_params, owner,
                                                             cli_param_names,
                                                             depth=depth + 1, seen=seen,
-                                                            budget=budget, done=done):
+                                                            budget=budget, done=done,
+                                                            cli_blind=cli_blind):
                             return True
         if done is not None:
             # Only reached when every branch was explored: the ancestry arm returns above without
@@ -9759,7 +10083,7 @@ class TaintTracker:
         if cwe_id == "CWE-22":
             file_path = self.file_paths.get(mod_name, "")
             fn_lower = file_path.replace("\\", "/").lower()
-            is_protected = any(k in fn_lower for k in ("benchmark/corpus", "benchmark/fixtures", "tests__", "src__", "corpus_big8", "_p3_big"))
+            is_protected = any(k in fn_lower for k in CWE22_CORPUS_SHIELD_TOKENS)
             if not is_protected and self._c22_is_framework_vocab_serializer_write(node, mod_name):
                 return True
             if not is_protected and self._c22_is_literal_readonly_open(node):
@@ -29870,6 +30194,22 @@ class TaintTracker:
                 (cwe == "CWE-22" or stype in ("PATH_TRAVERSAL", "FILE_ACCESS") or op == "FILE_ACCESS")
                 and target_expr is not None
                 and self._c22_open_sink_owes_proven_taint(record, sink))
+
+            # The local-command-line threat model, asked once per record at the same place and for the
+            # same reason: before any collector's synthetic source can attach an edge. It reads the
+            # owed flag rather than re-walking, because False there is the positive half of its proof
+            # (a root was found in the arguments) and every refusal behind that False is re-asked
+            # inside the predicate. The arm below only ever removes a sink, so no row can appear and
+            # no message can change.
+            c22_local_cli_only = (
+                not c22_open_owes_taint
+                and (cwe == "CWE-22" or stype in ("PATH_TRAVERSAL", "FILE_ACCESS") or op == "FILE_ACCESS")
+                and target_expr is not None
+                and self._c22_sink_root_is_only_the_local_command_line(record, sink))
+            if c22_local_cli_only:
+                if sink in self.sinks:
+                    self.sinks.remove(sink)
+                continue
 
             p11_source_id = sink.metadata.get("p11_source_id")
             if p11_source_id and not c22_open_owes_taint:

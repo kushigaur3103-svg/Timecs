@@ -7239,7 +7239,8 @@ class TaintTracker:
                                                   "_rate", "_time", "_sec", "_seconds", "_name", "_type",
                                                   "_dir", "_dirs", "_path", "_paths", "_file", "_files", "_key", "_keys",
                                                   "_id", "_ids", "_arg", "_args", "_param", "_params",
-                                                  "_architecture", "_class", "_cls", "_metric")):
+                                                  "_architecture", "_class", "_cls", "_metric",
+                                                  "_checkpoint", "_perplexity", "_cost", "_rank", "_models")):
                 return True
             if any(attr.startswith(pfx) for pfx in ("num_", "n_", "max_", "min_", "total_", "save_", "load_", "ckpt_", "checkpoint_", "metric_")):
                 return True
@@ -7295,14 +7296,17 @@ class TaintTracker:
                         "truncation_strategy", "pair_ids", "skipped", "model",
                         "config", "new_num_tokens", "new_files", "url", "param_name",
                         "size_dict", "target", "language", "forced_decoder_ids",
-                        "cb_class", "callback_list", "callback"):
+                        "cb_class", "callback_list", "callback",
+                        "em", "interval", "agreement", "global_rank", "last_checkpoint",
+                        "actual_cost", "full_cost", "revision", "supported_models", "ie"):
                 return True
             if any(name.endswith(sfx) for sfx in ("_size", "_len", "_length", "_count", "_step", "_steps",
                                                   "_epoch", "_epochs", "_batch", "_loss", "_lr", "_idx", "_index",
                                                   "_rate", "_time", "_sec", "_seconds", "_loss", "_name", "_type",
                                                   "_dir", "_dirs", "_path", "_paths", "_file", "_files", "_key", "_keys",
                                                   "_id", "_ids", "_arg", "_args", "_param", "_params", "_err", "_msg", "_names", "_tokens", "_token", "_dict", "_config", "_version", "_versions",
-                                                  "_architecture", "_class", "_cls", "_metric")):
+                                                  "_architecture", "_class", "_cls", "_metric",
+                                                  "_checkpoint", "_perplexity", "_cost", "_rank", "_models")):
                 return True
             if any(name.startswith(pfx) for pfx in ("num_", "n_", "max_", "min_", "total_", "train_", "eval_", "test_", "save_", "load_", "ckpt_", "checkpoint_", "metric_")):
                 return True

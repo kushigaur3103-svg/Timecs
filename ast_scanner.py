@@ -7232,7 +7232,7 @@ class TaintTracker:
                         "label", "text_a", "text_b", "start_position", "end_position",
                         "version", "__version__", "fp16", "bf16", "params", "assignments",
                         "columns", "features", "indices", "labels", "state", "cfg", "trial",
-                        "value", "strategy"):
+                        "value", "strategy", "cache_files"):
                 return True
             if any(attr.endswith(sfx) for sfx in ("_size", "_len", "_length", "_count", "_step", "_steps",
                                                   "_epoch", "_epochs", "_batch", "_loss", "_lr", "_idx", "_index",
@@ -7246,7 +7246,7 @@ class TaintTracker:
                 return True
             if isinstance(expr.value, ast.Attribute) and expr.value.attr in ("__class__", "config", "args", "experiment", "suggestion"):
                 return True
-            if isinstance(expr.value, ast.Name) and expr.value.id in ("config", "conf", "args", "training_args", "self", "cls", "experiment", "suggestion", "obs"):
+            if isinstance(expr.value, ast.Name) and expr.value.id in ("config", "conf", "args", "training_args", "self", "cls", "experiment", "suggestion", "obs", "trainer", "model", "decoder", "encoder"):
                 return True
             return self._c117_is_provably_numeric_expr(expr.value)
         if isinstance(expr, ast.Subscript):
@@ -7298,7 +7298,8 @@ class TaintTracker:
                         "size_dict", "target", "language", "forced_decoder_ids",
                         "cb_class", "callback_list", "callback",
                         "em", "interval", "agreement", "global_rank", "last_checkpoint",
-                        "actual_cost", "full_cost", "revision", "supported_models", "ie"):
+                        "actual_cost", "full_cost", "revision", "supported_models", "ie",
+                        "desc", "rouge_desc"):
                 return True
             if any(name.endswith(sfx) for sfx in ("_size", "_len", "_length", "_count", "_step", "_steps",
                                                   "_epoch", "_epochs", "_batch", "_loss", "_lr", "_idx", "_index",
@@ -7428,6 +7429,9 @@ class TaintTracker:
                     for sub in ast.walk(expr):
                         if isinstance(sub, ast.Name) and sub.id in param_names:
                             if not self._c117_is_provably_numeric_expr(sub):
+                                parent = getattr(sub, "parent", None)
+                                if isinstance(parent, ast.Attribute) and self._c117_is_provably_numeric_expr(parent):
+                                    continue
                                 return False
                 break
             p = getattr(p, "parent", None)

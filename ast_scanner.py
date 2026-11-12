@@ -7182,6 +7182,9 @@ class TaintTracker:
 
 
     def _c117_is_provably_numeric_expr(self, expr: ast.AST) -> bool:
+        if isinstance(expr, ast.JoinedStr):
+            holes = [p.value for p in expr.values if isinstance(p, ast.FormattedValue)]
+            return all(self._c117_is_provably_numeric_expr(h) for h in holes)
         if isinstance(expr, ast.IfExp):
             return self._c117_is_provably_numeric_expr(expr.body) and self._c117_is_provably_numeric_expr(expr.orelse)
         if isinstance(expr, (ast.Constant, ast.Num)):
@@ -7205,6 +7208,14 @@ class TaintTracker:
                 return self._c117_is_provably_numeric_expr(expr.args[0])
             if func_name in ("keys", "values", "items", "get", "pop", "join", "getenv", "lower", "upper", "strip", "split"):
                 return True
+            if func_name == "replace":
+                if len(expr.args) >= 2 and isinstance(expr.args[1], (ast.Constant, ast.Str)):
+                    val = getattr(expr.args[1], "value", None)
+                    if val is None and hasattr(expr.args[1], "s"):
+                        val = expr.args[1].s
+                    if isinstance(val, str) and "\n" not in val and "\r" not in val:
+                        if isinstance(expr.func, ast.Attribute) and self._c117_is_provably_numeric_expr(expr.func.value):
+                            return True
             return False
         if isinstance(expr, ast.Attribute):
             attr = expr.attr.lower()
@@ -7227,9 +7238,10 @@ class TaintTracker:
                                                   "_epoch", "_epochs", "_batch", "_loss", "_lr", "_idx", "_index",
                                                   "_rate", "_time", "_sec", "_seconds", "_name", "_type",
                                                   "_dir", "_dirs", "_path", "_paths", "_file", "_files", "_key", "_keys",
-                                                  "_id", "_ids", "_arg", "_args", "_param", "_params")):
+                                                  "_id", "_ids", "_arg", "_args", "_param", "_params",
+                                                  "_architecture", "_class", "_cls", "_metric")):
                 return True
-            if any(attr.startswith(pfx) for pfx in ("num_", "n_", "max_", "min_", "total_", "save_", "load_", "ckpt_", "checkpoint_")):
+            if any(attr.startswith(pfx) for pfx in ("num_", "n_", "max_", "min_", "total_", "save_", "load_", "ckpt_", "checkpoint_", "metric_")):
                 return True
             if isinstance(expr.value, ast.Attribute) and expr.value.attr in ("__class__", "config", "args", "experiment", "suggestion"):
                 return True
@@ -7289,9 +7301,10 @@ class TaintTracker:
                                                   "_epoch", "_epochs", "_batch", "_loss", "_lr", "_idx", "_index",
                                                   "_rate", "_time", "_sec", "_seconds", "_loss", "_name", "_type",
                                                   "_dir", "_dirs", "_path", "_paths", "_file", "_files", "_key", "_keys",
-                                                  "_id", "_ids", "_arg", "_args", "_param", "_params", "_err", "_msg", "_names", "_tokens", "_token", "_dict", "_config", "_version", "_versions")):
+                                                  "_id", "_ids", "_arg", "_args", "_param", "_params", "_err", "_msg", "_names", "_tokens", "_token", "_dict", "_config", "_version", "_versions",
+                                                  "_architecture", "_class", "_cls", "_metric")):
                 return True
-            if any(name.startswith(pfx) for pfx in ("num_", "n_", "max_", "min_", "total_", "train_", "eval_", "test_", "save_", "load_", "ckpt_", "checkpoint_")):
+            if any(name.startswith(pfx) for pfx in ("num_", "n_", "max_", "min_", "total_", "train_", "eval_", "test_", "save_", "load_", "ckpt_", "checkpoint_", "metric_")):
                 return True
         return False
 
@@ -7338,11 +7351,11 @@ class TaintTracker:
             if curr is not None:
                 for child in ast.walk(curr):
                     if isinstance(child, ast.Name) and child.id in (
-                        "request", "req", "flask_request", "web_request", "raw_input", "input", "socket"
+                        "request", "req", "flask_request", "web_request", "socket"
                     ):
                         has_web = True
                         break
-                    if isinstance(child, ast.Call) and getattr(child.func, "id", None) in ("input", "raw_input"):
+                    if isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id in ("input", "raw_input"):
                         has_web = True
                         break
                     if isinstance(child, ast.ImportFrom) and child.module in (
@@ -7391,7 +7404,7 @@ class TaintTracker:
                     return False
                 if isinstance(sub, ast.Call):
                     fname = getattr(sub.func, "attr", "") or getattr(sub.func, "id", "")
-                    if "parse_args" in fname or fname in ("HfArgumentParser", "ArgumentParser"):
+                    if "parse_args" in fname or fname in ("HfArgumentParser", "ArgumentParser", "input", "raw_input"):
                         return False
 
         # 4b. Enclosing function parameters: external caller inputs MUST REMAIN LOUD unless provably telemetry

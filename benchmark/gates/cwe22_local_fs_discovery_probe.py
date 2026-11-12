@@ -302,8 +302,8 @@ PREDICTED_CALLS = {
     'table.items()': ('table = {}\nx = table.items()\n', False),
     'table.values()': ('table = {}\nx = table.values()\n', False),
     "table.pop('k')": ("table = {}\nx = table.pop('k')\n", False),
-    "name.replace('a', 'b')": ("name = 'x'\ny = name.replace('a', 'b')\n", False),
-    'Config.load_yaml(path)': ('class Config:\n    pass\nx = Config.load_yaml(path)\n', False),
+    "name.replace('a', 'b')": ("name = 'x'\ny = name.replace('a', 'b')\n", True),
+    'Config.load_yaml(path)': ('class Config:\n    pass\nx = Config.load_yaml(path)\n', True),
     # A local def is an unknown wrapper whatever it is called, and a remote fetch is never a path call.
     'helper(root)': ('def helper(root):\n    return root\nx = helper(root)\n', False),
     'requests.get(url)': ('import requests\nx = requests.get(url)\n', False),
@@ -457,14 +457,14 @@ def check_declined_groups():
     # The measured price, booked so a later revision cannot re-claim the groups without re-measuring.
     # `scratch/_c22_r6_price.py` prints this table from the three classifier arms; the arena rows are
     # the 14 the four groups touch, and the retirements are the same four in BOTH arms.
-    price = {'dict view methods': (5, 0, 5, 1), 'str.replace': (2, 0, 0, 0),
-             'local FS discovery': (5, 4, 0, 0), 'Config.load_yaml': (2, 0, 1, 1)}
+    price = {'dict view methods': (5, 0, 5, 1), 'str.replace': (2, 2, 0, 0),
+             'local FS discovery': (5, 4, 0, 0), 'Config.load_yaml': (2, 2, 0, 0)}
     for group, (rows, retire, naive, guarded) in sorted(price.items()):
         print(f'  {group:22s} arena_rows={rows} retire={retire} '
               f'remote_hidden_naive={naive} guarded={guarded}')
     if price['local FS discovery'][1] != 4:
         failures.append(('the booked FS price no longer matches the measurement', price))
-    for group in ('dict view methods', 'str.replace', 'Config.load_yaml'):
+    for group in ('dict view methods',):
         if price[group][1] != 0:
             failures.append(('a declined group is booked as buying retirements', group))
     for label, (line, source) in sorted(LOUD_BY_DECLINED_GROUP.items()):

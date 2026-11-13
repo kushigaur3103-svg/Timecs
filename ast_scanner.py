@@ -2491,6 +2491,7 @@ CLUSTER2_ROUTE_DECORATOR_SEGMENTS = {"route", "get", "post", "put", "delete", "p
 CWE770_BUFFER_ORIGINS = frozenset({"io.BytesIO", "io.StringIO", "_io.BytesIO", "_io.StringIO"})
 CWE770_WEBSOCKET_ORIGINS = frozenset({"odoo.tests.common.websocket_connect",
                                       "websocket.create_connection"})
+CWE770_IPC_ORIGINS = frozenset({"multiprocessing.Pipe", "multiprocessing.connection.Pipe"})
 CWE770_FILE_OPEN_ORIGINS = frozenset({"odoo.tools.file_open", "odoo.tools.misc.file_open"})
 # CWE-601: a query key in a relative anchor that carries a further destination. `Location: /x` is
 # same-origin, but `/web/login?redirect=<hole>` hands the choice of host to the next hop.
@@ -23402,10 +23403,15 @@ class TaintTracker:
                         continue
                     if isinstance(target, ast.Name):
                         cached.setdefault(target.id, []).append(value)
-                    elif isinstance(target, ast.Tuple) and isinstance(value, (ast.Tuple, ast.List)):
-                        for sub_t, sub_v in zip(target.elts, value.elts):
-                            if isinstance(sub_t, ast.Name):
-                                cached.setdefault(sub_t.id, []).append(sub_v)
+                    elif isinstance(target, (ast.Tuple, ast.List)):
+                        if isinstance(value, (ast.Tuple, ast.List)):
+                            for sub_t, sub_v in zip(target.elts, value.elts):
+                                if isinstance(sub_t, ast.Name):
+                                    cached.setdefault(sub_t.id, []).append(sub_v)
+                        else:
+                            for sub_t in target.elts:
+                                if isinstance(sub_t, ast.Name):
+                                    cached.setdefault(sub_t.id, []).append(value)
             tree.__dict__["_cached_c770_products"] = cached
         return cached
 
@@ -23486,7 +23492,7 @@ class TaintTracker:
         if curr is not None:
             for child in ast.walk(curr):
                 if isinstance(child, ast.Name) and child.id in (
-                    "request", "req", "flask_request", "web_request", "raw_input", "input", "socket"
+                    "request", "req", "flask_request", "web_request", "raw_input", "socket"
                 ):
                     return "FAIL_CLOSED"
                 if isinstance(child, ast.Call) and getattr(child.func, "id", None) in ("input", "raw_input"):
@@ -23538,7 +23544,19 @@ class TaintTracker:
 
         prods = []
         if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
-            prods = self._c770_receiver_products(tree).get(node.func.value.id, [])
+            recv_id = node.func.value.id
+            p_with = getattr(node, "parent", None)
+            while p_with is not None:
+                if isinstance(p_with, ast.With):
+                    for item in p_with.items:
+                        if isinstance(item.optional_vars, ast.Name) and item.optional_vars.id == recv_id:
+                            prods = [item.context_expr]
+                            break
+                    if prods:
+                        break
+                p_with = getattr(p_with, "parent", None)
+            if not prods:
+                prods = self._c770_receiver_products(tree).get(recv_id, [])
         elif isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Call):
             prods = [node.func.value]
 
@@ -23585,6 +23603,20 @@ class TaintTracker:
                 is_anchored = True
             elif isinstance(path_arg, ast.Name) and any(k in path_arg.id.lower() for k in ("json", "yaml", "yml", "config", "vocab", "tokenizer", "gitignore", "dirname", "tmp_dir", "filename", "archive_file", "checkpoint")):
                 is_anchored = True
+            elif isinstance(path_arg, ast.Call):
+                exts = (".json", ".yaml", ".yml", ".toml", ".txt", ".gitignore", ".md", ".proto", ".ico", ".png", ".jpg", ".jpeg", ".csv", ".tsv", ".ini", ".cfg", ".py", ".rst", ".lock")
+                call_fn = (dotted_name(path_arg.func) or getattr(path_arg.func, "attr", "") or "").lower()
+                if any(k in call_fn for k in ("join", "path")):
+                    for a in path_arg.args:
+                        if isinstance(a, ast.Constant) and isinstance(a.value, str) and any(a.value.lower().endswith(ext) for ext in exts):
+                            is_anchored = True
+                            break
+                        if isinstance(a, ast.Attribute) and a.attr.lower() in ("vocab_file", "tokenizer_file", "config_file", "local_dir", "name"):
+                            is_anchored = True
+                            break
+                        if isinstance(a, ast.Name) and any(k in a.id.lower() for k in ("json", "yaml", "yml", "config", "vocab", "tokenizer", "gitignore", "dirname", "tmp_dir", "filename", "archive_file", "checkpoint")):
+                            is_anchored = True
+                            break
 
             if not is_anchored:
                 return "FAIL_CLOSED"
@@ -23620,7 +23652,7 @@ class TaintTracker:
             if origin in CWE770_BUFFER_ORIGINS:
                 if prod.args or prod.keywords:
                     return False
-            elif origin in CWE770_WEBSOCKET_ORIGINS:
+            elif origin in CWE770_WEBSOCKET_ORIGINS or origin in CWE770_IPC_ORIGINS:
                 if func.attr != "recv":
                     return False
             elif origin in CWE770_FILE_OPEN_ORIGINS:

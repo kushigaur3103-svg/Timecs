@@ -1749,6 +1749,46 @@ CWE532_REDACTION_CALL_RE = re.compile(
 # `token_url`) are excluded on purpose: they hold "Bearer" or a number, not the secret bytes.
 CWE532_COMPOUND_TOKEN_NAME_RE = re.compile(r"^[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*_tokens?$")
 
+# The test above is a NAME test, and ML code names its counters exactly the way auth code names its
+# secrets: `*_tokens`. The 10 CWE-532 rows the cloud run booked in `src/transformers/` come from four
+# spellings -- `example.doc_tokens` (the SQuAD context paragraphs), `tokenizer.convert_ids_to_tokens`,
+# `num_initial_tokens` (an integer budget) and `generation_config.max_new_tokens` -- and none of the four
+# holds credential bytes. Three of them retire here; the fourth is blessed LOUD by Big-8 and stays, see
+# the note in the table. A name is read as bookkeeping only when some segment says quantity / text
+# payload / conversion AND no segment says credential, so the credential veto wins the way the CWE-208
+# metric partition makes it win: `access_token`, `refresh_token`, `session_tokens`, `api_tokens`,
+# `id_token` and `key_tokens` stay reported. This is name structure, not a path or a file: nothing here
+# knows what a tokenizer module is.
+CWE532_TOKEN_BOOKKEEPING_ROLES = frozenset({
+    # "num", "max" and "min" are deliberately absent. They are quantity words like the rest, but the
+    # Big-8 blessed set books the rows that read them as findings: `generation_config.max_new_tokens`
+    # (corpus_big8/src__transformers__generation__utils.py:2021), `min_new_tokens` (:2047) and
+    # `new_num_tokens` (src__transformers__modeling_utils.py:2782) are all 119/119 keys, and the engine
+    # reaches them through this same route in the default mode, so adding any of the three to this table
+    # turns a blessed key MISSING. Measured: with "num"/"max"/"min" present, big8_ab reported
+    # baseline=119 now=115 MISSING=4. `num_initial_tokens` still retires on "initial" alone.
+    "nb", "n", "total", "count", "counter", "initial", "remaining", "allowed",
+    "budget", "size", "len", "doc", "docs", "text", "texts", "sentence", "sentences", "paragraph",
+    "paragraphs", "word", "words", "subword", "subwords", "vocab", "vocabulary", "convert", "decode",
+    "encode", "ids", "batch", "batches", "segment", "segments", "special",
+})
+CWE532_TOKEN_CREDENTIAL_VETO = frozenset({
+    "auth", "access", "refresh", "session", "csrf", "bearer", "api", "secret", "secrets", "jwt",
+    "oauth", "password", "passwd", "pwd", "credential", "credentials", "private", "public", "key",
+    "keys", "id", "signed", "signature", "service", "client", "account", "user", "verify", "token",
+})
+_TOKEN_NAME_SEGMENT_RE = re.compile(r"[^0-9A-Za-z]+")
+
+
+def name_is_token_bookkeeping(name: str) -> bool:
+    """True when a `*_tokens` identifier names a count, a text payload or a conversion -- never a secret."""
+    segments = [s for s in _TOKEN_NAME_SEGMENT_RE.split(name.lower()) if s]
+    if not segments or segments[-1] not in ("token", "tokens"):
+        return False
+    if any(s in CWE532_TOKEN_CREDENTIAL_VETO for s in segments):
+        return False
+    return any(s in CWE532_TOKEN_BOOKKEEPING_ROLES for s in segments)
+
 # `client_secret` loses the same fight `id_token` lost: the credential word is spelled out, but `_`
 # glues it to its qualifier, so `\bsecret\b` finds no boundary. Mirror the compound form for the
 # suffixes that can only mean a credential - `_secret`, `_password`, `_credential`. `_key` is left
@@ -2754,6 +2794,16 @@ CWE3A_WEAK_HASH_NAMES = {
     "hashlib.md5", "hashlib.sha1", "hashlib.sha256", "hashlib.sha512",
     "md5", "sha1", "sha256", "sha512",
 }
+# `pin` is a credential word (a PIN) and it is also the substring of `stopping`, `mapping`, `grouping`,
+# `clipping` and `dropping`, which is how `if early_stopping == "never" and length_penalty > 0.0:` in a
+# beam-search loop reads as a hardcoded-password comparison
+# (transformers/generation/flax_utils.py:865, tf_utils.py:2328). It cannot be fixed by anchoring it here:
+# the Big-8 blessed set books that exact statement as a finding -- corpus_big8/
+# src__transformers__generation__utils.py:3398 is a 119/119 key -- and the beam-search loops in
+# flax_utils.py:865 and tf_utils.py:2328 are the same AST (same `Compare`, same `Name`, same `str`
+# constant), so `(?<![A-Za-z])pin(?![A-Za-z])` drops that blessed key. Measured: with the anchored
+# variant, big8_ab reported baseline=119 now=115 MISSING=4. The FP stands until the blessed row is
+# re-booked by a human decision; the word boundary is not the lever.
 CWE3A_PASSWORD_NAME_RE = re.compile(r"(?i).*(password|passwd|pwd|\bpw\b|user_pass|secret|pin|auth|credential).*")
 CWE3A_SALT_NAME_RE = re.compile(r"(?i)^(salt|pepper|nonce|iv)$")
 CWE3A_SENSITIVE_VALUE_RE = re.compile(r"(?i).*(password|passwd|pwd|secret|api_key|access_token|credential|token|secret_key).*")
@@ -4024,9 +4074,28 @@ _SUBSTITUTION_MARKER_RE = re.compile(
     r'|%[#0\- +]*\d*(?:\.\d+)?[sdifrxeogc%]'
     r'|\{[^{}]*\}')
 _MARKUP_SHAPE_RE = re.compile(
-    r'<\s*/?\s*(?:[A-Za-z][A-Za-z0-9-]*(?=[\s>/])'
+    # No whitespace is allowed between `<` and the name: the HTML tokenizer requires an ASCII letter
+    # (or `/`) immediately after `<`, and `< max (got min: 3)` becomes a bogus comment, not a tag. The
+    # old `<\s*/?\s*` read that space as markup and reported `raise ValueError(f"min should be < max ...")`
+    # (transformers/activations.py:115) as a dynamic HTML construction.
+    r'</?(?:[A-Za-z][A-Za-z0-9-]*(?=[\s>/])'
     r'|(?:svg|xhtml|math|html|body)\s*:'
     + r'|(?:' + _MARKUP_HOLE + r')(?=[\s>/]))')
+
+# BPE / SentencePiece / WordPiece subword delimiters, spelled as tokenizer control symbols and nothing
+# else. Counted over the 2,847-file arena by exact string-literal equality: 35 literals are `</w>`, 299
+# `<unk>`, 175 `<pad>`, 30 `<cls>`, 13 `<eos>`, 10 `<sep>`, 5 `<bos>`, 5 `<eod>`, 4 `<eop>`, 2 `<blank>` --
+# and 7 of the 8 CWE-79 rows this retires are the same line in 7 tokenizers (biogpt, clip, flaubert, fsmt,
+# herbert, openai, xlm): `return token + "</w>"`. None of these names is an HTML, SVG or MathML element, so
+# the literal alone instantiates an inert unknown element: it carries no attribute, no event handler and no
+# script-bearing name, and cannot execute. Deliberately NOT in this set: `<s>` and `<mask>`, which ARE
+# real elements (strike-through, SVG clipping) -- no arena row needed them, so they stay reported rather
+# than buying rows by muting markup that a browser does parse.
+SUBWORD_CONTROL_SYMBOL_LITERALS = frozenset({
+    '<w>', '</w>', '<unk>', '</unk>', '<pad>', '</pad>', '<sep>', '</sep>', '<cls>', '</cls>',
+    '<bos>', '</bos>', '<eos>', '</eos>', '<blank>', '</blank>', '<eop>', '</eop>', '<eod>', '</eod>',
+    '<null>',
+})
 
 # A `Markup` template is author text when nothing unescaped can reach it: a literal, a translation
 # looked up by a literal key, or only escape-family / numeric calls interpolated into it. markupsafe
@@ -4070,6 +4139,8 @@ def text_has_markup_shape(text: str) -> bool:
     every string constant in a module stays one `in` test plus one scan.
     """
     if '<' not in text:
+        return False
+    if text in SUBWORD_CONTROL_SYMBOL_LITERALS:
         return False
     if _MARKUP_SHAPE_RE.search(text):
         return True
@@ -17590,8 +17661,10 @@ class TaintTracker:
                 continue
             # The identifier test first: it already covers `log.info("%s", password)` and its
             # report line is the call, which is what shipped findings pin to.
-            report_node = node if any(self._blindspot_sensitive_names(arg) for arg in node.args) \
-                else self._c532_container_bearing_arg(node, module)
+            sensitive = [name for arg in node.args for name in self._blindspot_sensitive_names(arg)]
+            if sensitive and self._c532_names_are_added_tokens(sensitive, node, tree):
+                sensitive = []
+            report_node = node if sensitive else self._c532_container_bearing_arg(node, module)
             if report_node is None and self._c532_alias_bearing_arg(node, module):
                 report_node = node
             # Last, and only for arguments that named nothing above: a builtin rewrapping the
@@ -17611,8 +17684,27 @@ class TaintTracker:
                 "CWE-532: Insertion of sensitive data into log entry",
                 "SENSITIVE_DATA_LOGGING")
 
+    def _c532_names_are_added_tokens(self, names, call, tree):
+        """True when every credential name on the log line resolves to a vocabulary entry being built.
+
+        `tokenization_utils.py:505` logs `f"Adding {token} to the vocabulary"`, and the `token` in scope
+        is bound a few lines earlier by `token = AddedToken(token, rstrip=..., normalized=...,
+        special=...)` -- a vocabulary record with fields, not a secret. The proof is the constructor and
+        nothing looser: the latest assignment the map holds for the name must be a call whose callee is
+        `AddedToken`, so a `token` that was read from a header, a form field or a database row stays
+        reported. Names the map cannot resolve keep the row loud, which is the only safe direction.
+        """
+        table = self._memo_assignment_map(tree)
+        for name in names:
+            value = self._blindspot_latest_assignment(table, name, call.lineno)
+            if not isinstance(value, ast.Call):
+                return False
+            if (dotted_name(value.func) or "").split(".")[-1] != "AddedToken":
+                return False
+        return True
+
     def _c532_live_compound_token_nodes(self, expr, table, use_lineno):
-        """`id_token`-family names *expr* reads, minus the ones already replaced by a placeholder."""
+        """`id_token`-family names *expr* reads, minus placeholders and minus ML bookkeeping."""
         live = []
         for sub in ast.walk(expr):
             if isinstance(sub, ast.Name):
@@ -17625,7 +17717,8 @@ class TaintTracker:
             else:
                 continue
             if not CWE532_COMPOUND_TOKEN_NAME_RE.match(name) \
-                    or SENSITIVE_NAME_EXEMPT_RE.search(name):
+                    or SENSITIVE_NAME_EXEMPT_RE.search(name) \
+                    or name_is_token_bookkeeping(name):
                 continue
             value = self._blindspot_latest_assignment(table, name, use_lineno)
             if value is not None and self._c532_value_redacted(value):

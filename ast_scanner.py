@@ -24055,6 +24055,9 @@ class TaintTracker:
         """
         for child in ast.walk(node):
             if isinstance(child, ast.Call):
+                if isinstance(child.func, ast.Attribute) and child.func.attr in (
+                        "replace", "startswith", "endswith", "split", "strip", "lower", "upper", "lstrip", "rstrip"):
+                    continue
                 text = (dotted_name(child.func) or "").casefold()
                 if any(word in text for word in CWE208_CODEC_WORDS):
                     return True

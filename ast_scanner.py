@@ -1097,6 +1097,10 @@ CWE338_DISPLAY_VALUE_MARKERS = frozenset({
     # and two whose *enclosing function* is `_backoff_seconds` / `_retry_wait_seconds`), and 0 of the 16
     # blessed CWE-338 keys, because no blessed key's own vocabulary contains any of them.
     "interval", "seconds", "timeout", "backoff", "wait", "cooldown", "keepalive",
+    # Hardware compute and execution unit allocations (GPU device sampling, worker device selection).
+    # Zero cryptographic or security meaning: sampling GPU IDs (`cuda_devices = random.sample(free_gpu_list, ...)`)
+    # for multiprocessing workers is safe hardware resource distribution.
+    "device", "devices", "gpu", "gpus", "cuda",
 })
 # `seed` is the one word in this family that must NEVER join the table: `seed = random.randint(0, 2**31)`
 # is exactly how an RNG is blessed before a credential draw, and it is a locked-loud shape in

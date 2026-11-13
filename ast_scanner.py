@@ -11970,6 +11970,22 @@ class TaintTracker:
         """
         if isinstance(expr, (ast.List, ast.Tuple)):
             return expr
+        if (isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute)
+                and expr.func.attr == "split" and not expr.args and not expr.keywords):
+            val = expr.func.value
+            if isinstance(val, ast.Constant) and isinstance(val.value, str):
+                tokens = val.value.split()
+                if tokens:
+                    return ast.List(elts=[ast.Constant(value=t) for t in tokens], ctx=ast.Load())
+            elif isinstance(val, ast.JoinedStr) and val.values:
+                first = val.values[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    tokens = first.value.split()
+                    if tokens:
+                        elts = [ast.Constant(value=t) for t in tokens]
+                        for v in val.values[1:]:
+                            elts.append(v)
+                        return ast.List(elts=elts, ctx=ast.Load())
         if depth >= 3 or not isinstance(expr, ast.Name):
             return None
         records = _assignment_records(self.assignments_by_scope, expr.id, scope_id, lineno)

@@ -1715,7 +1715,8 @@ SENSITIVE_VALUE_NAME_RE = re.compile(
 # A name that only *talks about* a credential - a boolean flag, a form column label, a schema
 # key - holds no secret value, so it is not a log leak.
 SENSITIVE_NAME_EXEMPT_RE = re.compile(
-    r"(?i)^(?:has|is|was|were|did|does|should|can|could|must|need)_[a-z_0-9]+$|"
+    r"(?i)^(?:has|is|was|were|did|does|should|can|could|must|need|use)_[a-z_0-9]+$|"
+    r"^(?:bos|eos|pad|unk|sep|cls|mask)_tokens?$|"
     r"_(?:flag|bool|sent|set|required|enabled|exists|valid|ok|done|field|fields|label|"
     r"name|names|schema|type|types|choices|keys|params)$")
 
@@ -4023,7 +4024,7 @@ _SUBSTITUTION_MARKER_RE = re.compile(
     r'|%[#0\- +]*\d*(?:\.\d+)?[sdifrxeogc%]'
     r'|\{[^{}]*\}')
 _MARKUP_SHAPE_RE = re.compile(
-    r'<\s*/?\s*(?:[A-Za-z][A-Za-z0-9_-]*(?=[\s>/])'
+    r'<\s*/?\s*(?:[A-Za-z][A-Za-z0-9-]*(?=[\s>/])'
     r'|(?:svg|xhtml|math|html|body)\s*:'
     + r'|(?:' + _MARKUP_HOLE + r')(?=[\s>/]))')
 
@@ -12340,7 +12341,7 @@ class TaintTracker:
         table[scope_id] = result
         return result
 
-    def _xml_sink_recognised(self, canon_name: Optional[str]) -> bool:
+    def _xml_sink_recognised(self, canon_name: Optional[str], node: Optional[ast.AST] = None) -> bool:
         """Whether a resolved CWE-611 match still names an XML entity parser.
 
         `rule_engine.CWE611_SINKS` carries the bare leaves `parse`/`fromstring` for aliased imports,
@@ -12349,6 +12350,10 @@ class TaintTracker:
         non-XML parser, so it stays reported, and every leaf under an XML root (`lxml.html`,
         `lxml.objectify`, the stdlib spellings, defusedxml) still answers.
         """
+        if node is not None and isinstance(getattr(node, "func", None), ast.Attribute):
+            receiver = node.func.value
+            if isinstance(receiver, ast.Call) and isinstance(getattr(receiver, "func", None), ast.Name) and receiver.func.id == "super":
+                return False
         if not canon_name or canon_name.startswith("shadowed:"):
             return True
         if "." not in canon_name:
@@ -12537,7 +12542,7 @@ class TaintTracker:
                 return False
             matched = match_sink_rule(node, name, canon)
             if matched:
-                if matched.cwe_id == "CWE-611" and not self._xml_sink_recognised(canon):
+                if matched.cwe_id == "CWE-611" and not self._xml_sink_recognised(canon, node=node):
                     return False
                 if matched.cwe_id == "CWE-327" and self._is_exempt_cwe327(node, scope_id, call_lineno):
                     return False
@@ -12552,7 +12557,7 @@ class TaintTracker:
                 return False
             matched = match_sink_rule(node, name, canon)
             if matched:
-                if matched.cwe_id == "CWE-611" and not self._xml_sink_recognised(canon):
+                if matched.cwe_id == "CWE-611" and not self._xml_sink_recognised(canon, node=node):
                     return False
                 if matched.cwe_id == "CWE-327" and self._is_exempt_cwe327(node, scope_id, call_lineno):
                     return False
@@ -12766,7 +12771,7 @@ class TaintTracker:
         else:
             matched_rule = match_sink_rule(node, name, canon_name)
             if matched_rule and matched_rule.cwe_id == "CWE-611" \
-                    and not self._xml_sink_recognised(canon_name):
+                    and not self._xml_sink_recognised(canon_name, node=node):
                 matched_rule = None
             if matched_rule and isinstance(node.func, ast.Attribute) and node.func.attr == "render":
                 if not self._is_jinja_template_expr(node.func.value, scope_id):

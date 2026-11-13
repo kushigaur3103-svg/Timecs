@@ -26333,7 +26333,14 @@ class TaintTracker:
                         _emit89(node, mod_name, scope_id)
                     continue
                 if attr in builder_attrs:
-                    if _vulnerable_call(node, scope_id, mod_name, require_shape_or_db=False):
+                    require_shape = False
+                    if attr == "join":
+                        recv = node.func.value
+                        if isinstance(recv, (ast.Constant, ast.Str)) or (
+                            isinstance(recv, ast.Attribute) and recv.attr in ("sep", "linesep")
+                        ):
+                            require_shape = True
+                    if _vulnerable_call(node, scope_id, mod_name, require_shape_or_db=require_shape):
                         _emit89(node, mod_name, scope_id)
                     continue
                 if attr in django_attrs and _has_objects_chain(node):

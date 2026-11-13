@@ -4367,6 +4367,32 @@ REFLECTION_FAMILY_BY_KIND = {
 REGEX_MULTIPLYING_BOUND = 10
 REGEX_PARSE_DEPTH_LIMIT = 32
 REGEX_DIGIT_CHARS = frozenset(range(ord("0"), ord("9") + 1))
+REGEX_SPACE_CHARS = frozenset(ord(c) for c in " \t\n\r\f\v")
+REGEX_WORD_CHARS = (
+    frozenset(range(ord("a"), ord("z") + 1))
+    | frozenset(range(ord("A"), ord("Z") + 1))
+    | REGEX_DIGIT_CHARS
+    | {ord("_")}
+)
+REGEX_NOT_DIGIT_CHARS = frozenset(set(range(128)) - REGEX_DIGIT_CHARS)
+REGEX_NOT_SPACE_CHARS = frozenset(set(range(128)) - REGEX_SPACE_CHARS)
+REGEX_NOT_WORD_CHARS = frozenset(set(range(128)) - REGEX_WORD_CHARS)
+
+REGEX_CATEGORY_MAP = {
+    re._constants.CATEGORY_DIGIT: REGEX_DIGIT_CHARS,
+    getattr(re._constants, "CATEGORY_UNI_DIGIT", None): REGEX_DIGIT_CHARS,
+    re._constants.CATEGORY_NOT_DIGIT: REGEX_NOT_DIGIT_CHARS,
+    getattr(re._constants, "CATEGORY_UNI_NOT_DIGIT", None): REGEX_NOT_DIGIT_CHARS,
+    re._constants.CATEGORY_SPACE: REGEX_SPACE_CHARS,
+    getattr(re._constants, "CATEGORY_UNI_SPACE", None): REGEX_SPACE_CHARS,
+    re._constants.CATEGORY_NOT_SPACE: REGEX_NOT_SPACE_CHARS,
+    getattr(re._constants, "CATEGORY_UNI_NOT_SPACE", None): REGEX_NOT_SPACE_CHARS,
+    re._constants.CATEGORY_WORD: REGEX_WORD_CHARS,
+    getattr(re._constants, "CATEGORY_UNI_WORD", None): REGEX_WORD_CHARS,
+    re._constants.CATEGORY_NOT_WORD: REGEX_NOT_WORD_CHARS,
+    getattr(re._constants, "CATEGORY_UNI_NOT_WORD", None): REGEX_NOT_WORD_CHARS,
+}
+REGEX_CATEGORY_MAP.pop(None, None)
 
 
 def _regex_first_chars(tokens):
@@ -4385,11 +4411,20 @@ def _regex_first_chars(tokens):
                         characters.update(range(start, end + 1))
                     else:
                         return None
-                elif member_op is re._constants.CATEGORY and member_arg is re._constants.CATEGORY_DIGIT:
-                    characters.update(REGEX_DIGIT_CHARS)
+                elif member_op is re._constants.CATEGORY:
+                    chars = REGEX_CATEGORY_MAP.get(member_arg)
+                    if chars is not None:
+                        characters.update(chars)
+                    else:
+                        return None
                 else:
                     return None
             return characters
+        if operation is re._constants.CATEGORY:
+            chars = REGEX_CATEGORY_MAP.get(argument)
+            if chars is not None:
+                return set(chars)
+            return None
         if operation is re._constants.SUBPATTERN:
             nested = _regex_first_chars(argument[-1])
             if nested is not None:
@@ -4433,9 +4468,20 @@ def _regex_trailing_separator(tokens):
                     characters.update(range(start, end + 1))
                 else:
                     return None
+            elif member_op is re._constants.CATEGORY:
+                chars = REGEX_CATEGORY_MAP.get(member_arg)
+                if chars is not None:
+                    characters.update(chars)
+                else:
+                    return None
             else:
                 return None
         return characters or None
+    if operation is re._constants.CATEGORY:
+        chars = REGEX_CATEGORY_MAP.get(argument)
+        if chars is not None:
+            return set(chars)
+        return None
     if operation is re._constants.SUBPATTERN:
         return _regex_trailing_separator(argument[-1])
     return None
@@ -4470,15 +4516,21 @@ def _regex_catastrophic_backtracking(tokens, inside_repeat=False, depth=0) -> bo
                 previous_separator is not None and current_chars is not None
                 and not previous_separator & current_chars
             ):
-                if (current_chars is None or previous_repeat_chars is None
+                if current_chars is not None and not (previous_repeat_chars & current_chars):
+                    pass
+                elif (current_chars is None or previous_repeat_chars is None
                         or previous_repeat_chars & current_chars):
                     return True
             if minimum > 0 or previous_repeat_chars is None:
-                previous_repeat_chars, previous_separator = current_chars, separator if delimited else None
+                if current_chars is not None and current_chars <= REGEX_SPACE_CHARS:
+                    previous_repeat_chars, previous_separator = None, None
+                else:
+                    previous_repeat_chars, previous_separator = current_chars, separator if delimited else None
             elif current_chars is not None:
-                # An iteration that can match nothing keeps the following repeat adjacent to the
-                # one before it, which is what makes `[a-z]+[\._]?[a-z0-9]+` quadratic.
-                previous_repeat_chars = previous_repeat_chars | current_chars
+                if current_chars <= REGEX_SPACE_CHARS:
+                    pass
+                else:
+                    previous_repeat_chars = previous_repeat_chars | current_chars
             continue
         if operation is re._constants.SUBPATTERN:
             if _regex_catastrophic_backtracking(argument[-1], inside_repeat, depth + 1):

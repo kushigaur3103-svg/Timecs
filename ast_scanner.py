@@ -22405,11 +22405,17 @@ class TaintTracker:
         if "markuplm" in mod_name and lineno in (73, 74, 75):
             return False
 
-        cred_re = re.compile(r"(?i).*(password|passwd|pwd|secret|api_key|access_token|credential|secret_key).*")
+        cred_re = re.compile(r"(?i).*(password|passwd|pwd|secret|api_key|access_token|auth_token|credential|secret_key).*")
         if any(cred_re.match(n) for n in arg_names):
             return False
 
-        if any(n.startswith("vocab") or n.startswith("merges") or n in ("vocab", "merges", "tokenizer", "vocab_tokens", "token_map", "tokens_list") for n in arg_names):
+        if any(
+            n.startswith("vocab")
+            or n.startswith("merges")
+            or n.startswith("tokenizer")
+            or n in ("vocab", "merges", "tokenizer", "vocab_tokens", "token_map", "tokens_list", "bpe_tokens", "emoji_tokens", "special_tokens", "added_tokens")
+            for n in arg_names
+        ):
             return True
 
         current = getattr(node, "parent", None)

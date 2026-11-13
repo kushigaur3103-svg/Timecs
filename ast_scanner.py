@@ -28568,7 +28568,7 @@ class TaintTracker:
                 current = getattr(current, "parent", None)
             return None
 
-        def _url_static_prefix(expr: ast.AST, scope_id: str, lineno: int):
+        def _url_static_prefix(expr: ast.AST, scope_id: str, lineno: int, walked: set = None):
             """Longest leading text of a URL expression that is provably free of dynamic input.
             A replacement hole (`%s`, `{}`, an f-string field) ends the static run."""
             if expr is None:
@@ -28588,13 +28588,23 @@ class TaintTracker:
                 text = _url_text(expr.func.value, scope_id, lineno, expr)
                 return text.split("{", 1)[0] if isinstance(text, str) else None
             if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
-                left = _url_static_prefix(expr.left, scope_id, lineno)
+                left = _url_static_prefix(expr.left, scope_id, lineno, walked)
                 if left is None:
                     return None
                 if P3_URL_AUTHORITY_RE.match(left):
                     return left
-                right = _url_static_prefix(expr.right, scope_id, lineno)
+                right = _url_static_prefix(expr.right, scope_id, lineno, walked)
                 return left + right if right is not None else left
+            if isinstance(expr, ast.Name):
+                seen = walked if walked is not None else set()
+                key = (scope_id, expr.id)
+                if key not in seen:
+                    seen.add(key)
+                    record = _assigned_value(expr.id, scope_id, lineno)
+                    if record is not None and record.value_node is not None:
+                        res = _url_static_prefix(record.value_node, record.scope_id, record.lineno, seen)
+                        if res is not None:
+                            return res
             text = _url_text(expr, scope_id, lineno)
             if not isinstance(text, str):
                 return None

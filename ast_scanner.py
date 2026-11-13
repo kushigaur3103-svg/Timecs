@@ -6766,6 +6766,38 @@ class TaintTracker:
         arg_names = {n.id for n in ast.walk(node.args[0]) if isinstance(n, ast.Name)}
         return bool(arg_names & supplied)
 
+    def _c94_is_safe_dynamic_module_load(self, node: ast.Call) -> bool:
+        """True when a dynamic module load is provably safe:
+        1. __import__(obj.__module__, ...) where the module name is an existing in-memory object's declaring module.
+        2. importlib.import_module(f".{name}", package="pkg") where the package is a non-empty string literal
+           and the module name is a relative import strictly scoped under that fixed package.
+        """
+        if not isinstance(node, ast.Call) or not node.args:
+            return False
+
+        first_arg = node.args[0]
+        # 1. Object reflection: obj.__module__
+        if isinstance(first_arg, ast.Attribute) and first_arg.attr == "__module__":
+            return True
+
+        # 2. Relative package import with literal package anchor:
+        # e.g. importlib.import_module(f".{module_name}", "transformers.models")
+        package_node = None
+        if len(node.args) > 1:
+            package_node = node.args[1]
+        else:
+            package_node = next((kw.value for kw in node.keywords if kw.arg == "package"), None)
+
+        if package_node is not None and isinstance(package_node, ast.Constant) and isinstance(package_node.value, str) and package_node.value:
+            if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str) and first_arg.value.startswith("."):
+                return True
+            if isinstance(first_arg, ast.JoinedStr) and first_arg.values:
+                first_part = first_arg.values[0]
+                if isinstance(first_part, ast.Constant) and isinstance(first_part.value, str) and first_part.value.startswith("."):
+                    return True
+
+        return False
+
     def _is_http_transport_module(self, mod_name_or_path: str) -> bool:
         """True for the transport/session/pool layer inside an HTTP client package."""
         stem, dirs = self._module_stem_and_dirs(mod_name_or_path)
@@ -10442,7 +10474,11 @@ class TaintTracker:
         if not mod_name:
             return False
         if cwe_id == "CWE-94":
-            return self._is_pytest_fixture_dynamic_import(node, mod_name)
+            if self._is_pytest_fixture_dynamic_import(node, mod_name):
+                return True
+            if self._c94_is_safe_dynamic_module_load(node):
+                return True
+            return False
         if cwe_id == "CWE-918":
             return self._is_http_transport_module(mod_name)
         if cwe_id == "CWE-117":
@@ -18284,6 +18320,11 @@ class TaintTracker:
         not be a literal - so `open('test.log', 'a')` log rotation and a static generated
         file stay silent.
         """
+        stem = filename.replace("\\", "/").rsplit("/", 1)[-1]
+        if stem.endswith(".py"):
+            stem = stem[:-3]
+        if stem in PACKAGING_SCRIPT_STEMS:
+            return
         table = self._memo_assignment_map(tree)
         # This pass runs first in the module's blindspot iteration, so it builds the handle->open()
         # map from the module's cached walk; the CWE-312 pass, which asks for the same structure for
@@ -18364,6 +18405,16 @@ class TaintTracker:
         if mode_value is None or not any(char in "wax+" for char in mode_value):
             return False
         path = self._c22_path_expression(opened.args[0], table, use_lineno)
+        for sub in ast.walk(path):
+            if isinstance(sub, ast.Call) and getattr(getattr(sub.func, "value", None), "id", None) == "tempfile":
+                return False
+            if isinstance(sub, ast.Name) and any(t in sub.id.lower() for t in ("tmp", "temp")):
+                return False
+        for sub in ast.walk(opened.args[0]):
+            if isinstance(sub, ast.Call) and getattr(getattr(sub.func, "value", None), "id", None) == "tempfile":
+                return False
+            if isinstance(sub, ast.Name) and any(t in sub.id.lower() for t in ("tmp", "temp")):
+                return False
         return any(isinstance(part, ast.Constant) and isinstance(part.value, str)
                    and part.value.endswith(".py") for part in ast.walk(path))
 

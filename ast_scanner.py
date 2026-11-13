@@ -2785,12 +2785,13 @@ CWE3A_UPLOAD_RANDOMIZERS = {"uuid4", "uuid.uuid4", "uuid4_rename"}
 # covers `xm.save` -> `torch_xla.core.xla_model.save` and `smp.save` ->
 # `smdistributed.modelparallel.torch.save` without a brittle bare-alias spelling list.
 CWE434_SERIALIZER_NAMESPACES = {"torch", "torch_xla", "smdistributed", "onnx"}
-CWE434_SERIALIZER_RECEIVERS = {"model_card", "modelcard"}
+CWE434_SERIALIZER_RECEIVERS = {"model_card", "modelcard", "backend_tokenizer"}
 CWE434_FRAMEWORK_SERIALIZER_METHODS = frozenset({
     "save_vocabulary", "_save_vocabulary",
     "save_pretrained", "_save_pretrained",
     "save_image_processor", "_save_image_processor",
     "save_config", "_save_config",
+    "on_save", "_on_save",
 })
 CWE434_IN_MEMORY_BUFFER_NAMES = frozenset({
     "out", "_bytes", "buf", "buffer", "bio", "stream", "bytes_io", "byte_io",
@@ -6607,12 +6608,20 @@ class TaintTracker:
         is_framework_method = False
         is_in_memory_buffer = False
         is_temp_dir_save = False
+        is_index_save = False
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "save":
+            recv = node.func.value
+            if isinstance(recv, ast.Call) and getattr(recv.func, "attr", "") == "get_index":
+                is_index_save = True
 
         # Helper: check if receiver expression is rooted in self or cls
         def _is_rooted_in_self(expr: ast.AST) -> bool:
             curr = expr
-            while isinstance(curr, ast.Attribute):
-                curr = curr.value
+            while isinstance(curr, (ast.Attribute, ast.Call)):
+                if isinstance(curr, ast.Call):
+                    curr = curr.func
+                else:
+                    curr = curr.value
             return isinstance(curr, ast.Name) and curr.id in ("self", "cls")
 
         # Check enclosing function
@@ -6671,7 +6680,7 @@ class TaintTracker:
                             is_in_memory_buffer = True
                             break
 
-        if not (is_serializer_ns or is_framework_method or is_in_memory_buffer or is_temp_dir_save):
+        if not (is_serializer_ns or is_framework_method or is_in_memory_buffer or is_temp_dir_save or is_index_save):
             return False
 
         for arg in list(node.args) + [kw.value for kw in getattr(node, "keywords", [])]:

@@ -13068,8 +13068,10 @@ class TaintTracker:
         if "function:" in current_scope:
             nested = f"{current_scope}.{call_name}"
             if nested in self.functions: return nested
+            if self.audit_all and f"{nested}.__init__" in self.functions: return f"{nested}.__init__"
         local_glob = f"{mod_name}:function:{call_name}"
         if local_glob in self.functions: return local_glob
+        if self.audit_all and f"{local_glob}.__init__" in self.functions: return f"{local_glob}.__init__"
         parts = call_name.split(".")
 
         if len(parts) > 1:
@@ -13078,6 +13080,7 @@ class TaintTracker:
                 r_func = ".".join(parts[i:])
                 test_scope = f"{r_mod}:function:{r_func}"
                 if test_scope in self.functions: return test_scope
+                if self.audit_all and f"{test_scope}.__init__" in self.functions: return f"{test_scope}.__init__"
                 trans = self._resolve_transitive_import(r_mod, r_func, visited, depth)
                 if trans: return trans
 
@@ -13139,6 +13142,7 @@ class TaintTracker:
                 r_func = ".".join(parts2[i:])
                 test_scope = f"{r_mod}:function:{r_func}"
                 if test_scope in self.functions: return test_scope
+                if self.audit_all and f"{test_scope}.__init__" in self.functions: return f"{test_scope}.__init__"
                 trans = self._resolve_transitive_import(r_mod, r_func, visited, depth)
                 if trans: return trans
         return None

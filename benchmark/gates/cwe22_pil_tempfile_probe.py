@@ -84,11 +84,12 @@ Measured evidence behind the numbers
                       triple: `parity asks=8 answers_temp_root=0`, `big8 asks=13 answers_temp_root=0`, and
                       the same sweep answers True on the three proven-temp controls, so the zero is a
                       refusal and not an unasked question.
-  findings          : 61 fixture shapes -- 12 loud->quiet rows the guard itself earns, 28 must-report rows
+  findings          : 61 fixture shapes -- 12 loud->quiet rows the guard itself earns, 29 must-report rows
                       (two of them are the move pitch's own shapes, one is the round-3 alive control beside
-                      the bare-import spelling), 18 already quiet at both seals (never claimed as wins; two
-                      of them are the proof that a move destination is never inspected and that
-                      `os.makedirs` is not a path sink) and 3 booked round-3 supersessions. ADDED
+                      the bare-import spelling, one is the 2026-11-13 constructor-hop row below), 18 already
+                      quiet at both seals (never claimed as wins; two of them are the proof that a move
+                      destination is never inspected and that
+                      `os.makedirs` is not a path sink) and 2 booked round-3 supersessions. ADDED
                       (quiet->loud) is 0 and is asserted as 0. TIER 3 prints the bucket arithmetic and
                       fails the gate if the four buckets do not add back to 61. These tallies were
                       re-measured this round by `scratch/_c22_r3_seal_remeasure.py` (they read 34/3/13/18
@@ -152,12 +153,13 @@ CWE-22 filesystem sink now owes a resolved untrusted origin before any of the fo
 `ProvenanceState.UNKNOWN` prune arm) may report. It answers False -- the row stays loud, unchanged -- when
 the node is not a `Call`, when the sink is an archive constructor or an extraction (the sacred floor),
 when `_c22_path_sink_reaches_operator` finds an operator/CLI/remote value reaching one of the arguments,
-or when the row is pinned in `CWE22_OPEN_TAINT_KEEP_LOUD` / `CWE22_ENTRYPOINT_KEEP_LOUD`. Three seal rows
-of this file were the retired generic "dynamic variable used in file path" fallback and nothing else:
+or when the row is pinned in `CWE22_OPEN_TAINT_KEEP_LOUD` / `CWE22_ENTRYPOINT_KEEP_LOUD`. Two seal rows
+of this file are the retired generic "dynamic variable used in file path" fallback and nothing else:
 `pytest_tmp_path_param` (a pytest `tmp_path` parameter with no origin anywhere in the module),
 `bare_import_mkdtemp` (`from tempfile import mkdtemp`, whose root this guard has always refused, so it
-had no proof of its own to fall back on), and `self_attr_from_constructor_param` (`self.outdir = where`,
-a class field written from a parameter).
+had no proof of its own to fall back on). A third -- `self_attr_from_constructor_param`, a class field
+written from a constructor parameter -- was booked beside them until 2026-11-13, when the hop that
+silenced it was resolved and it moved back to loud; the paragraph that ends this section is its record.
 
 Attribution came first, and it is the only kind this round accepts: `python scratch/_c22_r3_engines.py
 --diff --name m.py --source ...` on each of the three prints `head_rows=1 live_rows=0` -- the sink line
@@ -170,8 +172,11 @@ no other quiet row, and no booked row fails to come back. TIER 3 asserts that ar
 a fourth supersession cannot land here unfiled and a booked row cannot be quieted by some clause nobody
 is arguing about. `retire_owed_taint_requirement` is the same statement as a falsification: restoring the
 fallback (`_c22_open_sink_owes_proven_taint` answering False) measures
-`CAUGHT on 3 row(s) [T3=3] -- bare_import_mkdtemp, pytest_tmp_path_param, self_attr_from_constructor_param`
--- three rows, the booked three, and nothing else in nine tiers. The booking therefore reads in both
+`CAUGHT on 2 row(s) [T3=2] -- bare_import_mkdtemp, pytest_tmp_path_param` -- two rows, the booked two, and
+nothing else in nine tiers (it read 3 and named `self_attr_from_constructor_param` too until 2026-11-13,
+when that row left the booking for `MUST_REPORT_ROWS` and the mutation
+`retire_constructor_scope_resolution` became the one that owns its loudness). The booking therefore reads
+in both
 directions from a running engine: TIER 3 proves no other quiet row needs the blanket, the mutation proves
 no booked row survives without it. Re-running the whole falsification suite alongside these edits measured
 21/21 mutations CAUGHT and 0 ERROR, `scratch/_c22_r3_seal_pil_mut_results.txt` keeps that census.
@@ -179,18 +184,27 @@ no booked row survives without it. Re-running the whole falsification suite alon
 `sys.argv`/`os.environ` inline and through one assignment, `os.path.join("/srv", sys.argv[1])`, module
 constants, rebinds, a helper parameter called with argv, and `shutil.rmtree(options.out_dir)` after a
 real `argparse` namespace; it does not resolve an f-string or concat into a local, a bare-imported
-`mkdtemp()` with no `tempfile.` receiver, or an attribute hop. Re-spelling these three to force loudness
-would have deleted each fixture's proposition to buy a row.
+`mkdtemp()` with no `tempfile.` receiver, or (as this table was measured) an attribute hop. Re-spelling
+these three to force loudness would have deleted each fixture's proposition to buy a row.
 
-The attribute hop is a reported limitation, not a hidden one. `self_attr_from_constructor_param` does
-name a recognised root -- `GateCase(request.args.get("d")).clean()` -- and the row still went quiet, so
-the question was measured rather than assumed: `python scratch/_c22_r3_engines.py --diff --name m.py
---source ...` on `GateCase(sys.argv[1]).clean()` -- the same class handed the strongest recognised root
-the walk table knows, through the same constructor -- prints `head_rows=1 live_rows=0`, so the quiet is
-the hop's, not the root's, because `_c22_bound_values` walks a parameter back to its call sites and no
-shipped walk follows a constructor argument into a `self.` field written in another frame. That gap is
-the engine's, and it belongs in this paragraph rather than in a fixture: if the hop is ever taught to
-read the call site, this row moves back to loud and the booking above is what will say so.
+The attribute hop was a reported limitation, not a hidden one, and it has now closed. `self_attr_from_constructor_param`
+does name a recognised root -- `GateCase(request.args.get("d")).clean()` -- and the row still went quiet in
+round 3, so the question was measured rather than assumed: `python scratch/_c22_r3_engines.py --diff --name
+m.py --source ...` on `GateCase(sys.argv[1]).clean()` -- the same class handed the strongest recognised root
+the walk table knows, through the same constructor -- printed `head_rows=1 live_rows=0`, so the quiet was
+the hop's, not the root's, because `_c22_bound_values` walks a parameter back to its call sites and no walk
+shipped then followed a constructor argument into a `self.` field written in another frame:
+`_resolve_function_scope` answered None for `GateCase(...)`, so there was no `__init__` scope whose `where`
+could be walked at all. This paragraph said that if the hop were ever taught to read the call site the row
+would move back to loud and the booking would be what says so, and that is exactly what happened on
+2026-11-13: the resolver now returns `ClassName.__init__`, Gate-1's corpus case
+`TCS-BENCH-CWE22-V04-BAD` (the same shape through `input()`) went FN -> TP, and this row went quiet -> loud
+with the shipped engine while all 60 other shapes held their seals. The attribution is measured, not
+asserted: TIER 3 books it loud and the mutation `retire_constructor_scope_resolution` -- the resolver
+refusing an `.__init__` scope, which is HEAD's behaviour -- must move this one row and only this one row
+back to quiet to pass. Loud here is a recall gain, not a fallback: with the generic blanket still retired,
+the report comes from resolved dataflow, and the guard's own answer on this exact source stays False
+(TIER 4, `self_attr_from_constructor_param_caller`), so nothing about this guard's exemption widened.
 
 What this guard decides did not move. All three fixtures are still asked of
 `_c22_cleanup_is_temp_teardown` at TIER 4 -- `pytest_tmp_path_param`, `bare_import_mkdtemp`, and the new
@@ -272,11 +286,13 @@ URL = 'url = request.args.get("u")\nprint(url)\n'
 # Rows whose loud answer was the generic "dynamic variable used in file path" fallback that round 3
 # retired, and nothing else. They are booked here instead of being folded into `FP_ROWS`, because the
 # clause that silenced them is `_c22_open_sink_owes_proven_taint` and not this guard: `FP_ROWS` is the
-# list `delete_temp_guard` must bring back, and these three are not its rows. Every label here is
+# list `delete_temp_guard` must bring back, and these two are not its rows. Every label here is
 # measured loud on HEAD's snapshot, quiet live, and loud again under the restored blanket -- see the
-# docstring and `scratch/_c22_r3_seal_remeasure.py` -- and TIER 3 asserts all three statements.
-BLANKET_RETIRED_ROWS = ('pytest_tmp_path_param', 'bare_import_mkdtemp',
-                        'self_attr_from_constructor_param')
+# docstring and `scratch/_c22_r3_seal_remeasure.py` -- and TIER 3 asserts each of those statements.
+# `self_attr_from_constructor_param` left this list on 2026-11-13: the constructor hop that made it quiet
+# is now resolved, so its silence is no longer anyone's, and TIER 3 books it loud under the mutation
+# `retire_constructor_scope_resolution`, which must put it back to quiet to prove what reports it.
+BLANKET_RETIRED_ROWS = ('pytest_tmp_path_param', 'bare_import_mkdtemp')
 
 SHAPES = [
     # ---- proven temp roots: retired by this guard, or already silent before it ----
@@ -399,17 +415,21 @@ SHAPES = [
      '    def setUp(self):\n        self.tmpdirname = tempfile.mkdtemp()\n\n'
      '    def go(self):\n        self.tmpdirname = request.args["dir"]\n'
      '        shutil.rmtree(self.tmpdirname)\n', 'loud', 'loud'),
-    # 2026-11-10 supersession, booked in `BLANKET_RETIRED_ROWS`. The call site does name a request value
-    # and the row still went quiet, because the hop the walk cannot take is a constructor argument into a
-    # `self.` field written in another frame -- `GateCase(sys.argv[1]).clean()` reads quiet the same way
-    # (`scratch/_c22_r3_engines.py --diff`, and the docstring), which is why this is reported as an engine
-    # gap rather than earned with a spelling that no longer means a pytest-shaped teardown. The fixture's
-    # proposition is the retired "attribute used in a file path" assumption, and the guard's refusal on
-    # this exact source is now asserted at TIER 4 (`self_attr_from_constructor_param_caller`).
+    # 2026-11-13: LOUD, and booked as must-report. Round 3 filed this row as a supersession of the retired
+    # generic fallback because the walk could not take the hop -- `GateCase(request.args.get("d"))` resolved
+    # to no scope at all, so `where` never reached `self.outdir` and the delete looked like an unproven bare
+    # attribute. `_resolve_function_scope` now resolves a constructor call onto `ClassName.__init__`, so the
+    # parameter's value is found at its call site and the row reports on proven dataflow instead of on
+    # "cannot prove this safe". Measured both ways on this fixture: shipped engine reports L13, the same
+    # engine with `.__init__` resolution refused reports nothing (`retire_constructor_scope_resolution` is
+    # that refusal as a mutation, and it must move exactly this row). The proposition the fixture owns --
+    # the retired attribute-in-path assumption -- survives as the guard's own refusal, still asserted at
+    # TIER 4 on this exact source (`self_attr_from_constructor_param_caller`, answer False), which is why
+    # the row moving loud does not make this guard's clause weaker anywhere else in the table.
     ('self_attr_from_constructor_param', REQ + HEAD + '\n\nclass GateCase:\n'
      '    def __init__(self, where):\n        self.outdir = where\n\n'
      '    def clean(self):\n        shutil.rmtree(self.outdir)\n\n\n'
-     'GateCase(request.args.get("d")).clean()\n', 'loud', 'quiet'),
+     'GateCase(request.args.get("d")).clean()\n', 'loud', 'loud'),
     # ---- the HTTP response body stream: an object in the path slot, so no path is ever reached ----
     # Every row here is loud at HEAD, because the clause that reads it is new. The retired spellings are
     # one per clause the proof depends on: the keyword that makes it a stream, the two sink names, the
@@ -1461,6 +1481,17 @@ def _stream_root_match_becomes_a_substring(self, expr, mod_name):
         return False
     return origin is not None and any(p in origin for p in self._HTTP_STREAM_ROOTS)
 
+def _refuse_constructor_scope():
+    """Install the resolver as it stood before 2026-11-13: a constructor call resolves to no scope."""
+    original = ast_scanner.TaintTracker._resolve_function_scope
+
+    def neutered(self, *args, **kwargs):
+        found = original(self, *args, **kwargs)
+        return None if isinstance(found, str) and found.endswith('.__init__') else found
+
+    ast_scanner.TaintTracker._resolve_function_scope = neutered
+
+
 MUTATIONS = {
     'delete_temp_guard': {
         'what': 'the guard always answers "not a temp teardown" -- every retired row comes back',
@@ -1579,13 +1610,25 @@ MUTATIONS = {
         'what': 'restore the generic fallback this round retired: `_c22_open_sink_owes_proven_taint` '
                 'answers False, so no CWE-22 filesystem sink owes a resolved untrusted origin and every '
                 'bare variable or attribute in a file path reports again on "cannot prove this safe". '
-                'The three booked supersessions come back loud under it and no other quiet row does -- '
+                'The two booked supersessions come back loud under it and no other quiet row does -- '
                 'that is the measurement which says the re-filed seal rows were silenced by that clause '
                 'and not by a quieter accident, and it is the half of the booking a passing gate proves '
                 'in the other direction',
         'rows': list(BLANKET_RETIRED_ROWS),
         'apply': lambda: setattr(ast_scanner.TaintTracker, '_c22_open_sink_owes_proven_taint',
                                  lambda self, record, sink: False),
+    },
+    'retire_constructor_scope_resolution': {
+        'what': 'resolve no constructor call onto its own `__init__` scope -- the engine as it stood before '
+                '2026-11-13, for which `_resolve_function_scope` answered None on `GateCase(...)`, so there '
+                'was no frame whose parameter `where` could be walked back to its call site. Exactly one row '
+                'of this table moves under it and it moves to quiet: '
+                '`self_attr_from_constructor_param`. That is the measurement which says the row reports '
+                'because the hop is resolved, not because some blanket widened, and it is the same refusal '
+                '`benchmark/gates/gate1_ground_truth_552_probe.py` mutates against the corpus case '
+                '`TCS-BENCH-CWE22-V04-BAD` -- the identical shape with `input()` in place of `request`.',
+        'rows': ['self_attr_from_constructor_param'],
+        'apply': _refuse_constructor_scope,
     },
 }
 

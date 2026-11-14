@@ -56,6 +56,16 @@ SARIF_SCHEMA = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Sc
 SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
 IGNORED_DIRS = {".git", ".venv", "venv", "__pycache__", "node_modules", "build", "dist"}
 
+# Directories that hold sample, fixture and harness code rather than shipped product code. Skipping
+# them is a *requested* scope choice, never a default: `benchmark/gates/workflow_controls_probe.py`
+# pins that a `tests/` tree is scanned and reported from, and records that 11 of the 16 blessed
+# Big-8 CWE-22 keys live under a tests tree -- a default skip there would delete blessed findings,
+# which is the false-negative direction this project refuses. AGENTS.md rule 3 bans path/folder
+# blacklisting as a suppression route for the same reason, so `--skip-non-production` is opt-in only.
+NON_PRODUCTION_DIRS = frozenset({"tests", "test", "__tests__", "examples", "example", "samples"})
+# What the current scan pruned, so the report can say so instead of looking like a clean tree.
+_SCOPE_STATS = {"skipped_dirs": 0, "skipped_files": 0}
+
 # Jinja interpolation tokens in a *path*, as opposed to its content: Salt formulae ship files like
 # `templates/{{module_name}}.py`, and that name alone guarantees `ast.parse` raises SyntaxError.
 TEMPLATE_INTERPOLATION_TOKENS = ("{{", "}}")
@@ -221,7 +231,7 @@ class _StageClock:
               file=sys.stderr, flush=True)
 
 
-def _iter_tree_files(root):
+def _iter_tree_files(root, prune_dirs=None, count_pruned=False):
     """Yield the real files under `root`, never following a symlink.
 
     Traversal guard (CWE-59): `Path.rglob` semantics are version dependent — Python
@@ -229,13 +239,27 @@ def _iter_tree_files(root):
     makes the crawl loop. os.walk with followlinks=False plus explicit symlink pruning
     keeps discovery inside the real tree. Ignored directories are pruned before
     descending, so `node_modules` is never walked just to be filtered out again.
+
+    `prune_dirs` replaces the prune set for one walk; `count_pruned` only ever comes from a
+    requested scope narrowing, and records how many directories and Python files it held back so the
+    report can name them. The root directory itself is never pruned: `cli.py scan tests/` still walks
+    it, because a path named on the command line is a path the user asked to analyse.
     """
+    skip = IGNORED_DIRS if prune_dirs is None else prune_dirs
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames[:] = sorted(
-            name for name in dirnames
-            if name not in IGNORED_DIRS
-            and not os.path.islink(os.path.join(dirpath, name))
-        )
+        kept = []
+        for name in sorted(dirnames):
+            if name in skip:
+                if count_pruned and name not in IGNORED_DIRS:
+                    _SCOPE_STATS["skipped_dirs"] += 1
+                    _SCOPE_STATS["skipped_files"] += sum(
+                        1 for _root, _dirs, _files in os.walk(os.path.join(dirpath, name))
+                        for _name in _files if _name.lower().endswith(".py"))
+                continue
+            if os.path.islink(os.path.join(dirpath, name)):
+                continue
+            kept.append(name)
+        dirnames[:] = kept
         for name in sorted(filenames):
             path = Path(dirpath) / name
             if os.path.islink(path):
@@ -243,7 +267,8 @@ def _iter_tree_files(root):
             yield path
 
 
-def _collect_files(scan_path, exclude_patterns=None, config_excludes=None):
+def _collect_files(scan_path, exclude_patterns=None, config_excludes=None,
+                   skip_non_production=False):
     """Collect Python files from scan path, optionally excluding by glob patterns.
 
     Args:
@@ -252,6 +277,8 @@ def _collect_files(scan_path, exclude_patterns=None, config_excludes=None):
         config_excludes: Optional callable taking a CWD-relative POSIX path and returning
             True when `.tcs.yaml` excludes it. A file named on the command line is never
             dropped, matching how a tree walk treats `--exclude`.
+        skip_non_production: Prune `NON_PRODUCTION_DIRS` from the tree walk only. A path named
+            on the command line is scanned in full either way, same contract as `--exclude`.
 
     Phase-1 instrumentation only: the enumerate/read split names the cold-tree serial
     read cost that the pre-existing `duration_ms` anchor cannot see (it starts later).
@@ -261,13 +288,14 @@ def _collect_files(scan_path, exclude_patterns=None, config_excludes=None):
     if not scan_path.exists():
         raise FileNotFoundError(f"Path does not exist: {scan_path}")
     is_tree = scan_path.is_dir()
+    prune = (IGNORED_DIRS | NON_PRODUCTION_DIRS) if skip_non_production else None
     if scan_path.is_file():
         if scan_path.suffix.lower() != ".py":
             raise ValueError(f"Expected a Python file: {scan_path}")
         paths = [scan_path]
     elif is_tree:
         paths = sorted(
-            path for path in _iter_tree_files(scan_path)
+            path for path in _iter_tree_files(scan_path, prune, skip_non_production)
             if path.suffix.lower() == ".py"
             and not any(part in IGNORED_DIRS for part in path.parts)
             and not _is_excluded(path, scan_path, exclude_patterns)
@@ -318,23 +346,28 @@ def _collect_files(scan_path, exclude_patterns=None, config_excludes=None):
     return files
 
 
-def _collect_auxiliary_files(scan_path, exclude_patterns=None, config_excludes=None):
+def _collect_auxiliary_files(scan_path, exclude_patterns=None, config_excludes=None,
+                             skip_non_production=False):
     """Collect non-Python artefacts in one walk: (templates, IaC documents).
 
     Keys match _collect_files so findings share a single path namespace, and
     `--exclude` applies here too: a template under an excluded directory is just as
     out of scope as a .py file under it. `config_excludes` carries the same contract
-    as in _collect_files.
+    as in _collect_files, as does `skip_non_production` -- a template inside a skipped
+    `examples/` tree is out of scope for exactly the same reason.
     """
     cwd = Path.cwd().resolve()
     if not scan_path.exists():
         raise FileNotFoundError(f"Path does not exist: {scan_path}")
 
+    prune = (IGNORED_DIRS | NON_PRODUCTION_DIRS) if skip_non_production else None
     if scan_path.is_file():
         paths = [scan_path]
     elif scan_path.is_dir():
+        # count_pruned stays off here: the note reports python files held back, and the Python
+        # collection below walks the same tree -- counting twice would double the figure.
         paths = sorted(
-            path for path in _iter_tree_files(scan_path)
+            path for path in _iter_tree_files(scan_path, prune, False)
             if not any(part in IGNORED_DIRS for part in path.parts)
             and not _is_excluded(path, scan_path, exclude_patterns)
             and not (config_excludes and config_excludes(_file_key(path, cwd)))
@@ -638,6 +671,22 @@ def _split_by_table_default(findings):
         label = str(finding.get("confidence") or "MEDIUM").upper()
         (visible if CONFIDENCE_ORDER.get(label, 2) >= floor else hidden).append(finding)
     return visible, hidden
+
+
+def non_production_scope_note() -> str:
+    """Name the scope a requested `--skip-non-production` narrowed.
+
+    Held-back files are invisible to the report, which is the one way a scope choice can be mistaken
+    for a clean tree, so the count is stated whenever the walk pruned anything. A path named on the
+    command line is always walked in full, which is why this note never appears for `scan tests/`.
+    """
+    dirs = _SCOPE_STATS["skipped_dirs"]
+    if not dirs:
+        return ""
+    files = _SCOPE_STATS["skipped_files"]
+    return (f"Note: --skip-non-production held back {files} python file(s) in {dirs} "
+            f"non-production director{'y' if dirs == 1 else 'ies'} (tests/, examples/, samples/); "
+            f"drop the flag to scan them.")
 
 
 def table_default_note(hidden) -> str:
@@ -1455,7 +1504,11 @@ def _scan(args):
             if config is not None else None
         )
         tree_scan = args.path.is_dir()
-        templates, iac = _collect_auxiliary_files(args.path, exclude_patterns, config_excludes)
+        skip_non_production = tree_scan and bool(getattr(args, "skip_non_production", False))
+        _SCOPE_STATS["skipped_dirs"] = 0
+        _SCOPE_STATS["skipped_files"] = 0
+        templates, iac = _collect_auxiliary_files(args.path, exclude_patterns, config_excludes,
+                                                  skip_non_production)
         if scope not in ("all", "html"):
             templates = {}
         if scope not in ("all", "docker"):
@@ -1466,7 +1519,8 @@ def _scan(args):
         if scope in ("all", "python"):
             try:
                 files = _collect_files(args.path, exclude_patterns=exclude_patterns,
-                                       config_excludes=config_excludes)
+                                       config_excludes=config_excludes,
+                                       skip_non_production=skip_non_production)
             except ValueError:
                 if not templates and not iac:
                     raise
@@ -1664,6 +1718,11 @@ def _scan(args):
             "findings_by_scope": _scope_breakdown(findings),
             "findings": findings,
         }, indent=2))
+        # A scope note belongs on stderr for a machine run: the payload and its keys stay exactly
+        # as they are, so nothing that parses this output changes behaviour.
+        scope_note = non_production_scope_note()
+        if scope_note:
+            print(scope_note, file=sys.stderr)
     else:
         if display_rows:
             print(_ascii_table(display_rows))
@@ -1675,6 +1734,9 @@ def _scan(args):
         note = table_default_note(hidden_rows)
         if note:
             print(note)
+        scope_note = non_production_scope_note()
+        if scope_note:
+            print(scope_note)
         _print_summary(scanned_files, duration_ms, display_rows, file_counts,
                        discovered_files=total_discovered_files,
                        fast_path_skipped_files=fast_path_skipped_files,
@@ -1978,6 +2040,14 @@ def main(argv=None):
     scan_parser.add_argument(
         "--exclude", type=str, default=None,
         help="Comma-separated glob patterns to exclude from scanning (e.g., tests,test_*,*_test.py,migrations)",
+    )
+    scan_parser.add_argument(
+        "--skip-non-production", action="store_true",
+        help="While walking a directory, do not descend into tests/, test/, __tests__/, examples/, "
+             "example/ or samples/ (pruned during the walk, so those files are never read). Off by "
+             "default: findings under a tests tree are real findings and this project keeps scanning "
+             "them unless asked. A path named on the command line is always walked in full, so "
+             "'scan tests' is unaffected. Reports what it held back.",
     )
     scan_parser.add_argument(
         "--parser", choices=PARSER_MODES, default=DEFAULT_PARSER_MODE,

@@ -608,7 +608,16 @@ CWE338_SECURITY_FUNC_KEYWORDS = (
     "password", "secret", "set_cookie", "cookie", "jwt",
     "verify", "credentials", "cipher", "authenticate"
 )
+# Content-addressable storage, cache keys, colour/animation lookups and span ids all digest bytes to
+# get a bucket name, not to protect a secret. This is the CWE-328 table and it is deliberately WIDER
+# than `CWE327_NON_CRYPTO_KEYWORDS`: `_is_exempt_cwe327` is also consulted on the CWE-338 path, so
+# folding `blob`/`color` into the 327 list would silence `blob = random.randbytes(16)` and
+# `color_password = random.choice(alphabet)` -- two rows `benchmark/gates/cwe338_prng_context_probe.py`
+# locks loud. Kept separate, the wider vocabulary can only ever reach a weak-hash digest, and
+# `_cwe328_hash_input_is_non_credential` still refuses it the moment the hashed input names a secret,
+# so `token_checksum = md5(token)` stays reported.
 CWE327_NON_CRYPTO_KEYWORDS = ("cache_key", "etag", "checksum", "fingerprint", "thumb")
+CWE328_CONTENT_HASH_KEYWORDS = CWE327_NON_CRYPTO_KEYWORDS + ("chunk", "blob", "color", "span")
 
 # Module stems that only ever run during packaging. Used by the CWE-770 unbounded-read
 # bypass, which also requires the opened path to name one of the metadata files below --
@@ -1118,6 +1127,20 @@ CWE338_SLEEP_SINK_LEAVES = frozenset({"sleep", "sleep_until"})
 # or a cadence. Kept as a table so the gate can falsify the veto by emptying it, exactly as it can the
 # pause table.
 CWE338_CODE_JOIN_SINK_LEAVES = frozenset({"join"})
+# A Django `Choices` class carries `choices` as a member, and a model carries `choice`/`sample` as
+# methods, so `Widget.choices(3)` lands in the same bare-leaf table as `random.choices(3)`. The
+# receiver may only stand down when its folded path PROVES it is not a random source: a non-empty
+# dotted path with no `random`/`Random`/`secrets` segment anywhere in it. `resolve_canonical_name`
+# answers "" for everything it cannot fold (`get_random().randint()`, a parameter, `self`), and an
+# unproven receiver stays reported -- which is exactly what keeps the blessed Big-8 line
+# `values.append(rng.randint(0, vocab_size - 1))` loud: `rng` folds to `random.Random`.
+CWE338_RANDOM_SOURCE_SEGMENTS = frozenset({"random", "Random", "secrets", "SystemRandom"})
+# `if random.random() < rate:` asks a sampling question, it does not mint a value. Only the plain
+# float draw can BE a probability (`randint`/`getrandbits` produce values, not thresholds), and the
+# veto reads a single relational comparison whose operands and destination name no secret:
+# `auth_token = random.random() < 0.5` is a security decision and is reported.
+CWE338_PROBABILITY_DRAW_LEAVES = frozenset({"random"})
+CWE338_PROBABILITY_COMPARE_OPS = (ast.Lt, ast.Gt, ast.LtE, ast.GtE)
 # The demo-data axis, and the only path this engine will trade a finding for. odoo fakes records under a
 # `populate` path segment; a draw there produces a fake phone number or a stock quantity, never a secret.
 # Measured on the 86 pinned arena files: 34 files / 232 of the 277 rows carry the segment in one of its
@@ -1953,6 +1976,13 @@ TRACEBACK_FORMAT_FUNCS = frozenset({
 })
 # Attributes of a caught exception whose text describes the failure in detail.
 EXCEPTION_DETAIL_ATTRIBUTES = frozenset({"message", "args", "traceback", "stack", "__traceback__"})
+# `Response({"detail": str(exc)}, status=400)` is DRF's documented error envelope: a fixed JSON shape
+# carrying the message the raiser chose to show the client. That is CWE-200-sized information at worst,
+# not the stack disclosure CWE-209 names, so a reply may only stand down when EVERY top-level key of
+# its payload is one of these labels and the frame itself never travels in the body -- `tb_frame` and
+# `exc_traceback` are the raw-frame spellings that put the finding straight back.
+CWE209_STRUCTURED_ERROR_KEYS = frozenset({"detail", "error", "errors", "message", "msg", "code"})
+CWE209_RAW_TRACE_ATTRIBUTES = frozenset({"__traceback__", "tb_frame", "tb_lineno", "exc_traceback"})
 # Decorators that make a function a client-facing endpoint (`@expose` is Airflow/Flask-Admin's own
 # spelling of `@route`), which is what turns a returned dict into an HTTP response body.
 WEB_HANDLER_DECORATOR_SEGMENTS = frozenset({"route", "expose", "errorhandler", "app_errorhandler"})
@@ -4923,6 +4953,53 @@ def _regex_trailing_separator(tokens):
     return None
 
 
+def _regex_head_delimited(previous_single_char, current_chars):
+    r"""True when the one mandatory character written before a repeat cannot be produced inside it.
+
+    `(-\d+)+` and `^[a-z0-9]+(?:-[a-z0-9]+)*$` split exactly one way: every iteration has to open on a
+    `-` that its own body never generates, so the run inside the repeat is not multiplying and the
+    repeat itself is not a nested quantifier over an ambiguous split. `previous_single_char` is only
+    ever set by a LITERAL or an IN token and is cleared by an optional, a group, an anchor or another
+    repeat, so a head that the pattern could have skipped is never claimed. `(a+)+` keeps both sets
+    on `a`, which is exactly the overlap that makes it exponential.
+
+    Measured as a single clause: the mirror-image "read the head out of the body instead of the
+    stream" variant was removed after it was shown to change no verdict on any of the 27 patterns
+    this gate enumerates -- the character is always seen by the stream first, one level up.
+    """
+    return (previous_single_char is not None and current_chars is not None
+            and not previous_single_char & current_chars)
+
+
+def _regex_branch_literals(branches):
+    r"""The literal word each branch spells, or None unless every branch is a plain literal run.
+
+    `(foo|bar|baz)+` cannot re-split: the alternatives are whole words, none is a prefix of another,
+    so the character after the shared `b` decides the branch before repetition could restart.
+    `(a|aa)+` is the counter-example -- `a` is a prefix of `aa` -- and `re` factors it into
+    `[[], [a]]`, where the empty branch is refused here rather than reasoned about. Any branch
+    holding a quantifier, class, group or anchor is refused too.
+    """
+    words = []
+    for branch in branches:
+        word = []
+        for operation, argument in branch:
+            if operation is re._constants.LITERAL:
+                word.append(argument)
+            else:
+                return None
+        if not word:
+            return None
+        words.append(tuple(word))
+    if len(words) < 2:
+        return None
+    for index, first in enumerate(words):
+        for other in words[index + 1:]:
+            if first[:len(other)] == other or other[:len(first)] == first:
+                return None
+    return tuple(words)
+
+
 def _regex_catastrophic_backtracking(tokens, inside_repeat=False, depth=0) -> bool:
     """Walk a parsed sre tree looking for unbounded split ambiguity (exponential or polynomial)."""
     if depth > REGEX_PARSE_DEPTH_LIMIT:
@@ -4943,10 +5020,17 @@ def _regex_catastrophic_backtracking(tokens, inside_repeat=False, depth=0) -> bo
             separator = _regex_trailing_separator(repeated_body)
             delimited = (separator is not None and current_chars is not None
                          and not separator & current_chars)
-            if inside_repeat and multiplies and not delimited:
+            # The token written right before this repeat, when it is one mandatory character the
+            # repeat can never produce, is a boundary inside the iteration: in `(-\d+)+` every run of
+            # digits opens on a `-`, so `-1-22-3` splits exactly one way and a `+` nested in it is not
+            # an unbounded repeat over an ambiguous split.
+            head_delimited = _regex_head_delimited(previous_single_char, current_chars)
+            # A body forced to OPEN on a character it can never produce pins where the iteration ends,
+            # so the run inside it is neither counted as multiplying nor descended into as if it were.
+            if inside_repeat and multiplies and not delimited and not head_delimited:
                 return True
             if not delimited and _regex_catastrophic_backtracking(
-                    repeated_body, inside_repeat or multiplies, depth + 1):
+                    repeated_body, (inside_repeat or multiplies) and not head_delimited, depth + 1):
                 return True
             if previous_repeat_chars is not None and not (
                 previous_separator is not None and current_chars is not None
@@ -4985,7 +5069,11 @@ def _regex_catastrophic_backtracking(tokens, inside_repeat=False, depth=0) -> bo
                 if first is None:
                     continue
                 if any(first & other for other in branch_starts[index + 1:] if other is not None):
-                    if inside_repeat:
+                    # Overlapping openings are only ambiguous when the alternatives can hand off
+                    # mid-word. A repeat of fixed literal words that are pairwise prefix-free
+                    # (`(foo|bar|baz)+`) decides its branch on the first differing character, so the
+                    # iteration boundary is forced and no split is free.
+                    if inside_repeat and _regex_branch_literals(branches) is None:
                         return True
             if any(_regex_catastrophic_backtracking(branch, inside_repeat, depth + 1)
                    for branch in branches):
@@ -8910,6 +8998,87 @@ class TaintTracker:
                     break
         return provider_fact, security_fact
 
+    def _cwe338_receiver_is_foreign_object(self, receiver_name: str, receiver_canon: str,
+                                          node: ast.Call, scope_id: str = "") -> bool:
+        """True only when the receiver is PROVEN to be an object that is not a PRNG.
+
+        A fold is not proof of an identity, it is proof of a rename, so what is trusted is one fact
+        about the object being called: its own name denotes a class this module declares. Two shapes
+        answer that, and nothing else does:
+
+        * a single bare name whose folded path ENDS in a locally declared class -- `widget` folding
+          onto `Widget` is an instance of known local type, and `UpdateChannel` standing for the
+          `UpdateChannel` written above is the class itself;
+        * a dotted path the source itself wrote and resolution left alone, whose TAIL is such a
+          class. The tail is what is called, so a path that merely roots in a real import proves
+          nothing: `from scipy.stats import norm` makes `norm.sample(size=8)` a draw, and a fold that
+          shortens the path (`self.sub_model` -> `Registry`) names the host instead of the attribute.
+
+        A parameter spelled `rng`, an alias fold like `rng` -> `global_rng`, an imported name whose
+        origin is a foreign module, a factory call like `get_rng()`, and anything resolution refuses
+        to fold are NONE of those: they are plain names with no proof behind them, and the blessed
+        Big-8 draws `values.append(rng.randint(0, vocab_size - 1))` /
+        `values.append(rng.random() * scale)`, the arena object-receiver `self.sub_model.sample(...)`,
+        and `norm.sample(size=8)` are exactly that shape. Unknown is reported. The credential veto
+        runs before this answer and wins, the same way it wins inside `_cwe338_display_only_draw`.
+        """
+        if not receiver_canon:
+            return False
+        segments = [segment for segment in receiver_canon.replace("/", ".").split(".") if segment]
+        written = [segment for segment in receiver_name.replace("/", ".").split(".") if segment]
+        if not segments or not written:
+            return False
+        if any(segment in CWE338_RANDOM_SOURCE_SEGMENTS for segment in segments + written):
+            return False
+        if segments[-1].endswith("Random") or written[-1].endswith("Random"):
+            return False
+        module = scope_id.split(":", 1)[0] if scope_id else ""
+
+        # A ClassDef is filed under `<module>:function:<Name>` when the module body is walked as
+        # `:global` scope and under `<module>:class:<Name>` otherwise (`collect_statements`'s two
+        # branches), so both spellings are asked before the answer is refused.
+        def names_declared_class(tail: str) -> bool:
+            return bool(module) and (f"{module}:function:{tail}" in self.classes
+                                     or f"{module}:class:{tail}" in self.classes)
+
+        if "." in receiver_name:
+            # The tail is what is called, so the tail is what has to be named: `scipy.stats.norm`
+            # roots in a real import and still hands over a sampling object, and a fold that shortens
+            # the path (`self.sub_model` -> `Registry`) names the host instead of the attribute.
+            if receiver_canon != receiver_name or not names_declared_class(written[-1]):
+                return False
+        elif not names_declared_class(segments[-1]):
+            return False
+        names = [name for name in self._cwe338_assignment_targets(node) if isinstance(name, str)]
+        for argument in list(node.args) + [kw.value for kw in node.keywords]:
+            names.extend(self._cwe338_expression_names(argument))
+        if any(self._cwe338_name_is_security_named(name) for name in names):
+            return False
+        return True
+
+    def _cwe338_probability_threshold_draw(self, node: ast.Call, scope_id: str = "") -> bool:
+        """True for `random.random()` whose only job is one side of a sampling threshold test.
+
+        The draw must stand directly in the comparison (not inside an operand that then gets
+        concatenated or indexed), the comparison must be a single relational test, and no security
+        word may name either side or the destination the boolean flows into.
+        """
+        if not isinstance(node.func, ast.Attribute):
+            return False
+        if node.func.attr not in CWE338_PROBABILITY_DRAW_LEAVES or node.args or node.keywords:
+            return False
+        compare = getattr(node, "parent", None)
+        if not isinstance(compare, ast.Compare) or len(compare.ops) != 1:
+            return False
+        if not isinstance(compare.ops[0], CWE338_PROBABILITY_COMPARE_OPS):
+            return False
+        if compare.left is not node and not any(item is node for item in compare.comparators):
+            return False
+        names = [name for name in self._cwe338_assignment_targets(compare) if isinstance(name, str)]
+        for operand in [compare.left, *compare.comparators]:
+            names.extend(self._cwe338_expression_names(operand))
+        return not any(self._cwe338_name_is_security_named(name) for name in names)
+
     def _cwe338_display_only_draw(self, node: ast.Call, scope_id: str = "") -> bool:
         """True only for a PRNG draw that is provably not a secret -- by name, by consumer, or by path.
 
@@ -11082,8 +11251,10 @@ class TaintTracker:
             curr = getattr(curr, "parent", None)
         return False
 
-    def _is_exempt_cwe327(self, node: ast.Call, scope_id: str = "", lineno: int = 0) -> bool:
+    def _is_exempt_cwe327(self, node: ast.Call, scope_id: str = "", lineno: int = 0,
+                          vocabulary=None) -> bool:
         call_lineno = lineno or getattr(node, "lineno", 0)
+        vocabulary = CWE327_NON_CRYPTO_KEYWORDS if vocabulary is None else vocabulary
 
         # 1. Keyword usedforsecurity=False
         for kw in getattr(node, "keywords", []):
@@ -11104,16 +11275,16 @@ class TaintTracker:
                     elif isinstance(t, ast.Attribute): target_str = t.attr.lower()
                     elif isinstance(t, ast.Subscript) and isinstance(t.slice, (ast.Constant, ast.Str)):
                         target_str = str(t.slice.value if isinstance(t.slice, ast.Constant) else t.slice.s).lower()
-                    if any(kw in target_str for kw in CWE327_NON_CRYPTO_KEYWORDS):
+                    if any(kw in target_str for kw in vocabulary):
                         return True
                 break
             elif isinstance(curr, ast.AnnAssign):
                 target_str = curr.target.id.lower() if isinstance(curr.target, ast.Name) else (curr.target.attr.lower() if isinstance(curr.target, ast.Attribute) else "")
-                if any(kw in target_str for kw in CWE327_NON_CRYPTO_KEYWORDS):
+                if any(kw in target_str for kw in vocabulary):
                     return True
                 break
             elif isinstance(curr, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if any(kw in curr.name.lower() for kw in CWE327_NON_CRYPTO_KEYWORDS):
+                if any(kw in curr.name.lower() for kw in vocabulary):
                     return True
                 break
             elif isinstance(curr, (ast.ClassDef, ast.Module)):
@@ -11124,12 +11295,32 @@ class TaintTracker:
         if scope_id:
             table = self.assignments_by_scope
             for var_name in table.names_in_scope(scope_id):
-                if not any(kw in var_name.lower() for kw in CWE327_NON_CRYPTO_KEYWORDS):
+                if not any(kw in var_name.lower() for kw in vocabulary):
                     continue
                 for r in table[(scope_id, var_name)]:
                     if r.lineno == call_lineno and any(sub is node for sub in ast.walk(r.value_node)):
                         return True
         return False
+
+    def _cwe328_hash_input_is_non_credential(self, node: ast.Call, scope_id: str,
+                                             lineno: int) -> bool:
+        """True for a weak digest that is provably not standing in for a password or a signature.
+
+        Two proofs are accepted, both already trusted for the CWE-327 sibling this answers for now
+        too: an explicit `usedforsecurity=False`, or a non-crypto name (`cache_key`/`etag`/
+        `checksum`/`fingerprint` and the content-addressable `chunk`/`blob`/`color`/`span`) on the
+        assignment target, the subscript key or the enclosing function. Neither proof survives a
+        security word inside the bytes being hashed, so `md5(token)`, `sha1(password.encode())` and
+        `md5(secret + salt)` stay reported even when the variable that receives them is called a
+        checksum.
+        """
+        if not self._is_exempt_cwe327(node, scope_id, lineno, CWE328_CONTENT_HASH_KEYWORDS):
+            return False
+        names: List[str] = []
+        for argument in ([a for a in node.args]
+                         + [kw.value for kw in node.keywords if kw.arg != "usedforsecurity"]):
+            names.extend(self._cwe338_expression_names(argument))
+        return not any(self._cwe338_name_is_security_named(name) for name in names)
 
     def _is_definitely_safe_local_read(self, receiver: ast.AST, scope_id: str = "", lineno: int = 0) -> bool:
         if isinstance(receiver, ast.Call):
@@ -12952,6 +13143,13 @@ class TaintTracker:
                     return False  # epoch reordering of a dataset, not a PRNG draw
                 if self._is_ml_math_random_draw(node, receiver_name, receiver_canon):
                     return False  # torch/numpy index arithmetic with no credential destination
+                if self._cwe338_receiver_is_foreign_object(receiver_name, receiver_canon, node,
+                                                           scope_id):
+                    # `UpdateChannel.choices`, `Widget.choices(3)` - a model/enum member whose own
+                    # folded path says it is not the random module or a Random instance.
+                    return False
+            if self._cwe338_probability_threshold_draw(node, scope_id):
+                return False  # `if random.random() < rate` - a sampling question, not a minted value
             if self._cwe338_display_only_draw(node, scope_id):
                 # Provably a display quantity: a whole-segment colour/delay/jitter name in the draw's
                 # own naming vocabulary, and no credential word anywhere in it. Also answers for the
@@ -12975,7 +13173,11 @@ class TaintTracker:
             if matched:
                 if matched.cwe_id == "CWE-611" and not self._xml_sink_recognised(canon, node=node):
                     return False
-                if matched.cwe_id == "CWE-327" and self._is_exempt_cwe327(node, scope_id, call_lineno):
+                if matched.cwe_id == "CWE-327" and self._cwe328_hash_input_is_non_credential(
+                        node, scope_id, call_lineno):
+                    # The content-addressable names (`chunk_id`, `blob_digest`, `span_lookup`) are the
+                    # ones a CWE-327 registry match reaches here with: the narrower table that covers
+                    # `etag`/`checksum`/`cache_key` already answered at the shared exemption above.
                     return False
                 # CWE-338: no security context gate - flag all random.* calls
                 if isinstance(node.func, ast.Attribute) and node.func.attr == "render":
@@ -12990,7 +13192,11 @@ class TaintTracker:
             if matched:
                 if matched.cwe_id == "CWE-611" and not self._xml_sink_recognised(canon, node=node):
                     return False
-                if matched.cwe_id == "CWE-327" and self._is_exempt_cwe327(node, scope_id, call_lineno):
+                if matched.cwe_id == "CWE-327" and self._cwe328_hash_input_is_non_credential(
+                        node, scope_id, call_lineno):
+                    # The content-addressable names (`chunk_id`, `blob_digest`, `span_lookup`) are the
+                    # ones a CWE-327 registry match reaches here with: the narrower table that covers
+                    # `etag`/`checksum`/`cache_key` already answered at the shared exemption above.
                     return False
                 # CWE-338: no security context gate - flag all random.* calls
                 if isinstance(node.func, ast.Attribute) and node.func.attr == "render":
@@ -13002,7 +13208,8 @@ class TaintTracker:
         for c in candidates:
             if c in SINK_REGISTRY:
                 cwe = SINK_REGISTRY[c].get("cwe")
-                if cwe == "CWE-327" and self._is_exempt_cwe327(node, scope_id, call_lineno):
+                if cwe == "CWE-327" and self._cwe328_hash_input_is_non_credential(
+                        node, scope_id, call_lineno):
                     return False
                 # CWE-338: no security context gate - flag all random.* calls
                 return True
@@ -19578,6 +19785,9 @@ class TaintTracker:
         if value is None:
             return False
         resolved = self._c22_path_expression(value, table, use_lineno)
+        if (self._c209_structured_error_envelope_only(value)
+                or (resolved is not value and self._c209_structured_error_envelope_only(resolved))):
+            return False
         for part in ([value] if resolved is value else [value, resolved]):
             members = self._c209_members(part)
             if not members:
@@ -19590,6 +19800,39 @@ class TaintTracker:
             if any(self._c209_carries_detail(member, names) for member in members):
                 return True
         return False
+
+    def _c209_structured_error_envelope_only(self, value) -> bool:
+        """True when every reply inside *value* is a traceback-free structured JSON error body.
+
+        Read as a refusal, not a permission: a reply the rule cannot name, a payload that is not a
+        dict literal, one key outside `CWE209_STRUCTURED_ERROR_KEYS` (a `traceback`, a `stack`, an
+        `env`), or any `traceback.format_*` / `sys.exc_info` / raw-frame expression anywhere inside
+        the body all answer False, and the existing detail logic then reports as it always did.
+        """
+        if not isinstance(value, ast.AST):
+            return False
+        replies = [node for node in ast.walk(value)
+                   if isinstance(node, ast.Call) and self._c209_is_response_call(node)]
+        if not replies:
+            return False
+        for reply in replies:
+            payload = next((arg for arg in reply.args if isinstance(arg, ast.Dict)), None)
+            if payload is None:
+                payload = next((keyword.value for keyword in reply.keywords
+                                if keyword.arg in self.CWE209_REPLY_PAYLOAD_KEYWORDS
+                                and isinstance(keyword.value, ast.Dict)), None)
+            if payload is None or not payload.keys:
+                return False
+            for key in payload.keys:
+                if not (isinstance(key, ast.Constant) and isinstance(key.value, str)
+                        and key.value.lower() in CWE209_STRUCTURED_ERROR_KEYS):
+                    return False
+            for sub in ast.walk(payload):
+                if isinstance(sub, ast.Call) and (dotted_name(sub.func) or "") in TRACEBACK_FORMAT_FUNCS:
+                    return False
+                if isinstance(sub, ast.Attribute) and sub.attr in CWE209_RAW_TRACE_ATTRIBUTES:
+                    return False
+        return True
 
     @staticmethod
     def _c209_members(node):
@@ -30169,7 +30412,8 @@ class TaintTracker:
 
                 if names & weak_hash_sinks:
                     usedforsecurity = next((kw.value for kw in node.keywords if kw.arg == "usedforsecurity"), None)
-                    if usedforsecurity is not None and _static_value(usedforsecurity, scope_id, lineno) is False:
+                    if ((usedforsecurity is not None and _static_value(usedforsecurity, scope_id, lineno) is False)
+                            or self._cwe328_hash_input_is_non_credential(node, scope_id, lineno)):
                         _remove_existing(node, {"CWE-328"}, mod_name)
                     else:
                         _add_finding(

@@ -625,6 +625,44 @@ def _filter_by_confidence(findings, minimum):
     ]
 
 
+# The floor a plain `cli.py scan` table starts at when nobody asked for one. It is a reading order for
+# a person, not a detection decision, so it is applied to the table only and always announced.
+TABLE_DEFAULT_CONFIDENCE = "high"
+
+
+def _split_by_table_default(findings):
+    """Return (rows a default table shows, rows it hides) at `TABLE_DEFAULT_CONFIDENCE`."""
+    floor = CONFIDENCE_ORDER[TABLE_DEFAULT_CONFIDENCE.upper()]
+    visible, hidden = [], []
+    for finding in findings:
+        label = str(finding.get("confidence") or "MEDIUM").upper()
+        (visible if CONFIDENCE_ORDER.get(label, 2) >= floor else hidden).append(finding)
+    return visible, hidden
+
+
+def table_default_note(hidden) -> str:
+    """One line naming what the default table floor hid, so a short table is never read as a clean scan.
+
+    A CRITICAL-severity row can sit under the floor when its flow was matched structurally rather than
+    traced, so the count of hidden criticals is called out separately: that is the case where a reader
+    would otherwise conclude the scan had nothing dangerous in it.
+    """
+    if not hidden:
+        return ""
+    counts = {}
+    for finding in hidden:
+        label = str(finding.get("confidence") or "MEDIUM").upper()
+        counts[label] = counts.get(label, 0) + 1
+    parts = [f"{counts[label]} {label}" for label in ("HIGH", "MEDIUM", "LOW") if counts.get(label)]
+    critical = sum(1 for finding in hidden if finding.get("severity") == "CRITICAL")
+    tail = ", all CRITICAL severity" if critical == len(hidden) else ""
+    if 0 < critical < len(hidden):
+        tail = f", {critical} of them CRITICAL severity"
+    noun = "finding" if len(hidden) == 1 else "findings"
+    return (f"Note: {' and '.join(parts)} {noun} hidden by the default table filter{tail} "
+            "(pass --min-confidence all to view all findings).")
+
+
 def _apply_config_filters(findings, config, path_excludes, scan_root=None):
     """Apply root `.tcs.yaml` to findings: path exclusions and per-rule path overrides.
 
@@ -1562,16 +1600,17 @@ def _scan(args):
                 findings, changed_line_intervals(_diff_repo_root, diff_ref), _diff_repo_root)
 
         # Display-only confidence filter; the engine's emission set is already final.
-        confidence_minimum = getattr(args, "min_confidence", None)
-        if confidence_minimum == "all":
-            confidence_minimum = None
-        elif confidence_minimum is None and getattr(args, "format", "table") == "table":
-            # A terminal table is read by a person deciding what to fix first, so it leads with the
-            # rows worth acting on. Every machine surface -- `--format json`, and any explicit
-            # --min-confidence including `all` -- keeps the complete emission set, because a pipeline
-            # that counts rows must not see a floor it never asked for.
-            confidence_minimum = "high"
+        requested_minimum = getattr(args, "min_confidence", None)
+        confidence_minimum = None if requested_minimum in (None, "all") else requested_minimum
         findings = _filter_by_confidence(findings, confidence_minimum)
+        # The default high floor belongs to the table alone, and only when nobody named a level: an
+        # explicit `all` is a request to see everything, in the table too. `findings` stays the
+        # complete emission set either way, so JSON, SARIF, the autofix pass and the exit code never
+        # see a floor nobody asked for, and `confidence_filter` keeps reporting null for a machine run.
+        hidden_rows = []
+        display_rows = findings
+        if requested_minimum is None and getattr(args, "format", "table") == "table":
+            display_rows, hidden_rows = _split_by_table_default(findings)
         _PARTIAL["findings"] = findings
 
         # Generate autofix suggestions if requested (JSON only)
@@ -1626,8 +1665,17 @@ def _scan(args):
             "findings": findings,
         }, indent=2))
     else:
-        print(_ascii_table(findings) if findings else "[+] No vulnerabilities found. Clean scan!")
-        _print_summary(scanned_files, duration_ms, findings, file_counts,
+        if display_rows:
+            print(_ascii_table(display_rows))
+        elif hidden_rows:
+            print(f"[+] No findings at the default {TABLE_DEFAULT_CONFIDENCE.upper()} confidence "
+                  f"floor; {len(hidden_rows)} row(s) are held back, listed in the note below.")
+        else:
+            print("[+] No vulnerabilities found. Clean scan!")
+        note = table_default_note(hidden_rows)
+        if note:
+            print(note)
+        _print_summary(scanned_files, duration_ms, display_rows, file_counts,
                        discovered_files=total_discovered_files,
                        fast_path_skipped_files=fast_path_skipped_files,
                        unparseable_files=unparseable_files,

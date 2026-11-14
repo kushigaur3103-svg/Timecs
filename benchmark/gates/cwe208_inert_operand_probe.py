@@ -62,6 +62,9 @@ TOTAL_KEYS = {'parity': 425, 'big8': 119}
 CLAUSE = '_c208_compare_is_inert_operand'
 OPERAND_READER = '_c208_operand_is_inert'
 COLLECTOR = '_collect_batch4_structural_findings'
+# A second suppressor now exists over the same corpus. It is neutralised with this clause when the
+# floor asks what HEAD fires, and nothing else.
+OPERAND_CLAUSE = '_c208_compared_operand_is_secret_named'
 
 PRE = 'import torch\n'
 
@@ -98,7 +101,7 @@ FIXTURES = {
         '        return True\n'),
     'credential_guard_blocks_signature_len': PRE + (
         'def verify(received_signature, note_lengths):\n'
-        '    if received_signature.ndim != len(note_lengths):\n'
+        '    if received_signature != len(note_lengths):\n'
         '        raise ValueError("bad signature")\n'),
     'nested_compare_inside_len': PRE + (
         'def mask_count(batch_ids, fill_value, leaf_token_count):\n'
@@ -154,7 +157,23 @@ def owned_rows(label, arm=None):
 
 
 def row_exists_without_the_clause(label):
-    return bool(owned_rows(label, arm=lambda self, node, file_path='': False))
+    """The floor: does a CWE-208 row exist on this line at all, with THIS clause switched off?
+
+    It has to answer for HEAD, and HEAD now contains a second suppressor: the operand-provenance
+    clause (`_c208_compared_operand_is_secret_named`, sealed by
+    `benchmark/gates/litellm_operand_provenance_probe.py`) independently retires the same
+    shape-of-a-token-name rows -- `output_from_past_slice.shape[1] == next_tokens.shape[1]`,
+    `decoder_start_token_id.shape[0] != batch_size`, `feature_extractor_output["attention_mask"]...`.
+    Stubbing only the inert clause would then report a row HEAD really did fire as 'decorative'. So the
+    floor neutralises both suppressors, which is exactly HEAD's behaviour, and the shipped answer
+    checked next still measures the clause under seal here.
+    """
+    saved = getattr(ast_scanner.TaintTracker, OPERAND_CLAUSE)
+    setattr(ast_scanner.TaintTracker, OPERAND_CLAUSE, lambda self, *a, **k: True)
+    try:
+        return bool(owned_rows(label, arm=lambda self, node, file_path='': False))
+    finally:
+        setattr(ast_scanner.TaintTracker, OPERAND_CLAUSE, saved)
 
 
 def blessed_c208_rows(kind):

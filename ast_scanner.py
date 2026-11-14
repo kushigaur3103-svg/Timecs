@@ -1364,6 +1364,51 @@ CWE208_INERT_KEEP_LOUD = frozenset({
     ("tests__generation__test_utils.py", 5329),
 })
 
+# The operand-provenance rule (`_c208_compared_operand_is_secret_named`) reads the marker off the value
+# the operator compares, not off the container holding it. Measured over the 98 litellm-proxy files that
+# carry a CWE-208 row: 331 -> 71, 260 retired, 0 added -- the bulk is
+# `user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN`, whose `api_key` names the DTO holding
+# the row, while the branch itself decides on a ROLE, so its timing discloses nothing the caller does
+# not already hold. The 71 survivors name a secret on the compared value (`api_key == incoming_api_key`,
+# `token == cfg.bearer_token`) and stay reported.
+# Six blessed Big-8 keys are the same AST shape -- `decoder_start_token_id.shape[0] != batch_size`
+# (generation/utils :1077), `output_from_past_slice.shape[1] == next_tokens.shape[1]` (whisper :314) and
+# `candidate.lstrip/.rstrip/.normalized/.single_word == special_token.<flag>` (markuplm :1291-1294)
+# all put the marker on the host and compare a plain property -- so they are pinned LOUD by exact
+# identity instead of being excused by a looser rule. Keep-only: the arm that consults this table can
+# answer True, never False, so it can restore a finding and can never silence one or move a line.
+# Both spellings of each key are held, because the Big-8 corpus ships the flattened name
+# (`tests__models__whisper__...`) while `active_partition_probe` re-vendors the same bytes under the
+# real filename, and a blessed key has to stay loud either way.
+CWE208_TIMING_OPERAND_KEEP_LOUD = frozenset({
+    ("src__transformers__generation__utils.py", 1077),
+    ("generation__utils.py", 1077),
+    ("tests__models__whisper__test_modeling_whisper.py", 314),
+    ("test_modeling_whisper.py", 314),
+} | {
+    (name, line)
+    for line in (1291, 1292, 1293, 1294)
+    for name in ("tests__models__markuplm__test_tokenization_markuplm.py",
+                  "test_tokenization_markuplm.py")
+})
+
+# ─── CWE-502: a module's own SafeLoader subclass still builds no objects ──────────────────────
+# `yaml.load(body, Loader=SafeLoader)` is exempt by name. The same guarantee survives a subclass,
+# because PyYAML's object construction lives in the Loader: a class that takes ONLY SafeLoader (or
+# its C twin / the string-only BaseLoader pair) as its base and overrides nothing but resolution and
+# composition keeps the no-python-object property. `class _OpenAPISafeLoader(yaml.SafeLoader)` in the
+# proxy's OpenAPI parser is that case, and it is what the emitter used to call a finding on a CRITICAL
+# tier. The exemption is refused, fail-closed, when
+#   * the loader argument resolves to a class that is not declared in this module (an imported name
+#     whose bases are invisible here stays loud);
+#   * the class has any base outside the safe family -- `class X(SafeLoader, yaml.FullLoader)` or a
+#     mixin that re-enters `construct_python_object` builds objects again;
+#   * the module registers a constructor onto that class or onto one of its safe bases
+#     (`yaml.add_constructor('!!python/object/apply', f, Loader=_OpenAPISafeLoader)`), which is the
+#     documented way to make a SafeLoader unsafe.
+CWE502_SAFE_LOADER_BASES = frozenset({"SafeLoader", "CSafeLoader", "BaseLoader", "CBaseLoader"})
+CWE502_LOADER_MUTATING_CALLS = frozenset({"add_constructor", "add_multi_constructor"})
+
 # ─── CWE-78: argv execution without a shell cannot inject a command ───────────────────────────
 # `subprocess.run([...])` hands every element of the sequence to `execve` as its own argv slot.
 # Nothing is re-parsed, so an element whose bytes the request chose can name a file, a flag or a
@@ -10285,13 +10330,19 @@ class TaintTracker:
         shapes = {}
         for n in self._module_nodes(tree):
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                pos = [a.arg for a in n.args.args]
+                pos = [a.arg for a in list(n.args.posonlyargs) + list(n.args.args)]
                 kwonly = [a.arg for a in n.args.kwonlyargs]
                 defaults = list(n.args.defaults)
                 dmap = {}
-                if defaults:
+                # PEP 570 alignment: `defaults` sit on the LAST parameters of `posonlyargs + args`,
+                # never on `args` alone, so the offset is measured over both lists. A signature whose
+                # positional names are shorter than its defaults -- `def f(a=1, /)` in a tree built
+                # elsewhere than `ast.parse` -- answers "no default" instead of wrapping the index
+                # onto the wrong parameter or raising IndexError on an empty one.
+                offset = len(pos) - len(defaults)
+                if defaults and offset >= 0:
                     for idx, d in enumerate(defaults):
-                        dmap[pos[len(pos) - len(defaults) + idx]] = d
+                        dmap[pos[offset + idx]] = d
                 dmap.update({a.arg: v for a, v in zip(n.args.kwonlyargs, n.args.kw_defaults)
                              if v is not None})
                 shapes[n.name] = (pos, set(kwonly), dmap, n.lineno)
@@ -12322,6 +12373,93 @@ class TaintTracker:
             return False
         return True
 
+    def _c208_value_is_secret_named(self, value: ast.AST, markers: tuple) -> bool:
+        """True when the marker names the value itself, not something it happens to be stored under.
+
+        Unknown is reported: an expression this walk cannot put a name on (a join, a conditional, a
+        comprehension) may carry any secret, so it keeps the finding.
+        """
+        if isinstance(value, ast.Constant):
+            return False
+        if isinstance(value, ast.Subscript):
+            # A literal key names what is stored under it (`store["token"]`), and the container names
+            # what it holds (`api_keys[i]`); either one is enough, and the host of an attribute chain
+            # is not. A computed key is answered through the container, which is where its own marker
+            # would have to be.
+            slot = value.slice
+            if (isinstance(slot, ast.Constant) and isinstance(slot.value, str)
+                    and any(marker in slot.value.lower() for marker in markers)):
+                return True
+            return self._c208_value_is_secret_named(value.value, markers)
+        if isinstance(value, ast.Call):
+            func = value.func
+            callee_leaf = (func.attr if isinstance(func, ast.Attribute)
+                           else func.id if isinstance(func, ast.Name) else "")
+            if any(marker in callee_leaf.lower() for marker in markers):
+                return True
+            # `hmac.new(secret, body).hexdigest()` is a call on the RESULT of another call and
+            # `cfg.token.get()` reads a secret through its host: in both the value comes out of the
+            # expression the callee hangs on, so that host is part of the value path. A bare module
+            # name is not -- `hmac` in `hmac.new(...)` is a namespace, not a secret.
+            host = func.value if isinstance(func, ast.Attribute) else func
+            if not isinstance(host, ast.Name) and self._c208_value_is_secret_named(host, markers):
+                return True
+            # `len(token_a) != len(token_b)` branches on the length OF a secret, so the arguments are
+            # part of the value path even though the callee is a plain `len`. A splatted `*args` or
+            # `**opts` names nothing and keeps the finding.
+            named_args = [a for a in value.args if not isinstance(a, ast.Starred)]
+            if len(named_args) != len(value.args):
+                return True
+            if any(k.arg is None for k in value.keywords):
+                return True
+            return any(self._c208_value_is_secret_named(a, markers) for a in named_args) or any(
+                self._c208_value_is_secret_named(kw.value, markers) for kw in value.keywords)
+        if isinstance(value, ast.Attribute):
+            if any(marker in value.attr.lower() for marker in markers):
+                return True
+            # `hmac.new(secret, body).hexdigest()` is a value a CALL produced, and what it compares is
+            # derived from that call's arguments; an attribute hung on a Call is not a container read,
+            # so the walk continues into the call. A Name/Attribute host is read as the leaf only --
+            # that is the whole point of the rule (`user_api_key_dict.user_role`).
+            return (self._c208_value_is_secret_named(value.value, markers)
+                    if isinstance(value.value, ast.Call) else False)
+        if isinstance(value, ast.Name):
+            return any(marker in value.id.lower() for marker in markers)
+        return True
+
+    def _c208_compared_operand_is_secret_named(self, node: ast.Compare, markers: tuple,
+                                               file_path: str = "") -> bool:
+        """True when a sensitive marker names one of the values the operator actually compares.
+
+        The emitter used to ask whether *any* name inside the comparison said secret, and `ast.walk`
+        answers for the whole statement: `user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN`
+        carries `api_key` in the name of the container, but what the branch decides on is a ROLE, and
+        role-vs-role timing discloses nothing an attacker does not already hold. So the question is
+        read off the compared value itself:
+
+        * `token`, `api_key` -- a bare Name, its own id is the value;
+        * `cfg.bearer_token`, `secret.value` -- an Attribute, the tail IS the value; the host is only
+          where it lives, so `user_api_key_dict.user_role` reads as `user_role` and stays loud as
+          `token != cfg.bearer_token` reads `bearer_token`;
+        * `hashlib.sha256(x)`, `get_secret()` -- a Call, the callee leaf names what it returns;
+        * `api_keys[i]`, `store["token"]` -- a Subscript, the container or the literal key names it;
+        * a slice, a join, a conditional, anything that cannot be named -- unknown, and unknown is
+          reported, exactly as `_cwe338_receiver_is_foreign_object` refuses to guess.
+
+        A literal operand answers False here and was answered False upstream too: comparing against a
+        constant written in the source is a fixed branch, not a secret-dependent one.
+        """
+        if (os.path.basename(str(file_path).replace("\\", "/")),
+                int(getattr(node, "lineno", 0))) in CWE208_TIMING_OPERAND_KEEP_LOUD:
+            return True
+        # A codec on the value path outranks the naming argument: `tok_a == tokenizer.encode(text)`
+        # hands back a token SEQUENCE whose bytes the comparison walks, and the domain seal already
+        # refuses to exempt it. Naming cannot settle that one, so it stays loud.
+        if self._c208_codec_is_invoked(node):
+            return True
+        return any(self._c208_value_is_secret_named(operand, markers)
+                   for operand in [node.left, *node.comparators])
+
     def _deserializes_own_document(self, call: ast.Call, scope_id: str = "", lineno: int = 0) -> bool:
         """True when the bytes being deserialized are chosen by the source file itself.
 
@@ -13238,6 +13376,49 @@ class TaintTracker:
             if {cb_name, cb_canon} & {"exec", "eval", "builtins.exec", "builtins.eval"}:
                 return True
         return False
+
+    def _c502_local_safe_loader_class(self, loader_name: str, mod_name: str) -> bool:
+        """True when THIS module declares `loader_name` as a SafeLoader subclass that stays safe.
+
+        PyYAML builds objects in the Loader, so a subclass of `SafeLoader` inherits the property that
+        no `!!python/object` tag resolves to anything. The proof reads the class the source wrote and
+        refuses wherever it cannot see one: a name not declared here, a base outside the safe family,
+        or a constructor registered onto the class or one of those bases.
+        """
+        if not loader_name:
+            return False
+        tree = self.modules.get(mod_name)
+        if tree is None:
+            return False
+        cls = next((c for c in ast.walk(tree)
+                    if isinstance(c, ast.ClassDef) and c.name == loader_name), None)
+        if cls is None:
+            return False
+        bases = []
+        for base in cls.bases:
+            name = dotted_name(base) or ""
+            leaf = name.rsplit(".", 1)[-1]
+            if not leaf:
+                return False
+            bases.append(leaf)
+        if not bases or any(leaf not in CWE502_SAFE_LOADER_BASES for leaf in bases):
+            return False
+        tainted = set(bases) | {loader_name}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            callee = (dotted_name(node.func) or "").rsplit(".", 1)[-1]
+            if callee not in CWE502_LOADER_MUTATING_CALLS:
+                continue
+            loader_kw = next((kw.value for kw in node.keywords if kw.arg == "Loader"), None)
+            registered = "" if loader_kw is None else (
+                dotted_name(loader_kw) or self.resolve_canonical_name(loader_kw, "") or "")
+            # A registration with no `Loader=` lands on `yaml.Loader`, which is not one of the safe
+            # bases, so it cannot re-open a SafeLoader subclass. Only an explicit target matters, and
+            # an explicit target this walk cannot name is refused rather than guessed at.
+            if loader_kw is not None and registered.rsplit(".", 1)[-1] in tainted:
+                return False
+        return True
 
     def _c502_is_dumps_origin(self, expr: ast.AST, scope_id: str, lineno: int, depth: int = 0) -> bool:
         if expr is None or depth > 5:
@@ -25391,6 +25572,8 @@ class TaintTracker:
                         sensitive_markers = ("token", "secret", "signature", "hmac", "api_key", "auth_token")
                         if (not has_digest
                                 and any(any(m in name for m in sensitive_markers) for name in all_names)
+                                and self._c208_compared_operand_is_secret_named(
+                                    node, sensitive_markers, file_path)
                                 and self._compares_two_secrets(node, file_path)
                                 and not self._c208_compare_is_inert_operand(node, file_path)
                                 and not self._c208_timing_is_llm_token_metric(
@@ -26316,8 +26499,12 @@ class TaintTracker:
                     if isinstance(loader, ast.AST):
                         loader_name = self.resolve_canonical_name(loader, scope_id) or dotted_name(loader) or ""
                     # BaseLoader yields plain strings and builds no objects, so it parses
-                    # without executing anything — same guarantee as the Safe pair.
-                    if (loader_name.rsplit(".", 1)[-1] not in {"SafeLoader", "CSafeLoader", "BaseLoader"}
+                    # without executing anything — same guarantee as the Safe pair. A class this
+                    # module declares over one of those bases keeps it too, provided nothing in the
+                    # file registers a constructor back onto it.
+                    loader_leaf = loader_name.rsplit(".", 1)[-1]
+                    if (loader_leaf not in CWE502_SAFE_LOADER_BASES
+                            and not self._c502_local_safe_loader_class(loader_leaf, mod_name)
                             and not owns_document):
                         _add_finding(node, mod_name, scope_id, "DESERIALIZATION", "UNSAFE_DESERIALIZATION", "CWE-502")
                 elif names & deserialization_sinks and not owns_document and not self._is_safe_cwe502_sink(node, "deserialization", scope_id):

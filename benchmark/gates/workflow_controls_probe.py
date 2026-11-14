@@ -354,7 +354,12 @@ def check_config() -> list:
         (root / "src" / "demo" / "util.py").write_text(CONFIG_MD5, encoding="utf-8")
         (root / "src" / "util.py").write_text(CONFIG_MD5, encoding="utf-8")
 
-        payload = _run_cli(["scan", ".", "--format", "json", "--workers", "1"], root)
+        # --include-tests: a default directory walk now prunes `tests/` during discovery, and this
+        # tier's whole subject is a `tests/**` *rule* exclusion being applied by `.tcs.yaml`. Without
+        # the flag the file would be unread rather than rule-excluded, and the tier would prove
+        # nothing. The expected keys below are unchanged.
+        payload = _run_cli(["scan", ".", "--format", "json", "--workers", "1", "--include-tests"],
+                           root)
         got = _keys(payload)
         want = {("src/app.py", 6, "CWE-78"), ("src/util.py", 3, "CWE-328")}
         if got != want:
@@ -413,8 +418,10 @@ def check_config() -> list:
         (nested / "tests" / "test_app.py").write_text(CONFIG_APP, encoding="utf-8")
         (nested / "src" / "demo" / "util.py").write_text(CONFIG_MD5, encoding="utf-8")
         (nested / "src" / "util.py").write_text(CONFIG_MD5, encoding="utf-8")
-        nested_keys = _keys(_run_cli(["scan", "arena", "--format", "json", "--workers", "1"],
-                                     root))
+        # Same reason as above, for the nested-root spelling of the identical defect: the tree holds a
+        # `tests/` directory and the tier is about `.tcs.yaml` reaching it, not about discovery skipping it.
+        nested_keys = _keys(_run_cli(["scan", "arena", "--format", "json", "--workers", "1",
+                                      "--include-tests"], root))
         want_nested = {("arena/src/app.py", 6, "CWE-78"), ("arena/src/util.py", 3, "CWE-328")}
         if nested_keys != want_nested:
             failures.append(f"nested-root config e2e {sorted(nested_keys)} != "
@@ -663,7 +670,12 @@ def check_shipped_c611_exclude() -> list:
         # A second rule in the excluded tree: an exclusion that behaved like a file skip quietens
         # this too, and that is a missed finding rather than noise reduction.
         (root / "tests" / "util.py").write_text(CONFIG_MD5, encoding="utf-8")
-        got = _keys(_run_cli(["scan", ".", "--format", "json", "--workers", "1"], root))
+        # --include-tests is load-bearing here: the tier asserts a *second rule* still reports inside
+        # an excluded `tests/` tree, which is only observable when the tree is read at all. The
+        # default walk prunes it, so the flag restores exactly the population this tier measured
+        # before skipping became the default -- no assertion is relaxed.
+        got = _keys(_run_cli(["scan", ".", "--format", "json", "--workers", "1", "--include-tests"],
+                             root))
     if ("src/parse_xxe.py", 5, "CWE-611") not in got:
         failures.append("CWE-611 went silent on src/parse_xxe.py:5, so the shipped exclusion "
                         "reached outside a tests tree (false negative)")
@@ -808,7 +820,14 @@ def check_shipped_nonprod_exclude() -> list:
         # The same traversal carrier inside a *nested* `utils/` -- production library code, which
         # the root-anchored spelling must not reach.
         (root / "src/transformers/utils/build.py").write_text(CONFIG_TRAV, encoding="utf-8")
-        at_root = _keys(_run_cli(["scan", ".", "--format", "json", "--workers", "1"], root))
+        # --include-tests: this tree is made of `utils/`, `examples/`, `tests/` and a nested
+        # `src/transformers/utils/`, and the tier's false-negative half is "CWE-22 still reports on
+        # tests/build.py, because 11 of the 16 blessed Big-8 CWE-22 keys live under a tests tree".
+        # That claim is only checkable if the tree is read, so the flag restores the population this
+        # tier measured before the default changed; `at_src` needs none of it, no `tests/` sits under
+        # `src`, and every expected key below is unchanged.
+        at_root = _keys(_run_cli(["scan", ".", "--format", "json", "--workers", "1",
+                                  "--include-tests"], root))
         at_src = _keys(_run_cli(["scan", "src", "--format", "json", "--workers", "1"], root))
     for path in ("utils/build.py", "examples/build.py"):
         if reports(at_root, path, "CWE-22"):

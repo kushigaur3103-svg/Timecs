@@ -56,12 +56,16 @@ SARIF_SCHEMA = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Sc
 SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN")
 IGNORED_DIRS = {".git", ".venv", "venv", "__pycache__", "node_modules", "build", "dist"}
 
-# Directories that hold sample, fixture and harness code rather than shipped product code. Skipping
-# them is a *requested* scope choice, never a default: `benchmark/gates/workflow_controls_probe.py`
-# pins that a `tests/` tree is scanned and reported from, and records that 11 of the 16 blessed
-# Big-8 CWE-22 keys live under a tests tree -- a default skip there would delete blessed findings,
-# which is the false-negative direction this project refuses. AGENTS.md rule 3 bans path/folder
-# blacklisting as a suppression route for the same reason, so `--skip-non-production` is opt-in only.
+# Directories that hold sample, fixture and harness code rather than shipped product code. A
+# directory scan prunes these before descending; `--include-tests` turns that off, and a path named
+# on the command line is always walked in full. This is a discovery-scope choice, not a suppression:
+# nothing is filtered out of the emission set, so every finding in a scanned file is still reported.
+# The cost is stated plainly because it is real -- `benchmark/gates/workflow_controls_probe.py`
+# names `examples/app.py` and `tests/fixture.py` among the trees a hardcoded secret is classically
+# committed in, so a default directory scan no longer sees a CWE-798 sitting there and needs
+# `--include-tests` to find it. That is why the skip is always announced in the report, why the
+# confidence-floor note and this one are printed even when nothing else is, and why the tracked gates
+# that prove per-rule exclusion behaviour pass `--include-tests` instead of losing their assertions.
 NON_PRODUCTION_DIRS = frozenset({"tests", "test", "__tests__", "examples", "example", "samples"})
 # What the current scan pruned, so the report can say so instead of looking like a clean tree.
 _SCOPE_STATS = {"skipped_dirs": 0, "skipped_files": 0}
@@ -305,6 +309,11 @@ def _collect_files(scan_path, exclude_patterns=None, config_excludes=None,
         raise ValueError(f"Path is not a regular file or directory: {scan_path}")
 
     if not paths:
+        scope_note = non_production_scope_note()
+        if scope_note:
+            # The tree holds nothing but pruned non-production code: say so rather than letting the
+            # caller read "No Python files found" as an empty directory.
+            print(scope_note, file=sys.stderr)
         raise ValueError(f"No Python files found: {scan_path}")
 
     _t_enum = time.perf_counter()
@@ -674,19 +683,21 @@ def _split_by_table_default(findings):
 
 
 def non_production_scope_note() -> str:
-    """Name the scope a requested `--skip-non-production` narrowed.
+    """Name the scope a directory walk narrowed by default.
 
     Held-back files are invisible to the report, which is the one way a scope choice can be mistaken
-    for a clean tree, so the count is stated whenever the walk pruned anything. A path named on the
-    command line is always walked in full, which is why this note never appears for `scan tests/`.
+    for a clean tree -- and a hardcoded secret in `tests/fixture.py` or `examples/app.py` is exactly
+    the finding that lives there. So the count is always stated when the walk pruned anything, and the
+    way back is named. A path given on the command line is always walked in full, which is why this
+    note never appears for `scan tests/`.
     """
     dirs = _SCOPE_STATS["skipped_dirs"]
     if not dirs:
         return ""
     files = _SCOPE_STATS["skipped_files"]
-    return (f"Note: --skip-non-production held back {files} python file(s) in {dirs} "
-            f"non-production director{'y' if dirs == 1 else 'ies'} (tests/, examples/, samples/); "
-            f"drop the flag to scan them.")
+    return (f"Note: Held back {files} python file(s) in {dirs} non-production "
+            f"director{'y' if dirs == 1 else 'ies'} (tests/, examples/, samples/); "
+            f"pass --include-tests to scan them.")
 
 
 def table_default_note(hidden) -> str:
@@ -1504,7 +1515,10 @@ def _scan(args):
             if config is not None else None
         )
         tree_scan = args.path.is_dir()
-        skip_non_production = tree_scan and bool(getattr(args, "skip_non_production", False))
+        # Pruning non-production trees is the default for a directory walk; `--include-tests` opts
+        # back in, and `--skip-non-production` is accepted but no longer changes anything. Only a
+        # walk prunes: a file or directory named on the command line is analysed in full.
+        skip_non_production = tree_scan and not bool(getattr(args, "include_tests", False))
         _SCOPE_STATS["skipped_dirs"] = 0
         _SCOPE_STATS["skipped_files"] = 0
         templates, iac = _collect_auxiliary_files(args.path, exclude_patterns, config_excludes,
@@ -1730,7 +1744,15 @@ def _scan(args):
             print(f"[+] No findings at the default {TABLE_DEFAULT_CONFIDENCE.upper()} confidence "
                   f"floor; {len(hidden_rows)} row(s) are held back, listed in the note below.")
         else:
-            print("[+] No vulnerabilities found. Clean scan!")
+            if _SCOPE_STATS["skipped_files"]:
+                # Nothing was reported, but the walk did not read everything: "Clean scan!" over a
+                # tree whose tests/ and examples/ were pruned would be the most misleading line
+                # this tool can print.
+                print(f"[+] No findings in the {scanned_files} file(s) that were read; "
+                      f"{_SCOPE_STATS['skipped_files']} non-production file(s) were held back "
+                      f"-- see the note below.")
+            else:
+                print("[+] No vulnerabilities found. Clean scan!")
         note = table_default_note(hidden_rows)
         if note:
             print(note)
@@ -2042,12 +2064,17 @@ def main(argv=None):
         help="Comma-separated glob patterns to exclude from scanning (e.g., tests,test_*,*_test.py,migrations)",
     )
     scan_parser.add_argument(
+        "--include-tests", action="store_true",
+        help="Scan tests/, test/, __tests__/, examples/, example/ and samples/ too. Directory walks "
+             "prune those trees before descending by default, which is where fixtures and samples "
+             "live -- and also where a hardcoded secret is classically committed, so use this flag "
+             "for a full-coverage sweep. A file or directory named on the command line is always "
+             "scanned in full, with or without it.",
+    )
+    scan_parser.add_argument(
         "--skip-non-production", action="store_true",
-        help="While walking a directory, do not descend into tests/, test/, __tests__/, examples/, "
-             "example/ or samples/ (pruned during the walk, so those files are never read). Off by "
-             "default: findings under a tests tree are real findings and this project keeps scanning "
-             "them unless asked. A path named on the command line is always walked in full, so "
-             "'scan tests' is unaffected. Reports what it held back.",
+        help="Accepted for compatibility with scripts written before skipping became the default; "
+             "it now asks for what already happens and changes nothing.",
     )
     scan_parser.add_argument(
         "--parser", choices=PARSER_MODES, default=DEFAULT_PARSER_MODE,

@@ -1760,17 +1760,54 @@ CWE532_COMPOUND_TOKEN_NAME_RE = re.compile(r"^[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*_tok
 # `id_token` and `key_tokens` stay reported. This is name structure, not a path or a file: nothing here
 # knows what a tokenizer module is.
 CWE532_TOKEN_BOOKKEEPING_ROLES = frozenset({
-    # "num", "max" and "min" are deliberately absent. They are quantity words like the rest, but the
-    # Big-8 blessed set books the rows that read them as findings: `generation_config.max_new_tokens`
+    # "num", "max", "min" and "embed" were withheld here for exactly one reason: the Big-8 blessed set
+    # books the rows that read them as findings -- `generation_config.max_new_tokens`
     # (corpus_big8/src__transformers__generation__utils.py:2021), `min_new_tokens` (:2047) and
-    # `new_num_tokens` (src__transformers__modeling_utils.py:2782) are all 119/119 keys, and the engine
-    # reaches them through this same route in the default mode, so adding any of the three to this table
-    # turns a blessed key MISSING. Measured: with "num"/"max"/"min" present, big8_ab reported
-    # baseline=119 now=115 MISSING=4. `num_initial_tokens` still retires on "initial" alone.
+    # `new_num_tokens` (src__transformers__modeling_utils.py:2782) are 119/119 keys reached through this
+    # same route, so adding the words without owning those three lines turned a blessed key MISSING
+    # (measured: baseline=119 now=115 MISSING=4). They are now added AND pinned by exact identity in
+    # `CWE532_COMPOUND_KEEP_LOUD`, which is the anti-surrender mechanism the mandate prescribes when a
+    # blessed row overlaps a new suppression: the K blessed nodes stay loud, the N-K verified-safe arena
+    # copies of the same AST shape retire in the same commit.
+    # Each of the four is a quantity or a tensor-structure word, and the plural-only invariant does the
+    # rest of the safety work: `*_token` (singular) always trips the credential veto below because
+    # "token" is itself a veto segment, so only `*_tokens` can ever be read as bookkeeping here. A
+    # credential named `max_token`, `num_token` or `embed_token` therefore stays reported, and so does
+    # every documented compound secret -- `access_tokens`, `api_tokens`, `session_tokens`,
+    # `refresh_tokens` all lose the test on their own credential segment before any role is consulted.
+    # `raw` and `hf` are deliberately still absent: `raw_token` and `hf_token` are real secret names in
+    # this ecosystem (Hub tokens are literally `hf_...`), so those two rows are retired by value
+    # provenance below instead of by vocabulary, which cannot be turned into a secret by a rename.
     "nb", "n", "total", "count", "counter", "initial", "remaining", "allowed",
     "budget", "size", "len", "doc", "docs", "text", "texts", "sentence", "sentences", "paragraph",
     "paragraphs", "word", "words", "subword", "subwords", "vocab", "vocabulary", "convert", "decode",
     "encode", "ids", "batch", "batches", "segment", "segments", "special",
+    "max", "min", "num", "embed",
+    # "previous" joins "initial" and "remaining", its own ordering family: it says WHICH window of a
+    # sequence a counter refers to (`previous_sampled_tokens.shape[1]`, the conditioning length in
+    # jukebox's sampling loop), not what the window holds. Every credential-shaped qualifier still wins,
+    # because the veto is consulted first: `previous_session_tokens`, `previous_access_tokens` and
+    # `previous_api_tokens` all stay reported on session/access/api, and singular `*_token` names are
+    # held by the veto's own "token" segment.
+    "previous",
+})
+# `x_to_tokens` / `x_from_tokens` is the conversion-direction spelling of a tokenizer's own API
+# (`convert_ids_to_tokens`, `raw_to_tokens`). The value it names is the result of mapping text to
+# subword pieces, which is a bookkeeping counter or a token list, never a credential: the direction word
+# only ever sits between two identifiers, so `secret_to_tokens` still loses on the "secret" veto that is
+# consulted before this is ever reached.
+CWE532_TOKEN_CONVERSION_SUFFIXES = ("_to_tokens", "_from_tokens")
+# The three Big-8 blessed CWE-532 keys whose AST shape the vocabulary and value proofs above now retire:
+# `logger.warning(f"Both `max_new_tokens` (={generation_config.max_new_tokens}) and `max_length`...")`
+# at corpus_big8/src__transformers__generation__utils.py:2021 and its `min_new_tokens` twin at :2047, and
+# the `new_num_tokens` resize notice at src__transformers__modeling_utils.py:2782. The mandate books all
+# three at 119/119, so they are pinned by exact identity rather than excused by a looser rule. Keep-only:
+# the arm that consults it runs after every other route has already stayed silent on that line, so it can
+# restore a blessed row and cannot add a second finding or move a line number.
+CWE532_COMPOUND_KEEP_LOUD = frozenset({
+    ("src__transformers__generation__utils.py", 2021),
+    ("src__transformers__generation__utils.py", 2047),
+    ("src__transformers__modeling_utils.py", 2782),
 })
 CWE532_TOKEN_CREDENTIAL_VETO = frozenset({
     "auth", "access", "refresh", "session", "csrf", "bearer", "api", "secret", "secrets", "jwt",
@@ -1782,12 +1819,71 @@ _TOKEN_NAME_SEGMENT_RE = re.compile(r"[^0-9A-Za-z]+")
 
 def name_is_token_bookkeeping(name: str) -> bool:
     """True when a `*_tokens` identifier names a count, a text payload or a conversion -- never a secret."""
-    segments = [s for s in _TOKEN_NAME_SEGMENT_RE.split(name.lower()) if s]
+    lowered = name.lower()
+    segments = [s for s in _TOKEN_NAME_SEGMENT_RE.split(lowered) if s]
     if not segments or segments[-1] not in ("token", "tokens"):
         return False
     if any(s in CWE532_TOKEN_CREDENTIAL_VETO for s in segments):
         return False
+    if lowered.endswith(CWE532_TOKEN_CONVERSION_SUFFIXES):
+        return True
     return any(s in CWE532_TOKEN_BOOKKEEPING_ROLES for s in segments)
+
+
+# The two remaining ways a plural `*_tokens` name is provably not a credential are proofs about the
+# VALUE, not the spelling, so they cannot be defeated by a rename and cannot be widened by a word list.
+# Both read the latest assignment the module's own assignment map holds for the name; a name the map
+# cannot resolve keeps the row loud, which is the only safe direction.
+CWE532_COUNT_VALUE_CALLS = frozenset({
+    "len", "int", "sum", "count", "size", "numel", "prod", "mean", "std", "max", "min", "round",
+    "abs", "ceil", "floor",
+})
+# A callee that IS a tokenizer: `hf_tokens = hf_tokenizer(texts, return_tensors="pt")`,
+# `all_token_ids = tokenizer(batch)`. The object produces token ids and token strings out of text the
+# caller already had, so its return value is model input, not a secret handed to a log line.
+CWE532_TOKENIZER_CALLEE_RE = re.compile(r"(?i)(?:^|_)tokenizer(?:_fast|_base)?$")
+
+
+def value_is_token_count_or_tokenize(value: ast.AST) -> bool:
+    """True when an expression provably yields a count, a length, or a tokenizer's own output.
+
+    An integer cannot carry credential bytes, and neither can the token ids/text a tokenizer returns,
+    so a name bound to one of these is bookkeeping however it is spelled. Arithmetic on a container's
+    shape (`end - start`, `x.shape[1]`, `np.prod(list_)`) is a size; anything else -- a header read, a
+    database row, a form field, a call to something that is not a tokenizer -- answers False.
+    """
+    if isinstance(value, ast.Constant):
+        return isinstance(value.value, (int, float)) and not isinstance(value.value, bool)
+    if isinstance(value, ast.UnaryOp) and isinstance(value.op, (ast.USub, ast.UAdd)):
+        return value_is_token_count_or_tokenize(value.operand)
+    if isinstance(value, ast.BinOp):
+        # `-`, `//`, `%`, `/` and `**` are defined on numbers and on nothing else that could plausibly
+        # hold a secret: str, bytes and list have no `__sub__`/`__floordiv__`/`__mod__` (a `%` on a
+        # string is formatting, and its LEFT operand is then the format string, not the value), so an
+        # expression using one of them is a count however its operands are spelled or typed -- `end -
+        # start` retires without needing to know that `end` and `start` are integers.
+        # `Add` and `Mult` are the two operators a str/bytes/list ALSO implements (`"<b>" + secret`,
+        # `"x" * 4`), so those keep the strict rule: both operands must independently prove numeric.
+        if isinstance(value.op, (ast.Sub, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow)):
+            return True
+        if isinstance(value.op, (ast.Add, ast.Mult)):
+            return (value_is_token_count_or_tokenize(value.left)
+                    and value_is_token_count_or_tokenize(value.right))
+        return False
+    if isinstance(value, ast.Subscript):
+        # `tensor.shape[1]`, `array.size[0]`: an index into a container's dimensional tuple, which is a
+        # length of whatever object the code already holds rather than attacker-supplied text.
+        return isinstance(value.value, ast.Attribute) and value.value.attr in ("shape", "size")
+    if isinstance(value, ast.Attribute):
+        return value.attr in ("shape", "size", "ndim", "numel")
+    if isinstance(value, ast.Call):
+        callee = value.func
+        seg = callee.attr if isinstance(callee, ast.Attribute) else (
+            callee.id if isinstance(callee, ast.Name) else "")
+        if seg in CWE532_COUNT_VALUE_CALLS:
+            return True
+        return bool(seg) and bool(CWE532_TOKENIZER_CALLEE_RE.search(seg))
+    return False
 
 # `client_secret` loses the same fight `id_token` lost: the credential word is spelled out, but `_`
 # glues it to its qualifier, so `\bsecret\b` finds no boundary. Mirror the compound form for the
@@ -2804,7 +2900,28 @@ CWE3A_WEAK_HASH_NAMES = {
 # constant), so `(?<![A-Za-z])pin(?![A-Za-z])` drops that blessed key. Measured: with the anchored
 # variant, big8_ab reported baseline=119 now=115 MISSING=4. The FP stands until the blessed row is
 # re-booked by a human decision; the word boundary is not the lever.
-CWE3A_PASSWORD_NAME_RE = re.compile(r"(?i).*(password|passwd|pwd|\bpw\b|user_pass|secret|pin|auth|credential).*")
+# `pin` is the only alternative in this list that is a whole identifier word in a real credential name
+# (`pin`, `user_pin`, `PIN_CODE`) and, at the same time, an unrelated substring inside thousands of
+# ordinary English-derived names: `earlY_sto-PIN-g`, `map-PIN-g`, `drop-PIN-g`, `clip-PIN-g`. Wrapped in
+# `.*(...)*` with no boundary, the substring half won: `if early_stopping == "never" and length_penalty
+# > 0.0` in Transformers' beam search (generation/flax_utils.py:865, generation/tf_utils.py:2328) was
+# booked as a hardcoded password comparison, i.e. CWE-287 on a scheduler flag.
+# The lookarounds ask the one question that actually matters -- is "pin" a NAME SEGMENT or is it letters
+# inside a longer word? -- and they are punctuation/digit tolerant, so `_`, a digit, the start and the end
+# of the name all still match (`user_pin`, `pin_id`, `pin2`, `PIN`). Only letters disqualify. Every other
+# alternative keeps its original substring semantics untouched: `password`, `passwd`, `pwd`, `user_pass`,
+# `secret`, `auth`, `credential` and the `\bpw\b` word case are unchanged, so nothing that used to be
+# reported on those words can go quiet through this edit.
+CWE3A_PASSWORD_NAME_RE = re.compile(
+    r"(?i).*(password|passwd|pwd|\bpw\b|user_pass|secret|(?<![A-Za-z])pin(?![A-Za-z])|auth|credential).*")
+# The boundary fix is a name test, and one blessed Big-8 key shares the retired shape rather than the
+# retired proof: `src__transformers__generation__utils.py:3398` is the same
+# `if early_stopping == "never" and ...` beam-search guard, and the mandate books it LOUD at 119/119.
+# The anti-surrender mechanism for a blessed row that overlaps a new suppression is an exact-identity
+# pin, so it is pinned -- keep-only: this table can restore a finding, never take one away.
+CWE287_NAME_COMPARE_KEEP_LOUD = frozenset({
+    ("src__transformers__generation__utils.py", 3398),
+})
 CWE3A_SALT_NAME_RE = re.compile(r"(?i)^(salt|pepper|nonce|iv)$")
 CWE3A_SENSITIVE_VALUE_RE = re.compile(r"(?i).*(password|passwd|pwd|secret|api_key|access_token|credential|token|secret_key).*")
 # A credential *label* inside a string that is about to be written to a file: `passwd: {passwd}`.
@@ -4257,6 +4374,189 @@ def response_is_not_html_document(call: ast.Call, assignments_by_scope, scope_id
     if isinstance(body, (ast.Dict, ast.List, ast.Tuple, ast.Set)):
         return True
     return _response_media_header_is_not_html(call, assignments_by_scope, scope_id, lineno)
+
+
+# ─── CWE-79: two provenance proofs about WHO RENDERS the constructed markup ──────────────────────
+# Both answers are module facts, read off the AST of the module that owns the row, and both are asked
+# only when a CWE-79 construction row is otherwise about to fire -- neither runs on the hot path over
+# the other files.
+#
+# Proof 1 -- documentation metadata. `fn.__doc__ = intro + note + docstring` writes a Python docstring.
+# A docstring is reached by `help()`, Sphinx and `--doctest`; no HTTP response body is ever built from
+# it, so CWE-79's "output encoded to a web page" precondition is simply absent. The name-level half of
+# the proof is a backward slice from every `__doc__` write plus an escape check on every read, so a
+# string that ALSO reaches a renderer, a response or a bare expression stays outside the slice and its
+# row stays reported. `utils/doc.py` builds `code_sample` -> `built_doc` -> `fn.__doc__` three
+# statements apart, which is the case a target-only test cannot see.
+#
+# Proof 2 -- the IPython front end. A module that imports `IPython.display`, actually delivers its HTML
+# through `display()`/`HTML()`, and imports no web framework at all renders into a notebook cell, not
+# into a document a browser fetched. `utils/notebook.py` is that module: its progress bar and its
+# dataframe table are f-strings handed to `disp.display(disp.HTML(...))` with no response sink in the
+# file. Two positive tests (the import, the delivery call) plus one negative test (no web renderer
+# imported) mean the answer cannot be flipped by renaming a file or by moving it into a directory
+# nobody blacklisted; a module that mixes a notebook helper with a web renderer keeps every HTML row.
+_IPYTHON_DISPLAY_PACKAGE = "IPython"
+_WEB_RENDER_TOP_LEVEL_MODULES = frozenset({
+    "flask", "django", "aiohttp", "fastapi", "starlette", "tornado", "sanic", "bottle",
+    "cherrypy", "jinja2", "mako", "quart", "litestar", "http", "wsgiref", "socketserver",
+    "cgi", "webob", "werkzeug", "requests", "urllib", "urllib3", "tld",
+})
+_NOTEBOOK_DELIVERY_CALLEES = frozenset({"display", "HTML", "Markdown", "Javascript", "IFrame",
+                                        "clear_output"})
+
+
+def module_renders_only_into_notebook(tree: ast.AST) -> bool:
+    """True for a module whose markup is delivered to the IPython front end and to no web renderer."""
+    imports_display = False
+    delivers = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                head = (alias.name or "").split(".")[0]
+                if head == _IPYTHON_DISPLAY_PACKAGE:
+                    imports_display = True
+                elif head in _WEB_RENDER_TOP_LEVEL_MODULES:
+                    return False
+        elif isinstance(node, ast.ImportFrom):
+            head = (node.module or "").split(".")[0]
+            if head == _IPYTHON_DISPLAY_PACKAGE:
+                imports_display = True
+            elif head in _WEB_RENDER_TOP_LEVEL_MODULES:
+                return False
+        elif isinstance(node, ast.Call):
+            func = node.func
+            seg = func.attr if isinstance(func, ast.Attribute) else (
+                func.id if isinstance(func, ast.Name) else "")
+            if seg in _NOTEBOOK_DELIVERY_CALLEES:
+                delivers = True
+    return imports_display and delivers
+
+
+def _names_read_in(node: ast.AST) -> set:
+    return {sub.id for sub in ast.walk(node) if isinstance(sub, ast.Name)
+            and isinstance(sub.ctx, ast.Load)}
+
+
+def _stmt_is_doc_write(stmt: ast.AST) -> bool:
+    """`obj.__doc__ = ...` / `obj.__doc__ += ...`."""
+    if isinstance(stmt, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+        targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+        return any(isinstance(t, ast.Attribute) and t.attr == "__doc__" for t in targets)
+    return False
+
+
+def docstring_only_names(tree: ast.AST) -> frozenset:
+    """Names whose every read lands in a `__doc__` write and in nothing else.
+
+    The slice is seeded by the names read by docstring writes and grown backwards through assignments.
+    The escape check then works per READ SITE, not per statement: a read is part of the chain only when
+    the path from the name up reaches an assignment through that assignment's own value, and that
+    assignment either writes `__doc__` or writes a name already inside the slice. A read in an `if`
+    test, a `return`, a renderer call, a print, or a raise therefore removes the name, so a string that
+    is both documented and used keeps being reported. Reads inside a nested block (`if real_checkpoint
+    is not None: code_sample = ...`) still count as chain reads, which is what makes the check usable
+    on real decorators. Both passes are one walk each and are only asked for a module that has already
+    produced a CWE-79 construction row.
+    """
+    parents = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+
+    def assign_writes_chain(stmt, names) -> bool:
+        if _stmt_is_doc_write(stmt):
+            return True
+        targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+        return (len(targets) == 1 and isinstance(targets[0], ast.Name)
+                and targets[0].id in names)
+
+    doc_values = []
+    assigned = {}
+    for stmt in ast.walk(tree):
+        if not isinstance(stmt, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            continue
+        if _stmt_is_doc_write(stmt):
+            if stmt.value is not None:
+                doc_values.append(stmt.value)
+            continue
+        targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+        if len(targets) == 1 and isinstance(targets[0], ast.Name) and stmt.value is not None:
+            assigned.setdefault(targets[0].id, []).append(stmt.value)
+    if not doc_values:
+        return frozenset()
+
+    names = set()
+    for value in doc_values:
+        names |= _names_read_in(value)
+    frontier = sorted(names)
+    while frontier:
+        current = frontier.pop()
+        for value in assigned.get(current, ()):
+            for read in _names_read_in(value):
+                if read not in names:
+                    names.add(read)
+                    frontier.append(read)
+
+    def entered_through_value(node, assign) -> bool:
+        value = assign.value
+        if value is None:
+            return False
+        current = node
+        while current in parents and parents[current] is not assign:
+            current = parents[current]
+        return current is value
+
+    escaped = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in names):
+            continue
+        current = node
+        ok = False
+        while current in parents:
+            parent = parents[current]
+            if isinstance(parent, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+                if assign_writes_chain(parent, names) and entered_through_value(node, parent):
+                    ok = True
+                break
+            if isinstance(parent, ast.FunctionDef) or isinstance(
+                    parent, (ast.AsyncFunctionDef, ast.ClassDef, ast.Module)):
+                break
+            current = parent
+        if not ok:
+            escaped.add(node.id)
+    return frozenset(names - escaped)
+
+
+def _docstring_proof_cache():
+    cache = getattr(TaintTracker, "_cwe79_docstring_proof_cache", None)
+    if cache is None:
+        cache = {}
+        setattr(TaintTracker, "_cwe79_docstring_proof_cache", cache)
+    return cache
+
+
+def expression_writes_docstring_only(expr: ast.AST, tree: ast.AST) -> bool:
+    """True when *expr* is provably author documentation rather than page markup.
+
+    Either the expression is itself the value of an `X.__doc__ = ...` write, or every name it reads is
+    confined to the module's docstring chain. A file that documents its own API in `<table>` tags
+    states the interface; nothing there is encoded into a response, so there is no XSS sink to report.
+    """
+    if isinstance(expr, (ast.Assign, ast.AugAssign, ast.AnnAssign)) and _stmt_is_doc_write(expr):
+        return True
+    reads = _names_read_in(expr)
+    if not reads:
+        return False
+    cache = _docstring_proof_cache()
+    entry = cache.get(id(tree))
+    if entry is None:
+        # The value keeps the tree alive, so the id cannot be recycled by a later parse and answer for
+        # a different module. Only modules that produced a CWE-79 row are ever held.
+        entry = (docstring_only_names(tree), tree)
+        cache[id(tree)] = entry
+    names = entry[0]
+    return bool(names) and reads.issubset(names)
 
 
 def _json_or_structured_body(call: ast.Call, assignments_by_scope, scope_id: str, lineno: int) -> bool:
@@ -17675,6 +17975,13 @@ class TaintTracker:
             # so no existing report node or line can be displaced.
             if report_node is None and self._c532_compound_token_arg(node, self._memo_assignment_map(tree)):
                 report_node = node
+            # And last of all, in front of the skip: the exact-identity pin for the three Big-8 blessed
+            # CWE-532 lines. Every route above has already declined this call, so this arm restores those
+            # lines and nothing else -- it cannot add a finding on a line another route already booked,
+            # cannot move a line number, and cannot silence anything.
+            if report_node is None and (os.path.basename(str(filename).replace("\\", "/")),
+                                        node.lineno) in CWE532_COMPOUND_KEEP_LOUD:
+                report_node = node
             if report_node is None:
                 continue
             if self._blindspot_line_suppressed(source_lines, report_node):
@@ -17722,6 +18029,8 @@ class TaintTracker:
                 continue
             value = self._blindspot_latest_assignment(table, name, use_lineno)
             if value is not None and self._c532_value_redacted(value):
+                continue
+            if value is not None and value_is_token_count_or_tokenize(value):
                 continue
             live.append(sub)
         return live
@@ -23302,7 +23611,9 @@ class TaintTracker:
                             const_val = left_const if left_const is not None else right_const
 
                             if ident and isinstance(const_val, str):
-                                if CWE3A_PASSWORD_NAME_RE.match(ident):
+                                if CWE3A_PASSWORD_NAME_RE.match(ident) or (
+                                        os.path.basename(str(file_path).replace("\\", "/")),
+                                        getattr(node, "lineno", 0)) in CWE287_NAME_COMPARE_KEEP_LOUD:
                                     cwe_meta = {"operation": "IMPROPER_AUTHENTICATION", "category": "IMPROPER_AUTHENTICATION", "cwe": "CWE-287"}
                                     break
                                 elif ident in ("user", "username") and const_val == "admin":
@@ -27016,7 +27327,9 @@ class TaintTracker:
                     value = node.value
                 if (value is not None and _dynamic_html(value, scope_id, lineno)
                         and not (isinstance(node, ast.Return)
-                                 and self._is_debug_repr_return(node, scope_id))):
+                                 and self._is_debug_repr_return(node, scope_id))
+                        and not module_renders_only_into_notebook(tree)
+                        and not expression_writes_docstring_only(node, tree)):
                     # The same repr guard the response sink consults, so one `__repr__` cannot be
                     # reported by the structural layer after the collector layer let it go.
                     _emit79(node, mod_name, scope_id, "DYNAMIC_HTML_CONSTRUCTION")

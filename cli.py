@@ -1563,6 +1563,14 @@ def _scan(args):
 
         # Display-only confidence filter; the engine's emission set is already final.
         confidence_minimum = getattr(args, "min_confidence", None)
+        if confidence_minimum == "all":
+            confidence_minimum = None
+        elif confidence_minimum is None and getattr(args, "format", "table") == "table":
+            # A terminal table is read by a person deciding what to fix first, so it leads with the
+            # rows worth acting on. Every machine surface -- `--format json`, and any explicit
+            # --min-confidence including `all` -- keeps the complete emission set, because a pipeline
+            # that counts rows must not see a floor it never asked for.
+            confidence_minimum = "high"
         findings = _filter_by_confidence(findings, confidence_minimum)
         _PARTIAL["findings"] = findings
 
@@ -1904,10 +1912,11 @@ def main(argv=None):
              "never truncated. Requires a git repository",
     )
     scan_parser.add_argument(
-        "--min-confidence", choices=("low", "medium", "high"), default=None,
+        "--min-confidence", choices=("all", "low", "medium", "high"), default=None,
         help="Only show findings at or above this confidence level: high = an explicit "
              "source->sink flow, medium = pattern/structural match, low = heuristic comparison. "
-             "Default: every finding is shown. Detection is unchanged",
+             "`all` shows every finding. Default: the human-readable table starts at high, every "
+             "machine format starts at all. Detection is unchanged",
     )
     scan_parser.add_argument(
         "--include-js", dest="include_js", action="store_true", default=False,

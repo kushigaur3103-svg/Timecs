@@ -217,7 +217,13 @@ EXPECTED_MIX = {'parity': {'HIGH': 404, 'MEDIUM': 15, 'LOW': 6},
 
 
 def _corpus_labels(kind, cwd):
-    payload = _run_cli(['scan', '.', '--format', 'json', '--workers', '1'], cwd)
+    # `--include-tests` is load-bearing here, not cosmetic. 27 of the 425 blessed parity keys live under
+    # a `fixtures/` directory, which `cli.py` now holds back from a default directory walk, and this tier
+    # joins every key in the frozen baseline before it compares the severity mix against EXPECTED_MIX --
+    # without the flag it reads 27 corpus files as dropped true positives and buckets the wrong set.
+    # big8 keeps no key under a pruned directory, and both corpora are still scanned as loudly as ever:
+    # the flag widens what the walk sees, never what the engine reports.
+    payload = _run_cli(['scan', '.', '--format', 'json', '--workers', '1', '--include-tests'], cwd)
     labels, rows = {}, []
     for finding in payload['findings']:
         row = (finding['file'], finding['line'], finding['cwe'], finding.get('category', ''),

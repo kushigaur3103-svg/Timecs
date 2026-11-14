@@ -60,13 +60,15 @@ IGNORED_DIRS = {".git", ".venv", "venv", "__pycache__", "node_modules", "build",
 # directory scan prunes these before descending; `--include-tests` turns that off, and a path named
 # on the command line is always walked in full. This is a discovery-scope choice, not a suppression:
 # nothing is filtered out of the emission set, so every finding in a scanned file is still reported.
-# The cost is stated plainly because it is real -- `benchmark/gates/workflow_controls_probe.py`
-# names `examples/app.py` and `tests/fixture.py` among the trees a hardcoded secret is classically
-# committed in, so a default directory scan no longer sees a CWE-798 sitting there and needs
-# `--include-tests` to find it. That is why the skip is always announced in the report, why the
-# confidence-floor note and this one are printed even when nothing else is, and why the tracked gates
-# that prove per-rule exclusion behaviour pass `--include-tests` instead of losing their assertions.
-NON_PRODUCTION_DIRS = frozenset({"tests", "test", "__tests__", "examples", "example", "samples"})
+# The cost is stated plainly because it is real -- `benchmark/gates/workflow_controls_probe.py` names
+# `examples/app.py` and `tests/fixture.py` among the trees a hardcoded secret is classically committed
+# in, and `fixtures/` is where this repository keeps 27 of its own blessed detection cases, so a default
+# directory scan no longer sees a CWE-798 sitting in any of them and needs `--include-tests` to find it.
+# That is why the skip is always announced in the report, why the confidence-floor note and this one are
+# printed even when nothing else is, and why the gates that prove per-rule or per-directory behaviour
+# pass `--include-tests` (or name the directory on the command line) instead of losing their assertions.
+NON_PRODUCTION_DIRS = frozenset({"tests", "test", "__tests__", "testutils",
+                                 "fixtures", "examples", "example", "samples"})
 # What the current scan pruned, so the report can say so instead of looking like a clean tree.
 _SCOPE_STATS = {"skipped_dirs": 0, "skipped_files": 0}
 
@@ -244,10 +246,11 @@ def _iter_tree_files(root, prune_dirs=None, count_pruned=False):
     keeps discovery inside the real tree. Ignored directories are pruned before
     descending, so `node_modules` is never walked just to be filtered out again.
 
-    `prune_dirs` replaces the prune set for one walk; `count_pruned` only ever comes from a
-    requested scope narrowing, and records how many directories and Python files it held back so the
-    report can name them. The root directory itself is never pruned: `cli.py scan tests/` still walks
-    it, because a path named on the command line is a path the user asked to analyse.
+    `prune_dirs` replaces the prune set for one walk; `count_pruned` only ever comes from a requested
+    scope narrowing, and records how many directories and Python files it held back so the report can
+    name them. Three things keep a file in scope whatever the set says: a file named directly (no
+    directory walk happens at all), a directory named as the scan root -- which is why
+    `cli.py scan tests/` still walks it -- and `--include-tests`, which passes no set at all.
     """
     skip = IGNORED_DIRS if prune_dirs is None else prune_dirs
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
@@ -696,8 +699,8 @@ def non_production_scope_note() -> str:
         return ""
     files = _SCOPE_STATS["skipped_files"]
     return (f"Note: Held back {files} python file(s) in {dirs} non-production "
-            f"director{'y' if dirs == 1 else 'ies'} (tests/, examples/, samples/); "
-            f"pass --include-tests to scan them.")
+            f"director{'y' if dirs == 1 else 'ies'} (tests/, testutils/, fixtures/, "
+            f"examples/, samples/); pass --include-tests to scan them.")
 
 
 def table_default_note(hidden) -> str:

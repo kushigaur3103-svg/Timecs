@@ -34,10 +34,17 @@ def scan(target: str):
     message, severity)`. `category` is the only field that may be absent, and then it is empty --
     exactly as the baselines store it. A missing `message` or `severity` raises rather than
     defaulting, because a silently short key would show up as a real difference.
+
+    `--include-tests` is load-bearing, not cosmetic. `cli.py` prunes `tests/`, `testutils/`,
+    `fixtures/` and `examples/` out of a default directory walk -- a decision about what a *report*
+    shows a user -- while every baseline this feeds was sealed over the whole tree, 27 of the 425
+    blessed parity keys among them sitting under `benchmark/fixtures/`. Without the flag a gate would
+    compare a scope-narrowed scan against an unpruned seal and report the corpus directories
+    themselves as dropped true positives. The corpora stay exactly as loud as they always were.
     """
     stdout, stderr = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-        cli.main(["scan", target, "--format", "json", "--workers", "2"])
+        cli.main(["scan", target, "--format", "json", "--workers", "2", "--include-tests"])
     payload = stdout.getvalue()
     start = payload.find("{")
     if start < 0:

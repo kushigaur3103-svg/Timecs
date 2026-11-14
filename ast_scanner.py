@@ -4412,6 +4412,28 @@ CWE862_TASK_DECORATORS = frozenset({"shared_task", "instrumented_task", "celery_
 CWE862_ORM_BASE_SEGMENTS = frozenset({"Model", "Manager", "QuerySet", "BaseManager"})
 CWE862_HTTP_REQUEST_PARAMS = frozenset({"request", "req"})
 CWE862_PERMISSIONS_WITHOUT_A_CHECK = frozenset({"AllowAny"})
+# A fetch guarded by no owner check is only a missing authorisation if a client can reach the code that
+# performs it. Sentry's remaining CWE-862 volume sits in `services/*/impl.py` class bodies, `models.py`
+# and `utils/*` helpers: methods with no request parameter, in classes that inherit nothing view-shaped,
+# carrying no route or auth decorator and none of the attributes a framework only reads while
+# dispatching. An entrypoint is therefore proven by one of five positive markers -- the request
+# parameter, a view-shaped base, a view-shaped class name, a route/auth decorator, or a dispatch-time
+# class attribute -- and module scope is reported with no proof at all, because that is the shape of a
+# flat view body and where most of this repository's blessed CWE-862 rows live. Silence needs the
+# absence of all five; a class named `*Service` that inherits an `Endpoint`, or whose method takes
+# `request`, reports just as loudly as one named `*View`, so the marker set is what makes the clause
+# safe rather than the name of anything.
+CWE862_HTTP_VIEW_SUFFIXES = frozenset({"View", "APIView", "Endpoint", "ViewSet"})
+CWE862_HTTP_ROUTE_DECORATORS = frozenset({
+    "route", "path", "re_path", "url", "as_view", "dispatch", "login_required",
+    "permission_required", "has_permission", "auth_required", "staff_member_required",
+    "superuser_required", "csrf_exempt", "csrf_protect", "require_GET", "require_POST",
+    "require_http_methods", "require_safe", "api_view", "action",
+})
+CWE862_HTTP_HANDLER_ATTRIBUTES = frozenset({
+    "permission_classes", "authentication_classes", "throttle_classes", "renderer_classes",
+    "parser_classes", "queryset", "serializer_class", "http_method_names", "dispatch", "as_view",
+})
 
 
 # ─── CWE-79: two provenance proofs about WHO RENDERS the constructed markup ──────────────────────
@@ -13348,6 +13370,58 @@ class TaintTracker:
                            for target in targets):
                     continue
                 if self._permission_value_declares_a_check(stmt.value):
+                    return True
+        return False
+
+    def _c862_scope_is_http_entrypoint(self, call: ast.Call) -> bool:
+        """Whether an object fetch sits where a client request can reach it.
+
+        The charge `MISSING_AUTHORIZATION` makes is that a row is read by an id nobody proved belongs to
+        the caller, which is only a charge against code a request enters. Module scope has no enclosing
+        function at all, and that is the shape of a flat Flask/Django view body, so it reports without
+        needing proof. Inside a function the answer is the presence of any one of five markers -- a
+        request parameter, a view-shaped base, a view-shaped class name, a route or auth decorator, a
+        class attribute or method the framework only reads while dispatching -- and a
+        `services/*/impl.py` or `models.py` method carrying none of them is reached from other Python
+        only, where the boundary that authorises the caller is the view that called it and is itself
+        reported. No marker is a name check on the file, the class or the method, so a service class that
+        inherits an `Endpoint` or takes `request` stays as loud as a view.
+        """
+        func = None
+        classes = []
+        current = getattr(call, "parent", None)
+        while current is not None:
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if func is None:
+                    func = current
+            elif isinstance(current, ast.ClassDef):
+                classes.append(current)
+            current = getattr(current, "parent", None)
+        if func is None:
+            return True
+        if self._signature_takes_http_request(func):
+            return True
+        for decorator in func.decorator_list:
+            target = decorator.func if isinstance(decorator, ast.Call) else decorator
+            if dotted_name(target).rsplit(".", 1)[-1] in CWE862_HTTP_ROUTE_DECORATORS:
+                return True
+        for cls in classes:
+            if cls.name.endswith(tuple(CWE862_HTTP_VIEW_SUFFIXES)):
+                return True
+            for base in cls.bases:
+                if dotted_name(base).rsplit(".", 1)[-1].endswith(tuple(CWE862_HTTP_VIEW_SUFFIXES)):
+                    return True
+            for stmt in cls.body:
+                if isinstance(stmt, ast.Assign):
+                    declared = {t.id for t in stmt.targets if isinstance(t, ast.Name)}
+                elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                    declared = {stmt.target.id}
+                else:
+                    declared = set()
+                if declared & CWE862_HTTP_HANDLER_ATTRIBUTES:
+                    return True
+                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and \
+                        stmt.name in CWE862_HTTP_HANDLER_ATTRIBUTES:
                     return True
         return False
 
@@ -23516,7 +23590,8 @@ class TaintTracker:
                                     has_owner_param = True
                                     break
                             if (not has_owner_param and not has_owner_check
-                                    and not scope_is_guarded_or_off_http):
+                                    and not scope_is_guarded_or_off_http
+                                    and self._c862_scope_is_http_entrypoint(node)):
                                 # One finding per view, not one per object fetch: a view that reads
                                 # three rows by client-supplied id has one authorisation gap, while
                                 # three line-level hits read as three defects. Report the finding at

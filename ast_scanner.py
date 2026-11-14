@@ -4376,6 +4376,44 @@ def response_is_not_html_document(call: ast.Call, assignments_by_scope, scope_id
     return _response_media_header_is_not_html(call, assignments_by_scope, scope_id, lineno)
 
 
+# ─── CWE-79 / CWE-95: two sinks that are a NAME collision, not a dataflow mistake ────────────────
+# `Response` names Flask's HTML-capable wrapper in SINK_REGISTRY and, in a Django REST Framework API,
+# the envelope whose body the framework hands to the *negotiated* renderer. `Response({"q": tainted})`
+# leaves as `application/json`; a browser parses markup only when the call itself asks for it, which a
+# DRF `Response` does through exactly three arguments (`content_type`, `template_name`,
+# `renderer_classes`) or by carrying tag-shaped text. So the DRF envelope is not an XSS sink while
+# none of those is present -- and `django.http.HttpResponse`, `mark_safe` and any `*html_response`
+# wrapper keep reporting, because their names are not `Response` from `rest_framework.response`.
+#
+# `Function` is the JavaScript eval-family sink declared in rules/cwe_95_js_eval.yaml and, in Sentry,
+# `snuba_sdk.Function("count", ...)` -- a ClickHouse SQL AST node. Python has no global `Function`, so
+# the module that owns the call can settle the question: if its own import table says where the name
+# came from, it names a library symbol and not the JS constructor. A `Function` the module never
+# imported stays loud, and real `eval`/`exec`/`compile` are not in this name set at all.
+#
+# All of it is decided on import provenance, which is a fact inside the file being scanned: no
+# directory, filename or project name is consulted, and moving either call changes no answer.
+DRF_RESPONSE_MODULE_PATH = "rest_framework.response"
+DRF_RESPONSE_SYMBOL = "rest_framework.response.Response"
+DRF_HTML_RENDERER_ARGUMENTS = frozenset({"template_name", "renderer_classes"})
+JS_ONLY_CODE_EXEC_SINK_NAMES = frozenset({"Function"})
+
+# ─── CWE-862: the four scopes a missing HTTP authorisation check cannot exist in ─────────────────
+# The rule charges a handler that reads a row by a client-supplied id without asking who supplied it,
+# so its precondition is an HTTP caller. A Celery task body, a Django migration module and an ORM
+# model/manager/queryset method have none: the first is entered by a worker, the second only ever runs
+# under `migrate` inside `class Migration(migrations.Migration)`, the third is reached from other
+# Python with `self` bound to a row. A DRF `APIView`/`Endpoint` subclass is the opposite case -- it
+# does face HTTP, and it declares its authorisation as a class attribute that DRF's permission pass
+# enforces on every request, so a non-empty `permission_classes` naming a real permission class is a
+# guard, while `()` or `(AllowAny,)` names nothing to enforce and stays reported.
+CWE862_TASK_DECORATORS = frozenset({"shared_task", "instrumented_task", "celery_task",
+                                    "periodic_task", "task"})
+CWE862_ORM_BASE_SEGMENTS = frozenset({"Model", "Manager", "QuerySet", "BaseManager"})
+CWE862_HTTP_REQUEST_PARAMS = frozenset({"request", "req"})
+CWE862_PERMISSIONS_WITHOUT_A_CHECK = frozenset({"AllowAny"})
+
+
 # ─── CWE-79: two provenance proofs about WHO RENDERS the constructed markup ──────────────────────
 # Both answers are module facts, read off the AST of the module that owns the row, and both are asked
 # only when a CWE-79 construction row is otherwise about to fire -- neither runs on the hot path over
@@ -13114,6 +13152,232 @@ class TaintTracker:
             return True
         return False
 
+    # ─── Import provenance shared by the CWE-79, CWE-95 and CWE-862 answers above ─────────────────
+    def _module_symbol_paths(self, mod_name: str) -> dict[str, str]:
+        """local name -> dotted import path, cached on the module's own tree."""
+        tree = self.modules.get(mod_name)
+        if tree is None:
+            return {}
+        cached = tree.__dict__.get("_cached_symbol_paths")
+        if cached is None:
+            cached = self._c502_import_aliases(tree, nodes=self._module_nodes(tree))
+            tree.__dict__["_cached_symbol_paths"] = cached
+        return cached
+
+    def _module_class_table(self, mod_name: str) -> dict[str, ast.ClassDef]:
+        """class name -> ClassDef for one module, first definition winning, cached on its tree."""
+        tree = self.modules.get(mod_name)
+        if tree is None:
+            return {}
+        cached = tree.__dict__.get("_cached_class_table")
+        if cached is None:
+            cached = {}
+            for node in self._module_nodes(tree):
+                if isinstance(node, ast.ClassDef):
+                    cached.setdefault(node.name, node)
+            tree.__dict__["_cached_class_table"] = cached
+        return cached
+
+    def _import_path_for_expr(self, expr: ast.AST, mod_name: str) -> str:
+        """Where a callee/base was imported from, as this module's own imports prove it.
+
+        `Response` under `from rest_framework.response import Response` answers
+        `rest_framework.response.Response`, and `class Foo(models.Manager)` answers
+        `django.db.models.Manager` through the `models` alias. A name the module never imported
+        answers the empty string, which every caller below reads as "no proof, stay loud".
+        """
+        raw = dotted_name(expr) or ""
+        if not raw:
+            return ""
+        parts = raw.split(".")
+        head = self._module_symbol_paths(mod_name).get(parts[0])
+        if not head:
+            return ""
+        return ".".join([head] + parts[1:])
+
+    def _literal_strings_of_payload(self, call: ast.Call, scope_id: str, lineno: int) -> list[str]:
+        """String literals inside the response body, one assignment hop included."""
+        payload = call.args[0] if call.args else next(
+            (kw.value for kw in call.keywords if kw.arg in {"data", "content", "body"}), None)
+        if payload is None:
+            return []
+        roots = [payload]
+        if isinstance(payload, ast.Name):
+            prior = [rec for rec in self.assignments_by_scope.get((scope_id, payload.id), ())
+                     if rec.lineno < lineno]
+            if prior:
+                roots.append(prior[-1].value_node)
+        literals = []
+        for root in roots:
+            for sub in ast.walk(root):
+                if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                    literals.append(sub.value)
+        return literals
+
+    def _drf_response_delivers_markup(self, call: ast.Call, scope_id: str, lineno: int) -> bool:
+        """One of the three ways a DRF `Response` puts HTML, rather than JSON, on the wire."""
+        for kw in call.keywords:
+            if kw.arg == "content_type":
+                media = _eval_static_constant(kw.value, self.assignments_by_scope, scope_id, lineno)
+                if isinstance(media, str) and "html" in media.lower():
+                    return True
+            elif kw.arg in DRF_HTML_RENDERER_ARGUMENTS:
+                if not (isinstance(kw.value, ast.Constant) and kw.value.value is None):
+                    return True
+        return any(text_has_markup_shape(text)
+                   for text in self._literal_strings_of_payload(call, scope_id, lineno))
+
+    def _cwe79_sink_is_drf_json_envelope(self, call: ast.Call, mod_name: str,
+                                         canon_name: Optional[str], scope_id: str,
+                                         lineno: int) -> bool:
+        """True for DRF's content-negotiated `Response` while the call keeps the body un-rendered."""
+        raw = dotted_name(call.func) or ""
+        if not raw or raw.rsplit(".", 1)[-1] != "Response":
+            return False
+        path = self._import_path_for_expr(call.func, mod_name)
+        if path != DRF_RESPONSE_SYMBOL and not (canon_name or "").startswith(
+                DRF_RESPONSE_MODULE_PATH + "."):
+            return False
+        return not self._drf_response_delivers_markup(call, scope_id, lineno)
+
+    def _js_code_exec_name_is_an_imported_python_symbol(self, call: ast.Call,
+                                                        mod_name: str) -> bool:
+        """True when an eval-family `Function(...)` is a library symbol, not the JS constructor."""
+        raw = dotted_name(call.func) or ""
+        if not raw or raw.rsplit(".", 1)[-1] not in JS_ONLY_CODE_EXEC_SINK_NAMES:
+            return False
+        return bool(self._module_symbol_paths(mod_name).get(raw.split(".")[0]))
+
+    def _signature_takes_http_request(self, func: ast.AST) -> bool:
+        """A handler parameter, or a `self.request` read, is the HTTP surface CWE-862 needs."""
+        arguments = getattr(func, "args", None)
+        if arguments is None:
+            return False
+        names = set()
+        for group in (arguments.args, arguments.kwonlyargs,
+                      getattr(arguments, "posonlyargs", []) or ()):
+            names.update(argument.arg for argument in group)
+        if names & CWE862_HTTP_REQUEST_PARAMS:
+            return True
+        return any(isinstance(node, ast.Attribute) and node.attr == "request"
+                   and isinstance(node.value, ast.Name) and node.value.id in ("self", "cls")
+                   for node in ast.walk(func))
+
+    def _c862_is_background_task(self, func: ast.AST, mod_name: str) -> bool:
+        """A Celery-style decorator whose import path says celery/task, never a bare name."""
+        for decorator in func.decorator_list:
+            expr = decorator.func if isinstance(decorator, ast.Call) else decorator
+            raw = dotted_name(expr) or ""
+            if not raw or raw.rsplit(".", 1)[-1] not in CWE862_TASK_DECORATORS:
+                continue
+            module_part = ".".join(self._import_path_for_expr(expr, mod_name).split(".")[:-1]).lower()
+            if "celery" in module_part or "task" in module_part:
+                return True
+        return False
+
+    def _module_is_django_migration(self, mod_name: str) -> bool:
+        """`class Migration(<something>Migration)` is the only entry point migrate() ever runs."""
+        tree = self.modules.get(mod_name)
+        if tree is None:
+            return False
+        cached = tree.__dict__.get("_cached_is_migration_module")
+        if cached is None:
+            cached = False
+            for node in self._module_nodes(tree):
+                if not isinstance(node, ast.ClassDef) or node.name != "Migration":
+                    continue
+                if any((dotted_name(base) or "").rsplit(".", 1)[-1].endswith("Migration")
+                       for base in node.bases):
+                    cached = True
+                    break
+            tree.__dict__["_cached_is_migration_module"] = cached
+        return cached
+
+    def _class_is_orm_scope(self, cls: ast.ClassDef, mod_name: str) -> bool:
+        """A model, manager or queryset class: rows are reached from Python, never from a request."""
+        for base in cls.bases:
+            path = self._import_path_for_expr(base, mod_name)
+            if not path:
+                continue
+            module_part = ".".join(path.split(".")[:-1]).lower()
+            if (path.rsplit(".", 1)[-1] in CWE862_ORM_BASE_SEGMENTS
+                    and ("models" in module_part or "django" in module_part
+                         or module_part.endswith(".db"))):
+                return True
+        for stmt in cls.body:
+            if not isinstance(stmt, ast.Assign):
+                continue
+            for target in stmt.targets:
+                if not (isinstance(target, ast.Name) and target.id == "objects"):
+                    continue
+                if not isinstance(stmt.value, ast.Call):
+                    continue
+                callee = stmt.value.func
+                segment = (getattr(callee, "attr", None) or getattr(callee, "id", None) or "")
+                if segment in ("Manager", "as_manager", "from_queryset"):
+                    return True
+        return False
+
+    def _permission_value_declares_a_check(self, value: Optional[ast.AST]) -> bool:
+        """`permission_classes` guards only while it names something to enforce."""
+        if value is None or isinstance(value, ast.Call):
+            # `= ()` names nothing, and `= some_call()` hides its contents: both stay reported.
+            return False
+        elements = list(value.elts) if isinstance(value, (ast.Tuple, ast.List, ast.Set)) else [value]
+        for element in elements:
+            segment = (dotted_name(element) or "").rsplit(".", 1)[-1]
+            if segment and segment in CWE862_PERMISSIONS_WITHOUT_A_CHECK:
+                continue
+            return True
+        return False
+
+    def _class_declares_permission_guard(self, cls: ast.ClassDef, mod_name: str) -> bool:
+        """The view's own `permission_classes`, or a same-module base class that sets it."""
+        classes = self._module_class_table(mod_name)
+        chain = [cls]
+        for base in cls.bases:
+            parent = classes.get((dotted_name(base) or "").rsplit(".", 1)[-1])
+            if parent is not None:
+                chain.append(parent)
+        for klass in chain:
+            for stmt in klass.body:
+                if not isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+                    continue
+                targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+                if not any(isinstance(target, ast.Name) and target.id == "permission_classes"
+                           for target in targets):
+                    continue
+                if self._permission_value_declares_a_check(stmt.value):
+                    return True
+        return False
+
+    def _c862_scope_is_guarded_or_off_http(self, call: ast.Call, mod_name: str) -> bool:
+        """True when an object fetch is behind a declared permission class, or has no HTTP caller."""
+        func = None
+        classes: list[ast.ClassDef] = []
+        current = getattr(call, "parent", None)
+        while current is not None:
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if func is None:
+                    func = current
+            elif isinstance(current, ast.ClassDef):
+                classes.append(current)
+            current = getattr(current, "parent", None)
+        # A permission declaration answers for the request the view serves, so it is asked first and
+        # is not limited by the handler signature below.
+        for cls in classes:
+            if self._class_declares_permission_guard(cls, mod_name):
+                return True
+        if func is None:
+            # Module scope is where the flat Flask/Django view body lives (all seven blessed rows):
+            # no enclosing function means no task decorator, migration class or ORM `self` to read.
+            return False
+        if self._signature_takes_http_request(func):
+            return False
+        return (self._c862_is_background_task(func, mod_name)
+                or self._module_is_django_migration(mod_name)
+                or any(self._class_is_orm_scope(cls, mod_name) for cls in classes))
+
     def get_or_create_sink(self, node: ast.Call, file_path: str, scope_id: str = "", force_cwe: Optional[str] = None) -> SecurityNode:
         loc = location(node, file_path)
         for existing in self._sink_nodes_on_line(loc.file, loc.line_start):
@@ -13227,6 +13491,16 @@ class TaintTracker:
             # Registration-time prune: the row is decided on the call site's own shape, so the sink
             # never enters `self.sinks` and the graph cascade, the edge builder and the emission
             # stage all stop paying for it.
+            return sink
+        if sink.metadata.get("cwe") == "CWE-79" and self._cwe79_sink_is_drf_json_envelope(
+                node, self._scope_module(scope_id), canon_name, scope_id, loc.line_start):
+            # Same prune, same reason: DRF serialises this body with the negotiated renderer, so the
+            # name matched a sink table without the call ever producing a document.
+            return sink
+        if sink.metadata.get("cwe") == "CWE-95" and self._js_code_exec_name_is_an_imported_python_symbol(
+                node, self._scope_module(scope_id)):
+            # `snuba_sdk.Function` builds a SQL AST node; the JS `Function` constructor it collided
+            # with has no Python binding to resolve to.
             return sink
         self.sinks.append(sink)
         return sink
@@ -23190,6 +23464,12 @@ class TaintTracker:
                     # ─── CWE-862: Missing Authorization / IDOR ───
                     elif (name == "get_object_or_404" or name.endswith(".objects.get") or name.endswith(".query.get") or (name.endswith(".query.filter_by") or name == "filter_by") or canon.endswith(".objects.get") or canon.endswith(".query.get")):
                         _ensure_auth_guards()
+                        # Second guard question, after "is this view authenticated?": is there a view
+                        # here at all. A task body, a migration module and an ORM method have no HTTP
+                        # caller to authorise, and a DRF view that names a permission class already
+                        # declares the check. See the CWE862_* tables above for each proof.
+                        scope_is_guarded_or_off_http = self._c862_scope_is_guarded_or_off_http(
+                            node, mod_name)
                         # Suppress if the enclosing function is guarded by authentication checks.
                         is_guarded = False
                         
@@ -23235,7 +23515,8 @@ class TaintTracker:
                                 if kw.arg in ("owner", "user", "user_id", "owner_id"):
                                     has_owner_param = True
                                     break
-                            if not has_owner_param and not has_owner_check:
+                            if (not has_owner_param and not has_owner_check
+                                    and not scope_is_guarded_or_off_http):
                                 # One finding per view, not one per object fetch: a view that reads
                                 # three rows by client-supplied id has one authorisation gap, while
                                 # three line-level hits read as three defects. Report the finding at
@@ -27417,11 +27698,15 @@ class TaintTracker:
                 call_name = dotted_name(node.func) or ""
                 call_seg = call_name.rsplit(".", 1)[-1] if call_name else ""
                 if call_seg.startswith("HttpResponse") or call_seg in {"make_response", "Response"}:
-                    body = node.args[0] if node.args else next(
-                        (kw.value for kw in node.keywords if kw.arg in {"content", "response", "body", "data"}), None)
-                    if (isinstance(body, (ast.Dict, ast.List, ast.Tuple, ast.Set))
-                            and _marker(body, scope_id, lineno)):
-                        _emit79(node, mod_name, scope_id, "HTML_RESPONSE_CONTAINER_BODY")
+                    # A DRF `Response({"q": tainted})` container is the JSON API body itself: the dict
+                    # is what the renderer serialises, so there is no container markup to escape.
+                    if not (call_seg == "Response" and self._cwe79_sink_is_drf_json_envelope(
+                            node, mod_name, None, scope_id, lineno)):
+                        body = node.args[0] if node.args else next(
+                            (kw.value for kw in node.keywords if kw.arg in {"content", "response", "body", "data"}), None)
+                        if (isinstance(body, (ast.Dict, ast.List, ast.Tuple, ast.Set))
+                                and _marker(body, scope_id, lineno)):
+                            _emit79(node, mod_name, scope_id, "HTML_RESPONSE_CONTAINER_BODY")
 
                 # Predicate H: template-name extensions that bypass autoescaping.
                 if call_seg == "render_template" and not self._name_is_local_helper(

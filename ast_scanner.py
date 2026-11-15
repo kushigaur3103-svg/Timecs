@@ -617,7 +617,28 @@ CWE338_SECURITY_FUNC_KEYWORDS = (
 # `_cwe328_hash_input_is_non_credential` still refuses it the moment the hashed input names a secret,
 # so `token_checksum = md5(token)` stays reported.
 CWE327_NON_CRYPTO_KEYWORDS = ("cache_key", "etag", "checksum", "fingerprint", "thumb")
-CWE328_CONTENT_HASH_KEYWORDS = CWE327_NON_CRYPTO_KEYWORDS + ("chunk", "blob", "color", "span")
+CWE328_CONTENT_HASH_KEYWORDS = CWE327_NON_CRYPTO_KEYWORDS + (
+    "chunk", "blob", "color", "span",
+    # Deterministic bucket arithmetic: a hash that picks a shard, a ring position, a palette entry or
+    # a dedup/grouping key indexes something, it does not protect something. Sentry reported
+    # `utils/colors.py:6`, `performance_issues/detectors/*.py`, `tsdb/redis.py:201` and
+    # `replays/lib/event_linking.py:141` as CWE-328 on these shapes. `_is_exempt_cwe327` matches
+    # these by substring, so every one of them is still refused the moment a security word names the
+    # bytes being hashed -- `session_partition = md5(session_id)` stays reported.
+    "shard", "bucket", "ring", "partition", "dedup", "palette", "hue", "rgb", "hex_color",
+    "issue_hash", "grouping",
+)
+# A bucket word beside `key` says WHICH key: `shard_key`, `partition_key`, `ring_key` and
+# `grouping_key` name a routing index (a DB sharding column, a consistent-hash position, an event
+# grouping id), not a secret, and Sentry hashes exactly those to pick a bucket. The demotion below is
+# confined to the weak-hash path and fires only when `key`/`keys` is the SOLE security word in the
+# name, so `api_key`, `session_key`, `sign_key` and `salt_key` keep their veto and
+# `md5(api_key)` / `md5(session_id)` stay reported.
+CWE328_ROUTING_KEY_WORDS = frozenset({"key", "keys"})
+CWE328_ROUTING_KEY_QUALIFIERS = frozenset({
+    "shard", "shards", "bucket", "buckets", "ring", "rings", "partition", "partitions",
+    "dedup", "dedupe", "grouping", "palette", "hue", "rgb",
+})
 
 # Module stems that only ever run during packaging. Used by the CWE-770 unbounded-read
 # bypass, which also requires the opened path to name one of the metadata files below --
@@ -4473,6 +4494,19 @@ DRF_RESPONSE_SYMBOL = "rest_framework.response.Response"
 DRF_HTML_RENDERER_ARGUMENTS = frozenset({"template_name", "renderer_classes"})
 JS_ONLY_CODE_EXEC_SINK_NAMES = frozenset({"Function"})
 
+# `Request` names two unrelated objects, and only the module's own import table tells them apart.
+# `urllib.request.Request`, `urllib2.Request`, `requests.Request` and `httpx.Request` carry a URL this
+# process is about to fetch -- that is CWE-918's whole subject. `snuba_sdk.Request` is a ClickHouse
+# query builder (app / selected_columns / conditions / offset / limit) and opens no socket, which is
+# why Sentry reported it as SSRF at `api/endpoints/group_hashes_split.py:172, 402`. The prune is
+# refused for a head written as an HTTP client, for a head that resolves INTO an HTTP client package,
+# and for a `Request` the module never imported: no proof, still loud.
+CWE918_QUERY_BUILDER_PACKAGES = frozenset({"snuba_sdk"})
+CWE918_HTTP_CLIENT_PACKAGES = frozenset({
+    "urllib", "urllib2", "urllib3", "urllib.request", "http", "http.client", "httpx", "requests",
+    "aiohttp", "httplib2", "pycurl", "socket", "ssl", "starlette", "tornado", "twisted", "asyncio",
+})
+
 # ─── CWE-862: the four scopes a missing HTTP authorisation check cannot exist in ─────────────────
 # The rule charges a handler that reads a row by a client-supplied id without asking who supplied it,
 # so its precondition is an HTTP caller. A Celery task body, a Django migration module and an ORM
@@ -5658,6 +5692,9 @@ class TaintTracker:
         # the parse fan-out and only re-interned, never re-pointed, afterwards) -- so a cache hit can
         # only ever answer the same question the cold path would have.
         self._cwe338_demo_path_memo: dict[str, bool] = {}
+        # Same shape of answer for the same shape of question: `(module, written name)` decides a
+        # `Request`'s origin, and a stem maps to exactly one tree inside one scan.
+        self._cwe918_query_builder_memo: dict[tuple[str, str], bool] = {}
         _parallel_parsing_failed = False
         if PARALLEL_PARSING_AVAILABLE and len(self.files) > 10 and self.parser_mode != "treesitter":
             # Only use parallel parsing for larger workloads (>10 files)
@@ -11360,25 +11397,71 @@ class TaintTracker:
                         return True
         return False
 
+    def _cwe328_input_is_credential_named(self, name: str) -> bool:
+        """The CWE-338 credential veto, plus the one demotion this path can justify alone.
+
+        `_cwe338_name_is_security_named` is kept untouched for every caller that decides a PRNG draw
+        or a secret comparison; here a routing index spelled `shard_key`/`grouping_key` is added back
+        to the non-credential set because a bucket word sits beside the sole security word.
+        """
+        lowered = [s.lower() for s in _CWE338_NAME_SPLIT.split(name) if s]
+        hits = {s for s in lowered if s in CWE338_SECURITY_NAME_WORDS}
+        if not hits:
+            return False
+        if hits <= CWE328_ROUTING_KEY_WORDS and any(
+                s in CWE328_ROUTING_KEY_QUALIFIERS for s in lowered):
+            return False
+        return True
+
+    def _cwe328_enclosing_helper_is_content_addressed(self, node: ast.AST, vocabulary) -> bool:
+        """True when the function computing the digest is itself named for the bucket it fills.
+
+        `_is_exempt_cwe327` reads the nearest assignment and stops there, which is right for the
+        CWE-327/CWE-338 paths it also serves but hides the helper one level up: Sentry's palette
+        helper (`utils/colors.py:6`) stores the digest in `digest`/`value` and only its own name says
+        the answer is a colour. Walking to the enclosing `def` is a CWE-328-only extra proof, and the
+        credential veto in `_cwe328_hash_input_is_non_credential` runs before it is ever consulted.
+        """
+        curr = getattr(node, "parent", None)
+        while curr is not None:
+            if isinstance(curr, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return any(word in curr.name.lower() for word in vocabulary)
+            if isinstance(curr, (ast.ClassDef, ast.Module)):
+                return False
+            curr = getattr(curr, "parent", None)
+        return False
+
     def _cwe328_hash_input_is_non_credential(self, node: ast.Call, scope_id: str,
                                              lineno: int) -> bool:
         """True for a weak digest that is provably not standing in for a password or a signature.
 
-        Two proofs are accepted, both already trusted for the CWE-327 sibling this answers for now
-        too: an explicit `usedforsecurity=False`, or a non-crypto name (`cache_key`/`etag`/
-        `checksum`/`fingerprint` and the content-addressable `chunk`/`blob`/`color`/`span`) on the
-        assignment target, the subscript key or the enclosing function. Neither proof survives a
-        security word inside the bytes being hashed, so `md5(token)`, `sha1(password.encode())` and
-        `md5(secret + salt)` stay reported even when the variable that receives them is called a
-        checksum.
+        Three proofs, each one a fact about this call: a non-crypto name (`cache_key`/`etag`/
+        `checksum`/`fingerprint`, the content-addressable `chunk`/`blob`/`color`/`span`, and the
+        bucket words `shard`/`bucket`/`ring`/`partition`/`dedup`/`palette`/`hue`/`rgb`/`hex_color`/
+        `issue_hash`/`grouping`) on the assignment target, subscript key or enclosing function; the
+        same kind of name on the helper that computes the digest when an intermediate assignment
+        hides it; or a bucket word inside the bytes being hashed. All three are refused by a security
+        word anywhere in the hashed bytes, so `md5(token)`, `sha1(password.encode())`,
+        `md5(secret + salt)` and `session_partition = md5(session_id)` stay reported even though their
+        destinations now match the vocabulary.
         """
-        if not self._is_exempt_cwe327(node, scope_id, lineno, CWE328_CONTENT_HASH_KEYWORDS):
-            return False
         names: List[str] = []
+        if not isinstance(node, ast.Call):
+            # A read of a weak hash that is not a call (`hashlib.md5` as a value) has no arguments to
+            # name and no digest to explain: refuse, the way every provenance helper here does, so no
+            # caller shape can abort the scan.
+            return False
         for argument in ([a for a in node.args]
                          + [kw.value for kw in node.keywords if kw.arg != "usedforsecurity"]):
             names.extend(self._cwe338_expression_names(argument))
-        return not any(self._cwe338_name_is_security_named(name) for name in names)
+        if any(self._cwe328_input_is_credential_named(name) for name in names):
+            return False
+        if self._is_exempt_cwe327(node, scope_id, lineno, CWE328_CONTENT_HASH_KEYWORDS):
+            return True
+        if self._cwe328_enclosing_helper_is_content_addressed(node, CWE328_CONTENT_HASH_KEYWORDS):
+            return True
+        return any(word in name.lower()
+                   for name in names for word in CWE328_CONTENT_HASH_KEYWORDS)
 
     def _is_definitely_safe_local_read(self, receiver: ast.AST, scope_id: str = "", lineno: int = 0) -> bool:
         if isinstance(receiver, ast.Call):
@@ -13226,6 +13309,17 @@ class TaintTracker:
         _sink_cwe = self._registry_sink_cwe(name, canon)
         if _sink_cwe and self._sink_context_exempt(_sink_cwe, node, scope_id):
             return False
+        if (_sink_cwe == "CWE-918"
+                and (name == "Request" or name.endswith(".Request")
+                     or (canon or "").endswith(".Request"))
+                and self._cwe918_request_is_a_query_builder(
+                    node, self._scope_module(scope_id))):
+            # `snuba_sdk.Request(app="events", query=...)` builds a ClickHouse query AST. The `Request`
+            # leaf of the SSRF table matched a name; the call never carried an address this process is
+            # about to fetch, which is the whole subject of CWE-918. Decided on the report path because
+            # that is where a CWE-918 row is made, and behind a test on the two names this function has
+            # already computed so no other sink pays for an import-table walk.
+            return False
 
         # Phase 4.3: Check if this call matches a registered function contract
         # Perf: cheap membership test first; full dotted-name extraction only
@@ -13292,6 +13386,13 @@ class TaintTracker:
                                                            scope_id):
                     # `UpdateChannel.choices`, `Widget.choices(3)` - a model/enum member whose own
                     # folded path says it is not the random module or a Random instance.
+                    return False
+                if (node.func.attr == "choices"
+                        and self._cwe338_choices_chain_is_an_imported_symbol(
+                            node.func.value, receiver_canon, self._scope_module(scope_id))):
+                    # `manager.UpdateChannel.choices()` - the chain is imported, so it denotes a
+                    # Django `Choices`/`ChoiceSet` class member, and `manager` folding onto a
+                    # `Random` instance is refused above rather than here.
                     return False
             if self._cwe338_probability_threshold_draw(node, scope_id):
                 return False  # `if random.random() < rate` - a sampling question, not a minted value
@@ -13665,6 +13766,68 @@ class TaintTracker:
             return False
         return bool(self._module_symbol_paths(mod_name).get(raw.split(".")[0]))
 
+    def _cwe918_request_is_a_query_builder(self, call: ast.Call, mod_name: str) -> bool:
+        """True when the `Request(...)` being called is the ClickHouse query object, not a fetch."""
+        raw = dotted_name(call.func) or ""
+        if not raw or raw.rsplit(".", 1)[-1] != "Request":
+            return False
+        # The answer is a pure function of the written name and the module that wrote it, and a big
+        # corpus asks this for the same spelling many times (a sink is asked about on the report path
+        # once per visit, not once per file).
+        memo = self._cwe918_query_builder_memo
+        keyed = (mod_name, raw)
+        if keyed in memo:
+            return memo[keyed]
+        answer = self._cwe918_query_builder_uncached(raw, call, mod_name)
+        memo[keyed] = answer
+        return answer
+
+    def _cwe918_query_builder_uncached(self, raw: str, call: ast.Call, mod_name: str) -> bool:
+        head = raw.split(".")[0]
+        # A name the file spelled out is settled by the head alone: `urllib.request.Request` is a
+        # fetch and `snuba_sdk.Request` is query AST. Only an alias or a bare `Request` imported out
+        # of a package has to be asked where it came from.
+        if head in CWE918_HTTP_CLIENT_PACKAGES:
+            return False
+        if head in CWE918_QUERY_BUILDER_PACKAGES:
+            return True
+        origin = self._import_path_for_expr(call.func, mod_name) or ""
+        heads = {head, origin.split(".")[0] if origin else ""} - {""}
+        if heads & CWE918_HTTP_CLIENT_PACKAGES:
+            return False
+        return bool(heads & CWE918_QUERY_BUILDER_PACKAGES)
+
+    def _cwe338_choices_chain_is_an_imported_symbol(self, receiver: ast.AST,
+                                                    receiver_canon: str,
+                                                    mod_name: str) -> bool:
+        """True for `pkg.ChoiceSet.choices` / `EnumClass.choices` -- vocabulary, not a PRNG draw.
+
+        `.choices` lives in the bare-leaf sink table, so a Django `Choices` member reached through a
+        module or class chain (`manager.UpdateChannel.choices`, the FP at
+        `models/options/option.py:40`) is charged as CWE-338 by name alone. What separates it from a
+        draw is provenance the file itself supplies: the chain, or its tail, is a name this module
+        imported. `self.rng.choices` and a parameter named `store` supply nothing, and the receivers
+        that fold onto `random`/`Random`/`secrets` are refused before the question is asked -- both
+        stay reported, the way `_cwe338_receiver_is_foreign_object` refuses to guess.
+        """
+        written = dotted_name(receiver) or ""
+        segments = [s for s in written.replace("/", ".").split(".") if s]
+        if len(segments) < 2 or segments[0] in ("self", "cls"):
+            # A bare name is what `random`, an alias of it (`rd`), a parameter (`store`) and a folded
+            # `Random` instance all look like from here, and each of those is a draw this must not
+            # touch. Only a chain the file itself wrote -- `pkg.ChoiceSet`, `manager.UpdateChannel` --
+            # carries the shape this proof is about.
+            return False
+        canon = [s for s in (receiver_canon or "").replace("/", ".").split(".") if s]
+        if any(s in CWE338_RANDOM_SOURCE_SEGMENTS for s in segments + canon):
+            return False
+        if any(s.endswith("Random") for s in segments[-1:] + canon[-1:]):
+            return False
+        if self._import_path_for_expr(receiver, mod_name):
+            return True
+        symbols = self._module_symbol_paths(mod_name)
+        return bool(symbols.get(segments[-1]))
+
     def _signature_takes_http_request(self, func: ast.AST) -> bool:
         """A handler parameter, or a `self.request` read, is the HTTP surface CWE-862 needs."""
         arguments = getattr(func, "args", None)
@@ -13974,6 +14137,11 @@ class TaintTracker:
                 node, self._scope_module(scope_id)):
             # `snuba_sdk.Function` builds a SQL AST node; the JS `Function` constructor it collided
             # with has no Python binding to resolve to.
+            return sink
+        if sink.metadata.get("cwe") == "CWE-918" and self._cwe918_request_is_a_query_builder(
+                node, self._scope_module(scope_id)):
+            # Same prune, same reason: `snuba_sdk.Request` is query AST, so the `Request` leaf in the
+            # SSRF table matched a name without this call ever carrying a URL to fetch.
             return sink
         self.sinks.append(sink)
         return sink

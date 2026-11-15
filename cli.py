@@ -67,8 +67,13 @@ IGNORED_DIRS = {".git", ".venv", "venv", "__pycache__", "node_modules", "build",
 # That is why the skip is always announced in the report, why the confidence-floor note and this one are
 # printed even when nothing else is, and why the gates that prove per-rule or per-directory behaviour
 # pass `--include-tests` (or name the directory on the command line) instead of losing their assertions.
+# `debug/` joins the list for the same reason `examples/` and `samples/` are on it: a tree of preview
+# and demo views -- Sentry's `src/sentry/web/frontend/debug/` renders sample mail and component
+# payloads for local development -- whose findings describe developer tooling, not shipped surface.
+# Name the directory or pass `--include-tests` and every row inside it is still reported, which is the
+# pair `benchmark/gates/sentry_tier3_precision_probe.py` locks.
 NON_PRODUCTION_DIRS = frozenset({"tests", "test", "__tests__", "testutils",
-                                 "fixtures", "examples", "example", "samples"})
+                                 "fixtures", "examples", "example", "samples", "debug"})
 # What the current scan pruned, so the report can say so instead of looking like a clean tree.
 _SCOPE_STATS = {"skipped_dirs": 0, "skipped_files": 0}
 
@@ -700,7 +705,7 @@ def non_production_scope_note() -> str:
     files = _SCOPE_STATS["skipped_files"]
     return (f"Note: Held back {files} python file(s) in {dirs} non-production "
             f"director{'y' if dirs == 1 else 'ies'} (tests/, testutils/, fixtures/, "
-            f"examples/, samples/); pass --include-tests to scan them.")
+            f"examples/, samples/, debug/); pass --include-tests to scan them.")
 
 
 def table_default_note(hidden) -> str:

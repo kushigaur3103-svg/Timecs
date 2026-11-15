@@ -5028,7 +5028,14 @@ def _regex_branch_literals(branches):
     words = []
     for branch in branches:
         word = []
-        for operation, argument in branch:
+        for item in branch:
+            # An sre node is an (op, argument) pair. Ask for that shape instead of unpacking it,
+            # because a branch this walker cannot read is a branch it cannot reason about, and
+            # reasoning about nothing is what the `None` answer means. The public entry wraps this
+            # walk in `except Exception`, so raising here would only be hidden, never handled.
+            if not isinstance(item, tuple) or len(item) != 2:
+                return None
+            operation, argument = item
             if operation is re._constants.LITERAL:
                 word.append(argument)
             else:
@@ -13791,13 +13798,17 @@ class TaintTracker:
             return True
         for decorator in func.decorator_list:
             target = decorator.func if isinstance(decorator, ast.Call) else decorator
-            if dotted_name(target).rsplit(".", 1)[-1] in CWE862_HTTP_ROUTE_DECORATORS:
+            # A decorator `re` cannot name -- `@REGISTRY["route"]`, `@factory()`, a subscripted or
+            # starred base like `class Future(Generic[T])` -- is NO marker, the same answer any other
+            # non-matching decorator gives. Naming is not optional here: this reads the name straight
+            # off the resolution result, and a bare `None.rsplit` aborted the whole scan (exit 2).
+            if (dotted_name(target) or "").rsplit(".", 1)[-1] in CWE862_HTTP_ROUTE_DECORATORS:
                 return True
         for cls in classes:
             if cls.name.endswith(tuple(CWE862_HTTP_VIEW_SUFFIXES)):
                 return True
             for base in cls.bases:
-                if dotted_name(base).rsplit(".", 1)[-1].endswith(tuple(CWE862_HTTP_VIEW_SUFFIXES)):
+                if (dotted_name(base) or "").rsplit(".", 1)[-1].endswith(tuple(CWE862_HTTP_VIEW_SUFFIXES)):
                     return True
             for stmt in cls.body:
                 if isinstance(stmt, ast.Assign):

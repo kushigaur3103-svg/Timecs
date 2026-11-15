@@ -313,6 +313,35 @@ def parse_limit(request):
     except KeyError:
         return Response({"detail": "bad limit"}, status=400)
 '''
+# The real Sentry layout: the responder lives in `sentry/api/base.py` and the endpoint that calls it
+# is a different module. The single-module dispatcher proof above cannot see this, so the pair is
+# scanned together and the row -- if the engine still charges it -- belongs to the caller.
+CROSS_API_BASE = '''from rest_framework.response import Response
+
+
+class Endpoint:
+    def respond(self, detail=None, status=200):
+        payload = detail if detail is not None else {}
+        return Response(payload, status=status)
+'''
+CROSS_CUSTOM_RULES = '''import traceback
+
+from sentry.api.base import Endpoint
+
+
+class RulePreviewEndpoint(Endpoint):
+    def post(self, request):
+        try:
+            return self.run(request)
+        except Exception as exc:
+            return self.respond({"detail": str(exc)}, status=400)
+
+    def put(self, request):
+        try:
+            return self.run(request)
+        except Exception as exc:
+            return self.respond({"detail": traceback.format_exc()}, status=400)
+'''
 
 FIXTURES = {
     'respond_envelope.py': RESPOND_ENVELOPE,
@@ -329,7 +358,18 @@ FIXTURES = {
     'credential_digest_loud.py': CREDENTIAL_DIGEST_LOUD,
     'rejected_float.py': REJECTED_FLOAT,
     'bare_float_loud.py': BARE_FLOAT_LOUD,
+    'base.py': CROSS_API_BASE,
+    'custom_rules.py': CROSS_CUSTOM_RULES,
 }
+
+# The isolation law says one fixture per scan, because the engine resolves an imported name once per
+# scan. The cross-module pair is the deliberate exception: it only means anything when both files are
+# in the SAME subset, so it is isolated as a group of two rather than as two lone fixtures. The stems
+# are `base` and `custom_rules` because Sentry's endpoint writes `from sentry.api.base import
+# Endpoint`, and a fixture the resolver cannot name is a fixture the engine never sees.
+GROUPS = {module: (module,) for module in FIXTURES}
+GROUPS['base.py'] = ('base.py', 'custom_rules.py')
+GROUPS['custom_rules.py'] = ('base.py', 'custom_rules.py')
 
 # quiet = the charge this task retired, which must NOT appear. loud = the opposite shape, which must.
 # Every line below was read off a scan of this file's own fixtures, not inferred from the brief.
@@ -350,6 +390,12 @@ BLESSED = {
                                           ('CWE-916', 5), ('CWE-916', 9), ('CWE-916', 13)}),
     'rejected_float.py': ({('CWE-704', 7), ('CWE-704', 14), ('CWE-704', 21)}, set()),
     'bare_float_loud.py': (set(), {('CWE-704', 2), ('CWE-704', 7), ('CWE-704', 14)}),
+    # Cross-module truth, measured not assumed: when the responder lives in another file, the plain
+    # envelope already charges nothing, and the traceback that travels in it is charged as CWE-200 AT
+    # THE CALL SITE. So the CWE-209 dispatcher proof above is not what silences Sentry's
+    # `custom_rules.py` rows -- this pair is what says so out loud, and it keeps the frame reported.
+    'custom_rules.py': ({('CWE-209', 11), ('CWE-200', 11)}, {('CWE-200', 17)}),
+    'base.py': (set(), set()),
 }
 
 
@@ -372,10 +418,12 @@ ROWS = basenames(BASE_ROWS)
 
 # One fixture per scan: the reference a mutation's losses are judged against. A row that only exists
 # when several fixtures share a scan is not a stable fact about the engine and is never pinned.
-ISOLATED = {}
-for _stem in FIXTURES:
-    _t, _rows = scan_all({'t5_isolated_%s' % _stem: FIXTURES[_stem]})
-    ISOLATED[_stem] = {pair for pairs in basenames(_rows).values() for pair in pairs}
+ISOLATED = {module: set() for module in FIXTURES}
+for _group in sorted(set(GROUPS[module] for module in FIXTURES), key=lambda g: g[0]):
+    _t, _rows = scan_all({'t5_isolated_%s' % _m: FIXTURES[_m] for _m in _group})
+    for _row in _rows:
+        _name = os.path.basename(str(_row['file']).replace('\\', '/'))
+        ISOLATED[_name[len('t5_isolated_'):]].add((_row['cwe'], int(_row['line'])))
 
 
 def dump_table(rows):

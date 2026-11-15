@@ -826,12 +826,15 @@ MUTATIONS = {
         'losses': set(),
     },
     'routing_key_demotion_dropped': {
-        'what': 'empty the bucket qualifier set, so a routing index spelled `shard_key` reads as a '
-                'credential and its digest charges',
+        'what': 'empty both qualifier sets, so a routing index spelled `shard_key`/`grouping_key` '
+                'reads as a credential and its digest charges',
         'files': ('shard_hash.py', 'weak_hash_loud.py'),
-        'apply': lambda: setattr(ast_scanner, 'CWE328_ROUTING_KEY_QUALIFIERS', frozenset()),
-        'restore': lambda: setattr(ast_scanner, 'CWE328_ROUTING_KEY_QUALIFIERS',
-                                   _ORIG['328_qualifiers']),
+        'apply': lambda: (setattr(ast_scanner, 'CWE328_ROUTING_KEY_QUALIFIERS', frozenset()),
+                          setattr(ast_scanner, 'CWE328_DIGEST_QUALIFIERS', frozenset())),
+        'restore': lambda: (setattr(ast_scanner, 'CWE328_ROUTING_KEY_QUALIFIERS',
+                                    _ORIG['328_qualifiers']),
+                            setattr(ast_scanner, 'CWE328_DIGEST_QUALIFIERS',
+                                    _ORIG['328_digest_qualifiers'])),
         'gains': {('shard_hash.py', 'CWE-328', 5), ('shard_hash.py', 'CWE-328', 18)},
         'losses': set(),
     },
@@ -864,6 +867,9 @@ _ORIG = {
     '338_class': TT._cwe338_choices_chain_denotes_a_choice_set,
     '328_veto': TT._cwe328_input_is_credential_named,
     '328_qualifiers': ast_scanner.CWE328_ROUTING_KEY_QUALIFIERS,
+    # `grouping_key` is demoted by either qualifier set -- `grouping` is a routing word AND a digest
+    # word -- so the falsifier that owns row 18 has to empty both, and both have to be restorable.
+    '328_digest_qualifiers': ast_scanner.CWE328_DIGEST_QUALIFIERS,
     '918_builder': ast_scanner.CWE918_QUERY_BUILDER_PACKAGES,
     '918_http': ast_scanner.CWE918_HTTP_CLIENT_PACKAGES,
     'debug_dirs': cli.NON_PRODUCTION_DIRS,
@@ -989,6 +995,7 @@ def main() -> int:
             and TT._cwe328_input_is_credential_named is _ORIG['328_veto']
             and cli.NON_PRODUCTION_DIRS is _ORIG['debug_dirs']
             and ast_scanner.CWE328_ROUTING_KEY_QUALIFIERS is _ORIG['328_qualifiers']
+            and ast_scanner.CWE328_DIGEST_QUALIFIERS is _ORIG['328_digest_qualifiers']
             and ast_scanner.CWE918_QUERY_BUILDER_PACKAGES is _ORIG['918_builder']
             and ast_scanner.CWE918_HTTP_CLIENT_PACKAGES is _ORIG['918_http']):
         passed_after = True

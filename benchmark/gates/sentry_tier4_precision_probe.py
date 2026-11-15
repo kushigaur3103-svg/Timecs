@@ -636,11 +636,17 @@ def tier3_laws():
        'a seeded draw is the corpus bug; the sampling markers must never include it')
 
     envelope = body('_c209_structured_error_envelope_only')
-    ok('t3.209.every_key', 'CWE209_STRUCTURED_ERROR_KEYS' in envelope
-       and 'return False' in envelope,
+    # The key vocabulary and the raw-frame veto now live in one payload test shared by the direct
+    # reply and the dispatcher that feeds `Response(...)` one frame down, so the laws read it there.
+    payload_test = body('_c209_payload_is_structured_envelope')
+    ok('t3.209.every_key', 'CWE209_STRUCTURED_ERROR_KEYS' in payload_test
+       and 'return False' in payload_test,
        'an envelope is only an envelope when every key is a detail/error/message field')
-    ok('t3.209.raw_trace_tested', 'CWE209_RAW_TRACE_ATTRIBUTES' in envelope,
+    ok('t3.209.raw_trace_tested', 'CWE209_RAW_TRACE_ATTRIBUTES' in payload_test,
        'a raw frame in the body has to be caught inside the envelope test itself')
+    ok('t3.209.envelope_uses_the_shared_payload_test',
+       'self._c209_payload_is_structured_envelope(' in envelope,
+       'the direct-reply path must read the same payload test, not a second copy of the vocabulary')
     hop = body('_c209_envelope_payload_via_assignment')
     ok('t3.209.hop_is_literal_dict', 'ast.Dict' in hop and 'return None' in hop,
        'the one-hop body resolution must only answer for a dict literal and answer None otherwise')

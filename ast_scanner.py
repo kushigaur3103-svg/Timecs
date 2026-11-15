@@ -655,6 +655,13 @@ CWE328_DIGEST_SUFFIX_WORDS = frozenset({"hash", "hashes"})
 CWE328_DIGEST_QUALIFIERS = frozenset({
     "content", "file", "blob", "chunk", "body", "payload", "artifact", "object", "asset",
     "checksum", "etag", "commit", "revision", "cache", "index", "directory", "manifest",
+    # Sentry's grouping/fingerprint/artifact family: a digest that decides which row an event lands
+    # in, which bundle a release ships, or which cache slot a replay occupies. `problem_hash` and
+    # `event_id` are written as compounds, and the demotion below reads NAME SEGMENTS, so the two
+    # halves that carry the meaning (`problem`, `event`) are listed as well as the compounds.
+    "fingerprint", "grouping", "occurrence", "forecast", "bundle", "release", "attachment",
+    "debug", "replay", "outbox", "redis", "silo", "beacon", "collectstatic", "span",
+    "event_id", "problem_hash", "event", "problem",
 })
 
 # Module stems that only ever run during packaging. Used by the CWE-770 unbounded-read
@@ -1156,6 +1163,11 @@ CWE338_DISPLAY_VALUE_MARKERS = frozenset({
     # and `seed` is not in this table -- a seed blesses an RNG instead of describing a display value.
     "mock", "mocks", "sample", "samples", "sampling", "fixture", "fixtures", "downsample",
     "experiment", "experiments", "bucket", "buckets",
+    # Telemetry cadence, slug suffixes and nudge scheduling: the same three gates, and the same reason
+    # -- a draw that picks which synthetic event to emit, which suffix makes a URL unique, or when to
+    # nudge again is a number the scheduler or the router consumes, never a credential a caller can
+    # replay. `seed` stays out of this table for the reason written below it.
+    "telemetry", "slug", "slugs", "nudge", "nudges",
 })
 # `seed` is the one word in this family that must NEVER join the table: `seed = random.randint(0, 2**31)`
 # is exactly how an RNG is blessed before a credential draw, and it is a locked-loud shape in
@@ -2072,7 +2084,14 @@ EXCEPTION_DETAIL_ATTRIBUTES = frozenset({"message", "args", "traceback", "stack"
 # not the stack disclosure CWE-209 names, so a reply may only stand down when EVERY top-level key of
 # its payload is one of these labels and the frame itself never travels in the body -- `tb_frame` and
 # `exc_traceback` are the raw-frame spellings that put the finding straight back.
-CWE209_STRUCTURED_ERROR_KEYS = frozenset({"detail", "error", "errors", "message", "msg", "code"})
+CWE209_STRUCTURED_ERROR_KEYS = frozenset({
+    "detail", "error", "errors", "message", "msg", "code",
+    # Sentry's own responder labels. `status`, `reason`, `title`, `type` and `non_field_errors` are
+    # fixed fields of the same JSON envelope -- a status code and a reason phrase carry no frame --
+    # and `slug` is the identifier the client already sent. Every one of them is still refused the
+    # moment a `traceback.*` call or a raw-frame attribute travels in the payload.
+    "status", "reason", "title", "non_field_errors", "slug", "type",
+})
 CWE209_RAW_TRACE_ATTRIBUTES = frozenset({"__traceback__", "tb_frame", "tb_lineno", "exc_traceback"})
 # Decorators that make a function a client-facing endpoint (`@expose` is Airflow/Flask-Admin's own
 # spelling of `@route`), which is what turns a returned dict into an HTTP response body.
@@ -2721,6 +2740,16 @@ CLUSTER2_NAN_CHECKS = {"isnan", "isfinite"}
 # The two exceptions a numeric conversion raises when its operand is not a number at all, which is the
 # failure a `try:` around `float(request.GET[...])` is written to catch.
 CLUSTER2_NAN_CONVERSION_ERRORS = {"TypeError", "ValueError"}
+# A handler can also refuse the value instead of naming a check: it raises the framework's own
+# validation/parse error, or it answers the client with a 4xx. Both mean the converted number never
+# reaches the code that would use it, which is the same guarantee `math.isnan` gives.
+CLUSTER2_NAN_REJECTION_ERRORS = {"ValidationError", "ParseError", "BadRequest"}
+# The catches that provably include what a bad number raises. A bare `except:` and the two catch-alls
+# are in this set because they cannot miss a ValueError; they are NOT in CLUSTER2_NAN_CONVERSION_ERRORS,
+# so the isnan/isfinite proof above still refuses them and this widening stays on the rejection axis.
+CLUSTER2_NAN_REJECTION_CATCHES = CLUSTER2_NAN_CONVERSION_ERRORS | {"Exception", "BaseException"}
+CLUSTER2_NAN_REJECTION_STATUS_RANGE = (400, 499)
+CLUSTER2_NAN_REJECTION_REPLY_NAMES = {"HttpResponseBadRequest"}
 # CWE-704: `bool(x)` sits in a sink named for NaN, and no input can make bool() return one. Its real
 # risk is the *string* coercion: a client- or config-supplied "0"/"False"/"no" is a non-empty string,
 # therefore truthy, therefore a flag the operator turned off stays on. So bool is exempted only when
@@ -4565,6 +4594,20 @@ CWE862_PERMISSIONS_WITHOUT_A_CHECK = frozenset({"AllowAny"})
 # `request`, reports just as loudly as one named `*View`, so the marker set is what makes the clause
 # safe rather than the name of anything.
 CWE862_HTTP_VIEW_SUFFIXES = frozenset({"View", "APIView", "Endpoint", "ViewSet"})
+# Sentry's domain-scoped endpoint bases. Each one resolves its organisation/project/team/group from
+# the URL and runs its own permission pass before any handler body executes, so a subclass INHERITS
+# the authorisation instead of omitting it -- `class OrganizationDetailsEndpoint(OrganizationEndpoint)`
+# is not a missing check, it is a check declared one level up. The proof is the base name the class
+# writes, and it is refused the moment the subclass overrides `permission_classes` with something that
+# enforces nothing (`()` or `(AllowAny,)`), because that override is the author opting out.
+# A generic `Endpoint`/`APIView`/`View`/`ViewSet` is deliberately absent: those bases carry no
+# domain-scoped permission pass, which is exactly why every corpus row written on them stays reported.
+CWE862_DOMAIN_SCOPED_ENDPOINT_BASES = frozenset({
+    "OrganizationEndpoint", "ProjectEndpoint", "TeamEndpoint", "GroupEndpoint", "UserEndpoint",
+    "MemberEndpoint", "IntegrationEndpoint", "SentryAppEndpoint", "MonitorEndpoint",
+    "IncidentEndpoint", "AlertRuleEndpoint", "ReplayEndpoint", "ReleaseEndpoint",
+    "EnvironmentEndpoint",
+})
 CWE862_HTTP_ROUTE_DECORATORS = frozenset({
     "route", "path", "re_path", "url", "as_view", "dispatch", "login_required",
     "permission_required", "has_permission", "auth_required", "staff_member_required",
@@ -11474,6 +11517,28 @@ class TaintTracker:
             curr = getattr(curr, "parent", None)
         return False
 
+    def _cwe328_helper_name_is_a_content_digest(self, node: ast.AST) -> bool:
+        """True when the function computing the digest is itself named `<thing>_hash`.
+
+        `problem_hash(event)` and `event_id_hash(payload)` carry their qualifier in the helper's own
+        name, one level above the `return` that `_is_exempt_cwe327` stops at, and neither half is a
+        substring keyword. The name is read as SEGMENTS and must be a digest suffix (`hash`) or a
+        routing `key` qualified by a content word -- the same test that refuses the bytes, so
+        `password_hash`, `token_hash` and `session_key` fail it and stay reported.
+        """
+        curr = getattr(node, "parent", None)
+        while curr is not None:
+            if isinstance(curr, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                segments = [s.lower() for s in _CWE338_NAME_SPLIT.split(curr.name) if s]
+                return (bool(set(segments) & (CWE328_DIGEST_SUFFIX_WORDS | CWE328_ROUTING_KEY_WORDS))
+                        and any(s in CWE328_DIGEST_QUALIFIERS or s in CWE328_ROUTING_KEY_QUALIFIERS
+                                for s in segments)
+                        and not self._cwe328_input_is_credential_named(curr.name))
+            if isinstance(curr, (ast.ClassDef, ast.Module)):
+                return False
+            curr = getattr(curr, "parent", None)
+        return False
+
     def _cwe328_hash_input_is_non_credential(self, node: ast.Call, scope_id: str,
                                              lineno: int) -> bool:
         """True for a weak digest that is provably not standing in for a password or a signature.
@@ -11502,6 +11567,8 @@ class TaintTracker:
         if self._is_exempt_cwe327(node, scope_id, lineno, CWE328_CONTENT_HASH_KEYWORDS):
             return True
         if self._cwe328_enclosing_helper_is_content_addressed(node, CWE328_CONTENT_HASH_KEYWORDS):
+            return True
+        if self._cwe328_helper_name_is_a_content_digest(node):
             return True
         return any(word in name.lower()
                    for name in names for word in CWE328_CONTENT_HASH_KEYWORDS)
@@ -14057,6 +14124,32 @@ class TaintTracker:
                     return True
         return False
 
+    def _c862_class_inherits_domain_scoped_endpoint(self, cls: ast.ClassDef) -> bool:
+        """The class declares a base that resolves a domain object and authorises it itself."""
+        for base in cls.bases:
+            if (dotted_name(base) or "").rsplit(".", 1)[-1] in CWE862_DOMAIN_SCOPED_ENDPOINT_BASES:
+                return True
+        return False
+
+    def _c862_class_disables_permissions(self, cls: ast.ClassDef) -> bool:
+        """The subclass's own `permission_classes` overrides the base with nothing to enforce.
+
+        An annotation with no value (`permission_classes: tuple`) declares nothing and is not an
+        override, so it is skipped -- only an assignment can opt out of the inherited check.
+        """
+        for stmt in cls.body:
+            if isinstance(stmt, ast.AnnAssign) and stmt.value is None:
+                continue
+            if not isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+            if not any(isinstance(target, ast.Name) and target.id == "permission_classes"
+                       for target in targets):
+                continue
+            if not self._permission_value_declares_a_check(stmt.value):
+                return True
+        return False
+
     def _c862_scope_is_http_entrypoint(self, call: ast.Call) -> bool:
         """Whether an object fetch sits where a client request can reach it.
 
@@ -14129,6 +14222,13 @@ class TaintTracker:
         # is not limited by the handler signature below.
         for cls in classes:
             if self._class_declares_permission_guard(cls, mod_name):
+                return True
+            # The authorisation axis, not the reachability axis: a domain-scoped endpoint IS reachable
+            # over HTTP, it is the base class that proves the caller was authorised. So the proof lives
+            # here, beside the declared `permission_classes`, and `_c862_scope_is_http_entrypoint`
+            # keeps answering "yes, a request enters this code".
+            if (self._c862_class_inherits_domain_scoped_endpoint(cls)
+                    and not self._c862_class_disables_permissions(cls)):
                 return True
         if func is None:
             # Module scope is where the flat Flask/Django view body lives (all seven blessed rows):
@@ -20219,6 +20319,12 @@ class TaintTracker:
             if parameter not in payload_params:
                 continue
             resolved = self._c22_path_expression(argument, table, call.lineno)
+            # The body this dispatcher hands to `Response(...)` is the caller's dict, so the envelope
+            # test belongs here and not only on a direct reply: `self.respond({"detail": str(exc)})`
+            # ships the same fixed error labels `Response({"detail": str(exc)})` does. A traceback
+            # call, a raw frame, or one key outside the vocabulary fails the test and keeps the row.
+            if isinstance(resolved, ast.Dict) and self._c209_payload_is_structured_envelope(resolved):
+                continue
             for part in ([argument] if resolved is argument else [argument, resolved]):
                 if self._c209_carries_detail(part, names):
                     return response_node
@@ -20310,17 +20416,30 @@ class TaintTracker:
                                 and isinstance(keyword.value, ast.Dict)), None)
             if payload is None:
                 payload = self._c209_envelope_payload_via_assignment(reply, table, use_lineno)
-            if payload is None or not payload.keys:
+            if not self._c209_payload_is_structured_envelope(payload):
                 return False
-            for key in payload.keys:
-                if not (isinstance(key, ast.Constant) and isinstance(key.value, str)
-                        and key.value.lower() in CWE209_STRUCTURED_ERROR_KEYS):
-                    return False
-            for sub in ast.walk(payload):
-                if isinstance(sub, ast.Call) and (dotted_name(sub.func) or "") in TRACEBACK_FORMAT_FUNCS:
-                    return False
-                if isinstance(sub, ast.Attribute) and sub.attr in CWE209_RAW_TRACE_ATTRIBUTES:
-                    return False
+        return True
+
+    def _c209_payload_is_structured_envelope(self, payload) -> bool:
+        """True for a dict literal whose every key is an error label and which carries no traceback.
+
+        Shared by the direct reply (`Response({"detail": str(exc)})`) and the dispatcher that hands
+        the same dict to a reply one frame down (`self.respond({"detail": str(exc)})`), so both read
+        one vocabulary and one veto. An empty dict, a non-dict, a `traceback`/`stack`/`env` key, a
+        `traceback.format_*` call or a raw frame all answer False: an uninspected body is not a proven
+        envelope.
+        """
+        if not isinstance(payload, ast.Dict) or not payload.keys:
+            return False
+        for key in payload.keys:
+            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)
+                    and key.value.lower() in CWE209_STRUCTURED_ERROR_KEYS):
+                return False
+        for sub in ast.walk(payload):
+            if isinstance(sub, ast.Call) and (dotted_name(sub.func) or "") in TRACEBACK_FORMAT_FUNCS:
+                return False
+            if isinstance(sub, ast.Attribute) and sub.attr in CWE209_RAW_TRACE_ATTRIBUTES:
+                return False
         return True
 
     def _c209_envelope_payload_via_assignment(self, reply, table, use_lineno):
@@ -22232,6 +22351,37 @@ class TaintTracker:
             names.add(parent.target.id)
         return names
 
+    def _c704_handler_rejects_the_value(self, handler: ast.AST) -> bool:
+        """The handler turns a bad number into a refusal rather than letting a value through.
+
+        Three shapes, all read off the handler's own statements: a bare `raise` (the conversion's own
+        exception travels on), `raise ValidationError(...)` / `ParseError` / `BadRequest`, or a returned
+        4xx reply (`return Response(..., status=400)`, `return self.respond({...}, status=400)`,
+        `HttpResponseBadRequest`). A `return 0.0`, a `pass` or a log line is not a refusal -- the value
+        the author did not consider still ships -- so those answer False and the finding stays.
+        """
+        for stmt in getattr(handler, "body", ()) or ():
+            if isinstance(stmt, ast.Raise):
+                if stmt.exc is None:
+                    return True
+                target = stmt.exc.func if isinstance(stmt.exc, ast.Call) else stmt.exc
+                if (dotted_name(target) or "").rsplit(".", 1)[-1] in CLUSTER2_NAN_REJECTION_ERRORS:
+                    return True
+            elif isinstance(stmt, ast.Return) and isinstance(stmt.value, ast.Call):
+                reply = stmt.value
+                leaf = (dotted_name(reply.func) or "").rsplit(".", 1)[-1]
+                if leaf in CLUSTER2_NAN_REJECTION_REPLY_NAMES:
+                    return True
+                for keyword in reply.keywords:
+                    if keyword.arg not in ("status", "status_code"):
+                        continue
+                    value = keyword.value
+                    if (isinstance(value, ast.Constant) and isinstance(value.value, int)
+                            and CLUSTER2_NAN_REJECTION_STATUS_RANGE[0] <= value.value
+                            <= CLUSTER2_NAN_REJECTION_STATUS_RANGE[1]):
+                        return True
+        return False
+
     def _c704_conversion_is_in_guarded_try(self, node: ast.AST) -> bool:
         """The conversion sits in a `try` body whose handlers catch what a bad number raises.
 
@@ -22240,8 +22390,14 @@ class TaintTracker:
         number is an exception, and that exception is named. Three refusals keep the proof honest --
         the conversion must be in the `try` BODY (a call in the handler, `else` or `finally` is not
         protected by that handler), the handler must name `TypeError` or `ValueError` (a bare
-        `except:` or `except Exception` says nothing about the conversion), and an outer `try` is still
-        consulted when the inner one does not qualify.
+        `except:` or `except Exception` says nothing about the conversion on its own), and an outer
+        `try` is still consulted when the inner one does not qualify.
+
+        A handler that REFUSES the value is the second proof, and it is asked only after the first one
+        fails: `except (TypeError, ValueError): raise ValidationError(...)` and
+        `except ValueError: return Response({"detail": ...}, status=400)` both end the request, so the
+        unvalidated number never reaches a consumer. That proof accepts the catch-alls too, because
+        they provably include the conversion's own exception.
         """
         child = node
         current = getattr(node, "parent", None)
@@ -22249,15 +22405,16 @@ class TaintTracker:
             if isinstance(current, ast.Try) and any(child is stmt for stmt in current.body):
                 for handler in current.handlers:
                     tested = handler.type
-                    if tested is None:
-                        continue
                     candidates = ([tested] if isinstance(tested, ast.Name)
                                   else list(getattr(tested, "elts", ())))
-                    for candidate in candidates:
-                        spelled = (getattr(candidate, "id", None)
-                                   or getattr(candidate, "attr", None) or "")
-                        if spelled in CLUSTER2_NAN_CONVERSION_ERRORS:
-                            return True
+                    spelled = {(getattr(candidate, "id", None)
+                                or getattr(candidate, "attr", None) or "")
+                               for candidate in candidates}
+                    if spelled & CLUSTER2_NAN_CONVERSION_ERRORS:
+                        return True
+                    if ((tested is None or spelled & CLUSTER2_NAN_REJECTION_CATCHES)
+                            and self._c704_handler_rejects_the_value(handler)):
+                        return True
             child, current = current, getattr(current, "parent", None)
         return False
 

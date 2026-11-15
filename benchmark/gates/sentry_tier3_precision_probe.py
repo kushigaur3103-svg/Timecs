@@ -808,13 +808,20 @@ MUTATIONS = {
         'losses': {('ssrf_loud.py', 'CWE-918', 13), ('ssrf_loud.py', 'CWE-918', 14)},
     },
     'choices_import_proof_disabled': {
-        'what': 'refuse the imported-chain proof everywhere, so `manager.UpdateChannel.choices()` '
-                'charges again as CWE-338',
+        'what': 'refuse BOTH choice-table proofs -- the imported chain (`ModelChoices.enum_labels.'
+                'choices` reached through `from myapp.models import ModelChoices`) and the owning '
+                'class (`manager.UpdateChannel.choices` reached through a parameter). They are two '
+                'arms of one `or`, so disabling a single arm proves nothing: the other still exempts '
+                'the row. Together they are what keeps a Django choices table off the PRNG report',
         'files': ('model_choices.py', 'prng_choices.py'),
-        'apply': lambda: setattr(TT, '_cwe338_choices_chain_is_an_imported_symbol',
-                                 lambda self, receiver, canon, mod: False),
-        'restore': lambda: setattr(TT, '_cwe338_choices_chain_is_an_imported_symbol',
-                                   _ORIG['338']),
+        'apply': lambda: (setattr(TT, '_cwe338_choices_chain_is_an_imported_symbol',
+                                  lambda self, receiver, canon, mod: False),
+                          setattr(TT, '_cwe338_choices_chain_denotes_a_choice_set',
+                                  lambda self, receiver: False)),
+        'restore': lambda: (setattr(TT, '_cwe338_choices_chain_is_an_imported_symbol',
+                                    _ORIG['338']),
+                            setattr(TT, '_cwe338_choices_chain_denotes_a_choice_set',
+                                    _ORIG['338_class'])),
         'gains': {('model_choices.py', 'CWE-338', 7)},
         'losses': set(),
     },
@@ -852,6 +859,9 @@ MUTATIONS = {
 _ORIG = {
     '918': TT._cwe918_request_is_a_query_builder,
     '338': TT._cwe338_choices_chain_is_an_imported_symbol,
+    # `model_choices.py` is exempted by either arm of the choice-table `or`, so the falsifier that
+    # owns it has to disable both -- which means both have to be restorable.
+    '338_class': TT._cwe338_choices_chain_denotes_a_choice_set,
     '328_veto': TT._cwe328_input_is_credential_named,
     '328_qualifiers': ast_scanner.CWE328_ROUTING_KEY_QUALIFIERS,
     '918_builder': ast_scanner.CWE918_QUERY_BUILDER_PACKAGES,
@@ -975,6 +985,7 @@ def main() -> int:
     total += 1
     if (TT._cwe918_request_is_a_query_builder is _ORIG['918']
             and TT._cwe338_choices_chain_is_an_imported_symbol is _ORIG['338']
+            and TT._cwe338_choices_chain_denotes_a_choice_set is _ORIG['338_class']
             and TT._cwe328_input_is_credential_named is _ORIG['328_veto']
             and cli.NON_PRODUCTION_DIRS is _ORIG['debug_dirs']
             and ast_scanner.CWE328_ROUTING_KEY_QUALIFIERS is _ORIG['328_qualifiers']

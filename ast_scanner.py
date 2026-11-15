@@ -627,6 +627,12 @@ CWE328_CONTENT_HASH_KEYWORDS = CWE327_NON_CRYPTO_KEYWORDS + (
     # bytes being hashed -- `session_partition = md5(session_id)` stays reported.
     "shard", "bucket", "ring", "partition", "dedup", "palette", "hue", "rgb", "hex_color",
     "issue_hash", "grouping",
+    # Identity-of-a-thing names: a digest of a commit, a revision, a file, a cached body or a mock
+    # payload is an address in a store, and replaying it grants nothing -- Sentry's remaining CWE-328
+    # rows are `sha1_text`/`content_hash`/`mock` parameters of release, filestore and test-support
+    # helpers. `content_hash`/`file_hash` carry a `hash` segment of their own, which the veto below
+    # demotes only when a content word names what is being hashed.
+    "commit", "revision", "content_hash", "file_hash", "sha1_text", "md5_text", "cache", "mock",
 )
 # A bucket word beside `key` says WHICH key: `shard_key`, `partition_key`, `ring_key` and
 # `grouping_key` name a routing index (a DB sharding column, a consistent-hash position, an event
@@ -638,6 +644,17 @@ CWE328_ROUTING_KEY_WORDS = frozenset({"key", "keys"})
 CWE328_ROUTING_KEY_QUALIFIERS = frozenset({
     "shard", "shards", "bucket", "buckets", "ring", "rings", "partition", "partitions",
     "dedup", "dedupe", "grouping", "palette", "hue", "rgb",
+})
+# `hash` is a security word for the same reason `key` is: it is what a name says about the VALUE only
+# when nothing else qualifies it. `content_hash`, `file_hash` and `checksum_hash` say which thing is
+# hashed -- a body, a blob, a commit -- and a digest of a thing the caller already has discloses
+# nothing. So `hash` is demoted on exactly the same terms as `key`: it must be the SOLE security word,
+# and a content word must sit beside it. `password_hash`, `token_hash` and `session_hash` keep the veto
+# because a second security word, not a qualifier, is what names their input.
+CWE328_DIGEST_SUFFIX_WORDS = frozenset({"hash", "hashes"})
+CWE328_DIGEST_QUALIFIERS = frozenset({
+    "content", "file", "blob", "chunk", "body", "payload", "artifact", "object", "asset",
+    "checksum", "etag", "commit", "revision", "cache", "index", "directory", "manifest",
 })
 
 # Module stems that only ever run during packaging. Used by the CWE-770 unbounded-read
@@ -1131,6 +1148,14 @@ CWE338_DISPLAY_VALUE_MARKERS = frozenset({
     # Zero cryptographic or security meaning: sampling GPU IDs (`cuda_devices = random.sample(free_gpu_list, ...)`)
     # for multiprocessing workers is safe hardware resource distribution.
     "device", "devices", "gpu", "gpus", "cuda",
+    # The mock/fixture/experiment family: a draw that fills a synthetic event, a telemetry sample or a
+    # holdout bucket is choosing *which fake row* to emit, and nothing a caller can replay from it.
+    # `sample_rate`/`downsample` reach here through the `_`-split, so the singular `sample` covers both
+    # spellings. Same three gates as the words above: a credential segment anywhere in the draw's own
+    # naming vocabulary (`mock_secret = random.choice(...)`) vetoes first, a `.join` consumer vetoes,
+    # and `seed` is not in this table -- a seed blesses an RNG instead of describing a display value.
+    "mock", "mocks", "sample", "samples", "sampling", "fixture", "fixtures", "downsample",
+    "experiment", "experiments", "bucket", "buckets",
 })
 # `seed` is the one word in this family that must NEVER join the table: `seed = random.randint(0, 2**31)`
 # is exactly how an RNG is blessed before a credential draw, and it is a locked-loud shape in
@@ -2689,6 +2714,13 @@ CLUSTER2_HTTP_POOL_SEGMENT = "HTTPConnectionPool"
 CLUSTER2_NAN_CONVERSIONS = {"float", "bool", "complex"}
 CLUSTER2_NAN_SAFE_WRAPPERS = {"int"}
 CLUSTER2_NAN_GUARD_VALUE = "nan"
+# The two math helpers that vouch for a converted number before it is used: `isnan` rejects the NaN a
+# permissive `float("nan")` accepts, `isfinite` rejects NaN and both infinities. `math.isinf` is absent
+# on purpose -- it says the value IS an infinity, which is a branch on the bad case, not a guard.
+CLUSTER2_NAN_CHECKS = {"isnan", "isfinite"}
+# The two exceptions a numeric conversion raises when its operand is not a number at all, which is the
+# failure a `try:` around `float(request.GET[...])` is written to catch.
+CLUSTER2_NAN_CONVERSION_ERRORS = {"TypeError", "ValueError"}
 # CWE-704: `bool(x)` sits in a sink named for NaN, and no input can make bool() return one. Its real
 # risk is the *string* coercion: a client- or config-supplied "0"/"False"/"no" is a non-empty string,
 # therefore truthy, therefore a flag the operator turned off stays on. So bool is exempted only when
@@ -9207,12 +9239,22 @@ class TaintTracker:
             names.extend(self._cwe338_expression_names(argument))
         feeds_a_pause = False
         feeds_a_string_join = False
+        child = node
         current = getattr(node, 'parent', None)
         for _ in range(6):
             if current is None:
                 break
             if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 names.append(current.name)
+            elif isinstance(current, ast.Compare):
+                # The value a draw is compared against says what the draw is for. Sentry and the
+                # corpus write `if random.random() > token_ttl:` -- the function is named `sample`,
+                # which reads like a display draw, and the call itself has no arguments to name, so
+                # the only credential word in the statement lives on the other side of the `>`. This
+                # axis only ever ADDS names, so it can refuse an exemption, never grant one.
+                for comparator in [current.left] + list(current.comparators):
+                    if comparator is not child:
+                        names.extend(self._cwe338_expression_names(comparator))
             elif isinstance(current, ast.Call) and current is not node:
                 callee = current.func
                 if isinstance(callee, ast.Attribute):
@@ -9223,7 +9265,7 @@ class TaintTracker:
                     names.append(callee.attr)
                 elif isinstance(callee, ast.Name):
                     names.append(callee.id)
-            current = getattr(current, 'parent', None)
+            child, current = current, getattr(current, 'parent', None)
         if any(self._cwe338_name_is_security_named(name) for name in names):
             return False
         if feeds_a_string_join:
@@ -11408,8 +11450,9 @@ class TaintTracker:
         hits = {s for s in lowered if s in CWE338_SECURITY_NAME_WORDS}
         if not hits:
             return False
-        if hits <= CWE328_ROUTING_KEY_WORDS and any(
-                s in CWE328_ROUTING_KEY_QUALIFIERS for s in lowered):
+        if hits <= (CWE328_ROUTING_KEY_WORDS | CWE328_DIGEST_SUFFIX_WORDS) and any(
+                s in CWE328_ROUTING_KEY_QUALIFIERS or s in CWE328_DIGEST_QUALIFIERS
+                for s in lowered):
             return False
         return True
 
@@ -13311,7 +13354,9 @@ class TaintTracker:
             return False
         if (_sink_cwe == "CWE-918"
                 and (name == "Request" or name.endswith(".Request")
-                     or (canon or "").endswith(".Request"))
+                     or (canon or "").endswith(".Request")
+                     or (isinstance(node.func, ast.Name)
+                         and node.func.id.endswith("Request")))
                 and self._cwe918_request_is_a_query_builder(
                     node, self._scope_module(scope_id))):
             # `snuba_sdk.Request(app="events", query=...)` builds a ClickHouse query AST. The `Request`
@@ -13388,11 +13433,13 @@ class TaintTracker:
                     # folded path says it is not the random module or a Random instance.
                     return False
                 if (node.func.attr == "choices"
-                        and self._cwe338_choices_chain_is_an_imported_symbol(
-                            node.func.value, receiver_canon, self._scope_module(scope_id))):
+                        and (self._cwe338_choices_chain_is_an_imported_symbol(
+                                node.func.value, receiver_canon, self._scope_module(scope_id))
+                             or self._cwe338_choices_chain_denotes_a_choice_set(node.func.value))):
                     # `manager.UpdateChannel.choices()` - the chain is imported, so it denotes a
-                    # Django `Choices`/`ChoiceSet` class member, and `manager` folding onto a
-                    # `Random` instance is refused above rather than here.
+                    # Django `Choices`/`ChoiceSet` class member, or the owner of the attribute is a
+                    # class name rather than a PRNG instance. `random.choices` and `rng.choices` are
+                    # refused in both branches above and below, so the two draws keep charging.
                     return False
             if self._cwe338_probability_threshold_draw(node, scope_id):
                 return False  # `if random.random() < rate` - a sampling question, not a minted value
@@ -13769,7 +13816,14 @@ class TaintTracker:
     def _cwe918_request_is_a_query_builder(self, call: ast.Call, mod_name: str) -> bool:
         """True when the `Request(...)` being called is the ClickHouse query object, not a fetch."""
         raw = dotted_name(call.func) or ""
-        if not raw or raw.rsplit(".", 1)[-1] != "Request":
+        if not raw:
+            return False
+        # The written leaf answers for `Request(...)` and `snuba_sdk.Request(...)`; a file that binds
+        # the class under another spelling (`from snuba_sdk import Request as SnubaRequest`) is
+        # answered by its import table instead, because the object is the same object.
+        if raw.rsplit(".", 1)[-1] != "Request" and not any(
+                path == "Request" or path.endswith(".Request")
+                for path in self._cwe918_request_binding_paths(call, mod_name)):
             return False
         # The answer is a pure function of the written name and the module that wrote it, and a big
         # corpus asks this for the same spelling many times (a sink is asked about on the report path
@@ -13783,19 +13837,63 @@ class TaintTracker:
         return answer
 
     def _cwe918_query_builder_uncached(self, raw: str, call: ast.Call, mod_name: str) -> bool:
-        head = raw.split(".")[0]
+        written_head = raw.split(".")[0]
         # A name the file spelled out is settled by the head alone: `urllib.request.Request` is a
         # fetch and `snuba_sdk.Request` is query AST. Only an alias or a bare `Request` imported out
         # of a package has to be asked where it came from.
-        if head in CWE918_HTTP_CLIENT_PACKAGES:
+        if written_head in CWE918_HTTP_CLIENT_PACKAGES:
             return False
-        if head in CWE918_QUERY_BUILDER_PACKAGES:
+        if written_head in CWE918_QUERY_BUILDER_PACKAGES:
             return True
-        origin = self._import_path_for_expr(call.func, mod_name) or ""
-        heads = {head, origin.split(".")[0] if origin else ""} - {""}
+        paths = {raw}
+        origin = self._import_path_for_expr(call.func, mod_name)
+        if origin:
+            paths.add(origin)
+        # `_import_path_for_expr` keeps one binding per local name, and a Sentry endpoint writes
+        # `Request` twice -- `from rest_framework.request import Request` for the view argument and
+        # `from snuba_sdk... import Request` for the query object, sometimes under an alias. Every
+        # binding this file could hand the written head is therefore consulted, and an HTTP-client
+        # binding still wins: a name with two possible origins is not proof of a query builder.
+        paths |= self._cwe918_request_binding_paths(call, mod_name)
+        heads = {path.split(".")[0] for path in paths if path}
         if heads & CWE918_HTTP_CLIENT_PACKAGES:
             return False
         return bool(heads & CWE918_QUERY_BUILDER_PACKAGES)
+
+    def _cwe918_request_binding_paths(self, call: ast.Call, mod_name: str) -> set:
+        """Every dotted path the written callee's head could bind to, aliases included.
+
+        Cold on purpose: only reached for a call whose written name or canonical fold ends in
+        `Request`, and the answer is cached on the module's tree because the import table is a
+        property of the file, not of the call site.
+        """
+        raw = dotted_name(call.func) or ""
+        if not raw:
+            return set()
+        parts = raw.split(".")
+        tree = self.modules.get(mod_name)
+        if tree is None:
+            return set()
+        bindings = tree.__dict__.get("_cached_import_bindings")
+        if bindings is None:
+            bindings = {}
+            for node in self._module_nodes(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        head = alias.asname or alias.name.split(".")[0]
+                        bindings.setdefault(head, []).append(alias.name)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    for alias in node.names:
+                        local = alias.asname or alias.name
+                        bindings.setdefault(local, []).append("%s.%s" % (node.module, alias.name))
+                        if alias.asname:
+                            bindings.setdefault(alias.name, []).append(
+                                "%s.%s" % (node.module, alias.name))
+            tree.__dict__["_cached_import_bindings"] = bindings
+        paths = set()
+        for binding in bindings.get(parts[0], ()):
+            paths.add(".".join([binding] + parts[1:]))
+        return paths
 
     def _cwe338_choices_chain_is_an_imported_symbol(self, receiver: ast.AST,
                                                     receiver_canon: str,
@@ -13827,6 +13925,34 @@ class TaintTracker:
             return True
         symbols = self._module_symbol_paths(mod_name)
         return bool(symbols.get(segments[-1]))
+
+    def _cwe338_choices_chain_denotes_a_choice_set(self, receiver: ast.AST) -> bool:
+        """`manager.UpdateChannel.choices` -- the owner of `.choices` is a class, not a PRNG.
+
+        The import proof above cannot answer for a chain that starts at a parameter (`manager`,
+        `self`, a view's `option`), which is how Sentry writes it at `models/options/option.py:40`.
+        What still separates the two shapes without guessing is the segment that owns the attribute:
+        a choices table is reached through a class name (`UpdateChannel`, `ChannelKind`), a draw is
+        reached through a module or an instance (`random`, `rd`, `rng`, `self.rng`), and those are
+        spelled differently in the file. Any `random`/`Random`/`secrets`/`SystemRandom` segment
+        refuses the exemption outright, and a receiver that is not a plain attribute chain
+        (`random.Random(1337).choices`, `get_rng().choices`) is refused too -- unreadable means loud.
+        """
+        segments = []
+        current = receiver
+        while isinstance(current, ast.Attribute):
+            segments.append(current.attr)
+            current = current.value
+        if isinstance(current, ast.Name):
+            segments.append(current.id)
+        else:
+            return False
+        if len(segments) < 2:
+            return False
+        if any(segment in CWE338_RANDOM_SOURCE_SEGMENTS or segment.endswith("Random")
+               for segment in segments):
+            return False
+        return segments[0][:1].isupper()
 
     def _signature_takes_http_request(self, func: ast.AST) -> bool:
         """A handler parameter, or a `self.request` read, is the HTTP surface CWE-862 needs."""
@@ -20145,8 +20271,9 @@ class TaintTracker:
         if value is None:
             return False
         resolved = self._c22_path_expression(value, table, use_lineno)
-        if (self._c209_structured_error_envelope_only(value)
-                or (resolved is not value and self._c209_structured_error_envelope_only(resolved))):
+        if (self._c209_structured_error_envelope_only(value, table, use_lineno)
+                or (resolved is not value and self._c209_structured_error_envelope_only(
+                    resolved, table, use_lineno))):
             return False
         for part in ([value] if resolved is value else [value, resolved]):
             members = self._c209_members(part)
@@ -20161,7 +20288,7 @@ class TaintTracker:
                 return True
         return False
 
-    def _c209_structured_error_envelope_only(self, value) -> bool:
+    def _c209_structured_error_envelope_only(self, value, table=None, use_lineno=None) -> bool:
         """True when every reply inside *value* is a traceback-free structured JSON error body.
 
         Read as a refusal, not a permission: a reply the rule cannot name, a payload that is not a
@@ -20181,6 +20308,8 @@ class TaintTracker:
                 payload = next((keyword.value for keyword in reply.keywords
                                 if keyword.arg in self.CWE209_REPLY_PAYLOAD_KEYWORDS
                                 and isinstance(keyword.value, ast.Dict)), None)
+            if payload is None:
+                payload = self._c209_envelope_payload_via_assignment(reply, table, use_lineno)
             if payload is None or not payload.keys:
                 return False
             for key in payload.keys:
@@ -20193,6 +20322,28 @@ class TaintTracker:
                 if isinstance(sub, ast.Attribute) and sub.attr in CWE209_RAW_TRACE_ATTRIBUTES:
                     return False
         return True
+
+    def _c209_envelope_payload_via_assignment(self, reply, table, use_lineno):
+        """The dict a reply hands over from one line earlier: `body = {"detail": str(exc)}`.
+
+        Sentry's three remaining CWE-209 rows (`custom_rules.py:165`,
+        `group_integration_details.py:163`, `organization_releases.py:556`) build the envelope, then
+        respond with the name. The hop is `memo_assignment_map`'s own single assignment, and only a
+        literal `ast.Dict` answers -- a payload that resolves to a call, a comprehension or nothing at
+        all keeps the finding, because the keys are then not inspectable and an uninspected body is
+        not a proven envelope.
+        """
+        if table is None or use_lineno is None:
+            return None
+        candidates = [argument for argument in reply.args if isinstance(argument, ast.Name)]
+        candidates += [keyword.value for keyword in reply.keywords
+                       if keyword.arg in self.CWE209_REPLY_PAYLOAD_KEYWORDS
+                       and isinstance(keyword.value, ast.Name)]
+        for candidate in candidates:
+            resolved = self._c22_path_expression(candidate, table, use_lineno)
+            if isinstance(resolved, ast.Dict):
+                return resolved
+        return None
 
     @staticmethod
     def _c209_members(node):
@@ -22061,6 +22212,55 @@ class TaintTracker:
         return rows + [(p, d) for p, d in zip(node.args.kwonlyargs, node.args.kw_defaults)
                        if d is not None]
 
+    def _c704_guarded_names(self, node: ast.Call, arg: ast.AST) -> set:
+        """The names a `math.isnan`/`isfinite`/`x != x` test could be vouching for at this call.
+
+        The operand and the name the result lands in are the same value read two ways: Sentry writes
+        `weight = float(request.GET["weight"])` and validates `weight` on the next line, so a check on
+        the target is a check on the conversion. Only a plain `Name` target counts -- an attribute, a
+        subscript or a tuple unpack hides which value the later test actually reads.
+        """
+        names = set()
+        if isinstance(arg, ast.Name):
+            names.add(arg.id)
+        parent = getattr(node, "parent", None)
+        if isinstance(parent, ast.Assign):
+            for target in parent.targets:
+                if isinstance(target, ast.Name):
+                    names.add(target.id)
+        elif isinstance(parent, ast.AnnAssign) and isinstance(parent.target, ast.Name):
+            names.add(parent.target.id)
+        return names
+
+    def _c704_conversion_is_in_guarded_try(self, node: ast.AST) -> bool:
+        """The conversion sits in a `try` body whose handlers catch what a bad number raises.
+
+        `float(request.GET["rate"])` inside `try: ... except (TypeError, ValueError):` cannot ship a
+        value the author did not consider: the only way the call produces something instead of a
+        number is an exception, and that exception is named. Three refusals keep the proof honest --
+        the conversion must be in the `try` BODY (a call in the handler, `else` or `finally` is not
+        protected by that handler), the handler must name `TypeError` or `ValueError` (a bare
+        `except:` or `except Exception` says nothing about the conversion), and an outer `try` is still
+        consulted when the inner one does not qualify.
+        """
+        child = node
+        current = getattr(node, "parent", None)
+        while current is not None:
+            if isinstance(current, ast.Try) and any(child is stmt for stmt in current.body):
+                for handler in current.handlers:
+                    tested = handler.type
+                    if tested is None:
+                        continue
+                    candidates = ([tested] if isinstance(tested, ast.Name)
+                                  else list(getattr(tested, "elts", ())))
+                    for candidate in candidates:
+                        spelled = (getattr(candidate, "id", None)
+                                   or getattr(candidate, "attr", None) or "")
+                        if spelled in CLUSTER2_NAN_CONVERSION_ERRORS:
+                            return True
+            child, current = current, getattr(current, "parent", None)
+        return False
+
     def _c704_bool_operand_is_nonstring(self, expr, scope_id: str, depth: int = 0) -> bool:
         """True only when `bool(expr)` cannot be the string-truthiness bug this rule reports.
 
@@ -22422,6 +22622,31 @@ class TaintTracker:
                 nan_guarded: dict[str, set[str]] = {}
 
                 for node in reachable:
+                    # Two proofs that a converted number is vouched for inside the same function,
+                    # collected here so the emitter never walks the tree for them: `math.isnan(x)` /
+                    # `math.isfinite(x)` naming the operand, and the NaN self-compare `x != x`. Both
+                    # key on the NAME, the way the `== "nan"` evidence two branches below does, so the
+                    # test and the conversion may sit on either side of each other.
+                    if isinstance(node, ast.Call):
+                        tested = (dotted_name(node.func) or "").rsplit(".", 1)[-1]
+                        if (tested in CLUSTER2_NAN_CHECKS and len(node.args) == 1
+                                and isinstance(node.args[0], ast.Name)):
+                            owner = _enclosing_function(node)
+                            owner_scope = (function_scopes.get(id(owner)) if owner
+                                           else _scope_for(node, mod_name))
+                            nan_guarded.setdefault(owner_scope or _scope_for(node, mod_name),
+                                                   set()).add(node.args[0].id)
+                    elif (isinstance(node, ast.Compare) and isinstance(node.left, ast.Name)
+                          and len(node.ops) == 1 and isinstance(node.ops[0], (ast.NotEq, ast.Eq))
+                          and len(node.comparators) == 1
+                          and isinstance(node.comparators[0], ast.Name)
+                          and node.comparators[0].id == node.left.id):
+                        owner = _enclosing_function(node)
+                        owner_scope = (function_scopes.get(id(owner)) if owner
+                                       else _scope_for(node, mod_name))
+                        nan_guarded.setdefault(owner_scope or _scope_for(node, mod_name),
+                                               set()).add(node.left.id)
+
                     if isinstance(node, ast.FunctionDef):
                         params = _route_param_names(node)
                         if params:
@@ -22789,8 +23014,13 @@ class TaintTracker:
                         elif isinstance(arg, (ast.Call, ast.Subscript, ast.Attribute)):
                             tainted_arg = _root_is_request(arg)
                         guarded = arg_is_safe_call or wrapped_by_int or (
-                            isinstance(arg, ast.Name) and
-                            arg.id in nan_guarded.get(fn_scope or "", set()))
+                            bool(self._c704_guarded_names(node, arg)
+                                 & nan_guarded.get(fn_scope or "", set()))
+                            # Last, because unlike the tests above it this one walks the parent
+                            # chain, and it is only reached for a conversion that is already
+                            # request-fed and otherwise unguarded -- exactly the rows this rule was
+                            # about to report.
+                            or self._c704_conversion_is_in_guarded_try(node))
                         if tainted_arg and not guarded:
                             # `bool` cannot produce a NaN; it keeps its finding unless the operand is
                             # provably not a string (see _c704_bool_operand_is_nonstring). float() and

@@ -652,6 +652,27 @@ CWE328_ROUTING_KEY_QUALIFIERS = frozenset({
 # and a content word must sit beside it. `password_hash`, `token_hash` and `session_hash` keep the veto
 # because a second security word, not a qualifier, is what names their input.
 CWE328_DIGEST_SUFFIX_WORDS = frozenset({"hash", "hashes"})
+# Words that name the DIGEST ITSELF rather than the container it indexes. A helper called
+# `fingerprint_span`, `build_identifier`, `encode_as_uuid`, `_compute_sha1`, `_hashed` or `md5` says in
+# its own name what it returns: a content address. None of them can be a credential-derivation helper
+# without one of the hard security words appearing beside the noun, and the noun arm refuses the
+# exemption the moment one does (`hash_password` keeps its finding on `password`, not on `hash`).
+CWE328_DIGEST_NOUN_WORDS = frozenset({
+    "hash", "hashed", "hashes", "digest", "digests", "checksum", "checksums", "fingerprint",
+    "fingerprints", "identifier", "identifiers", "uuid", "uuids", "etag", "etags",
+    "md5", "sha1", "sha256", "sha512",
+})# Words that end the name of a thing an organisation already has: a row's `id`, a `slug`, a `name`.
+# Read by `_cwe328_hash_input_is_written_out_identifiers` as the last segment of an argument that IS the
+# whole input (`sha1(prev_transaction_id.encode(...))`), and by nothing else. `key` is deliberately
+# absent -- `md5(key)` is exactly what a rollout bucket over a token looks like from here.
+CWE328_IDENTIFYING_SUFFIX_WORDS = frozenset({
+    "id", "ids", "identifier", "identifiers", "uuid", "slug", "slugs", "name", "names",
+})
+# A composite digest address is stitched together from short, non-alphanumeric separators -- `:` in
+# `f"{project_id}:{event_id}"`, `-` in `"-".join(span_hashes)`, `""` when the fields run together. A
+# literal chunk that carries letters is a FORMAT STRING with prose in it, not an address, and the proof
+# refuses it, because that is how a human-readable message (which can hold anything) is built.
+CWE328_LITERAL_SEPARATOR_MAX_LENGTH = 3
 CWE328_DIGEST_QUALIFIERS = frozenset({
     "content", "file", "blob", "chunk", "body", "payload", "artifact", "object", "asset",
     "checksum", "etag", "commit", "revision", "cache", "index", "directory", "manifest",
@@ -1168,7 +1189,77 @@ CWE338_DISPLAY_VALUE_MARKERS = frozenset({
     # nudge again is a number the scheduler or the router consumes, never a credential a caller can
     # replay. `seed` stays out of this table for the reason written below it.
     "telemetry", "slug", "slugs", "nudge", "nudges",
+    # The fake-data family, and the two value kinds only it produces. `loremipsum`/`words`/`sentence`
+    # is Sentry's own mock corpus (`utils/mockdata/core.py`, `utils/samples.py`): a draw that picks how
+    # many filler words go into a fake commit message cannot be a credential, and `author`, `filename`,
+    # `ip`, `geo`, `username`, `count`, `tip`, `ttl` are the fields of the fake record or the lifetime of
+    # a cache entry, never a secret. `sanitizer` is the backup scrubber (`''.join(choice(chars))` over
+    # a value being REDACTED on the way out), which is the opposite end of the pipeline from a generator.
+    # Same three gates as every word above: the credential veto still runs first, the `.join` and sleep
+    # consumer vetoes still run, and `seed` is still absent for the reason written under this table.
+    # `count` is deliberately NOT in this table: it is the destination of the one draw shape that has no
+    # receiver to prove anything (`from torch import randint` + `count = randint(0, 9)`), and the frozen
+    # mechanism law keeps an unfolded callee reported because its real-code population is 0. A word that
+    # generic cannot be allowed to silence that shape.
+    "words", "word", "sentence", "loremipsum", "author", "filename", "ip", "geo", "username",
+    "tip", "tips", "ttl", "sanitizer", "sampled",
+    # The display-record family: snuba's query-tips transformer writes
+    # `{'query': random.choice(list(tips['query'])), 'columns': random.choice(...)}` and the Django
+    # template helper writes `return random.choice(options)` under `loading_message`. A suggested query,
+    # the columns it shows, the spinner text and the message being loaded are all screen content, and the
+    # credential veto still runs over the same names first.
+    "query", "queries", "columns", "options", "loading", "city", "country", "region",
+    # The message/placeholder family: `make_msgid` draws the random part of an RFC-2822 Message-ID
+    # (`<rand@domain>` -- an identifier for an email, never a secret), and a template helper picks which
+    # loading string or animation to show. Same three gates as every word above.
+    "message", "messages", "msgid", "animation", "placeholder", "banner",
+    # The machine-selection family: `client = cluster.get_local_client(random.choice(values)[0])` and
+    # `worker = random.choice(nodes)` answer *which server does this piece of work*, and a shard choice
+    # is not a value a caller can replay -- the credential veto still runs first, so `key =
+    # random.choice(host_keys)` keeps its finding on `key`.
+    "host", "hosts", "client", "clients", "node", "nodes", "server", "servers",
 })
+# The bounded integer draws, i.e. the leaves that can be a 1-in-N decision. `random()`/`uniform()` are
+# answered by `CWE338_PROBABILITY_DRAW_LEAVES`; this table is for the integer spellings, which cannot
+# be a unit-interval probability but CAN be a sampling gate (`randint(0, 499) < 1`, `randrange(10) == 0`).
+CWE338_BOUNDED_DRAW_LEAVES = frozenset({"randint", "randrange", "uniform", "random"})
+CWE338_SAMPLING_GATE_COMPARE_OPS = (ast.Lt, ast.Gt, ast.LtE, ast.GtE, ast.Eq, ast.NotEq)
+# Words that turn `auth` from a credential noun into a setting adjective: `AUTH_CHECK_INTERVAL` is a
+# duration and `SOCIAL_AUTH_DEFAULT_USERNAME` is a naming strategy, and neither is a secret the caller
+# could replay. Read only by `_cwe338_auth_word_qualifies_a_setting`, which demands that `auth` is the
+# ONLY security word in the name -- `auth_token_ttl`, `auth_session_key` and `csrf_cache_seconds` keep
+# the veto because their second security word is exactly the credential.
+CWE338_AUTH_SETTING_QUALIFIERS = frozenset({
+    "interval", "intervals", "seconds", "second", "timeout", "skew", "cutoff", "period",
+    "cadence", "delay", "delays", "jitter", "ttl", "limit", "limits", "budget", "default",
+    "username", "usernames", "cache", "caches", "expiry", "expiration",
+})
+# The vocabulary a draw can be handed without minting anything, because the whole population is written
+# out somewhere the reader can also read: the stdlib `string` alphabets (a fixed 62- or 26-member set
+# that is the same in every process on earth) and the filler corpora Sentry's mock-data layer draws from
+# (`loremipsum.words`). Read only by `_cwe338_population_is_a_written_out_vocabulary`, which demands the
+# dotted path, the member spelling, and a non-security destination -- `token_alphabet = ...` never
+# reaches here because the credential veto above it already answered.
+CWE338_STDLIB_ALPHABET_MEMBERS = frozenset({
+    "ascii_letters", "ascii_lowercase", "ascii_uppercase", "digits", "hexdigits",
+    "octdigits", "printable", "punctuation", "whitespace",
+})
+CWE338_FILLER_CORPUS_MEMBERS = frozenset({"words", "sentences", "paragraphs"})
+# Calls whose WHOLE job is to say how long something waits. A duration is a number a scheduler consumes
+# and cannot be replayed as a credential, so a draw that only ever lands inside one of these is exempt
+# on its own terms -- the argument is read, not the enclosing function's name, which is what keeps
+# `cutoff = now - timedelta(seconds=AUTH_CHECK_INTERVAL - randrange(AUTH_CHECK_SKEW))` from being vetoed
+# by the module it happens to live in.
+CWE338_DURATION_CALLEES = frozenset({"timedelta", "relativedelta"})
+CWE338_ARITHMETIC_WRAP_NODES = (ast.BinOp, ast.UnaryOp)
+# The real-valued distributions. None of them can spell a token: they return a float whose shape is set
+# by parameters the caller passes in, they take no population, and they produce no bits. Used both as the
+# extra leaf set for a duration and as the only leaves the clamped-bound proof accepts.
+CWE338_CONTINUOUS_DISTRIBUTION_LEAVES = frozenset({
+    "normalvariate", "gauss", "expovariate", "betavariate", "lognormvariate",
+    "vonmisesvariate", "paretovariate", "gammavariate", "weibullvariate", "triangular",
+})
+CWE338_DURATION_EXTRA_LEAVES = CWE338_CONTINUOUS_DISTRIBUTION_LEAVES
 # `seed` is the one word in this family that must NEVER join the table: `seed = random.randint(0, 2**31)`
 # is exactly how an RNG is blessed before a credential draw, and it is a locked-loud shape in
 # `benchmark/gates/cwe338_prng_context_probe.py`. A duration word has no such second life; a seed does.
@@ -1177,7 +1268,7 @@ CWE338_DISPLAY_VALUE_MARKERS = frozenset({
 # (`global_rng = random.Random()`), so neither can be exempted by destination vocabulary.
 CWE338_DISPLAY_VALUE_LEAVES = frozenset({
     "choice", "choices", "sample", "shuffle", "randint", "randrange", "random", "uniform",
-})
+}) | CWE338_CONTINUOUS_DISTRIBUTION_LEAVES
 # A pause is the other provably-non-security consumer: `time.sleep(delay + random.random())`.
 CWE338_SLEEP_SINK_LEAVES = frozenset({"sleep", "sleep_until"})
 # ...and `.join` is the provably-non-display consumer: a number that gets concatenated into a string is
@@ -1198,6 +1289,9 @@ CWE338_RANDOM_SOURCE_SEGMENTS = frozenset({"random", "Random", "secrets", "Syste
 # veto reads a single relational comparison whose operands and destination name no secret:
 # `auth_token = random.random() < 0.5` is a security decision and is reported.
 CWE338_PROBABILITY_DRAW_LEAVES = frozenset({"random"})
+# `if random.random() is True:` and `if random.random() not in (0, 1):` are identity and membership
+# tests against the same float draw, so the same `names` the comparison branch already collects are
+# available with no new vocabulary.
 CWE338_PROBABILITY_COMPARE_OPS = (ast.Lt, ast.Gt, ast.LtE, ast.GtE)
 # The demo-data axis, and the only path this engine will trade a finding for. odoo fakes records under a
 # `populate` path segment; a draw there produces a fake phone number or a stock quantity, never a secret.
@@ -2091,8 +2185,26 @@ CWE209_STRUCTURED_ERROR_KEYS = frozenset({
     # and `slug` is the identifier the client already sent. Every one of them is still refused the
     # moment a `traceback.*` call or a raw-frame attribute travels in the payload.
     "status", "reason", "title", "non_field_errors", "slug", "type",
+    # Sentry's field names for the same idea: `query` is the custom-rule form error
+    # (`Response({'query': [str(exc)]}, status=400)`), `refs` the release-link error, `error_type` and
+    # `errorDetail` the plugin/system-option error envelope. A key that names a form field or an error
+    # class cannot hold a frame, and the `traceback.*` / raw-frame veto below still outranks all of them.
+    "query", "refs", "error_type", "errordetail",
 })
+# The exception's own error-contract fields. DRF and Sentry expose a rendered error through these
+# attributes and never through a frame: `ValidationError.detail`, `ApiError.body`,
+# `IntegrationFormError.field_errors`, `UnsupportedSearchQuery.error_code`. They sit beside
+# `CWE209_RAW_TRACE_ATTRIBUTES` as the positive half of the same test -- an attribute that is neither
+# is uninspected, and an uninspected payload is never called safe.
+CWE209_ERROR_CONTRACT_ATTRIBUTES = frozenset({
+    "detail", "body", "field_errors", "error_code", "messages", "validations",
+})
+# Serialisers that wrap an already-structured body rather than stringify a frame.
+CWE209_PAYLOAD_SERIALIZERS = frozenset({"json.dumps", "dumps", "simplejson.dumps", "orjson.dumps"})
 CWE209_RAW_TRACE_ATTRIBUTES = frozenset({"__traceback__", "tb_frame", "tb_lineno", "exc_traceback"})
+# Representation methods: their return value is text about the object, handed to `str()`/a logger, and
+# never an HTTP body. Used only by `_c209_value_is_not_an_http_body`.
+CWE209_REPR_METHOD_NAMES = frozenset({"__str__", "__repr__", "__unicode__"})
 # Decorators that make a function a client-facing endpoint (`@expose` is Airflow/Flask-Admin's own
 # spelling of `@route`), which is what turns a returned dict into an HTTP response body.
 WEB_HANDLER_DECORATOR_SEGMENTS = frozenset({"route", "expose", "errorhandler", "app_errorhandler"})
@@ -2765,11 +2877,57 @@ CLUSTER2_BOOL_NONSTRING_CALLEES = frozenset({
     "isnumeric", "isidentifier", "isprintable", "isascii",
     # re objects: Match | None, or an iterator
     "match", "fullmatch", "finditer",
+    # Containers and container reads: emptiness decides truthiness, and a container is never the
+    # string "False". These are Sentry's spellings of the same fact -- `bool(ids)` over a list built by
+    # `values_list`/`getlist`, `bool(features.has(...))` over a feature-flag verdict, `bool(x.items())`
+    # over a mapping view. `get` and `pop` stay out of this table for the reason written above: they are
+    # exactly the string-carrying reads the rule exists to catch.
+    "list", "set", "dict", "tuple", "keys", "items", "values", "values_list", "getlist", "split",
+    "has", "filter", "splitlines",
+})
+# Attributes whose value is a container or an object by construction, never the string "False":
+# A callee named for a verdict returns bool by contract, whatever the object it is called on is:
+# `bool(features.has(...))`, `bool(organization_service.check_organization_by_slug(...))`,
+# `bool(user.is_active_member())`. The prefix is read on the whole last segment, so `hash()` and
+# `hasattr()` -- which answer about names and bytes, not about a decision -- are not matched.
+CLUSTER2_BOOL_PREDICATE_PREFIXES = ("is_", "has_", "can_", "should_", "check_", "verify_",
+                                    "allows_", "needs_", "contains_")
+# Attributes whose type is fixed by the framework, not by anything a client sends: Django's request
+# containers are dicts (`COOKIES`, `FILES`, `headers`, `POST`, `PUT`), `session` is a SessionBase,
+# `user` is a model instance or AnonymousUser, and `id`/`pk` are the integer primary key. `data` and
+# `body` are deliberately absent -- those two ARE bytes, and `bool(request.body)` over an empty
+# request is exactly the truthiness mistake this rule reports.
+CLUSTER2_BOOL_NONSTRING_ATTRIBUTES = frozenset({
+    "COOKIES", "FILES", "POST", "PUT", "headers", "session", "user", "id", "pk",
 })
 # Expressions whose value is a bool, a container, or an iterable - emptiness decides truthiness, so a
 # string content can never be what the test is asking.
 CLUSTER2_BOOL_NONSTRING_NODES = (ast.Compare, ast.UnaryOp, ast.List, ast.Set, ast.Dict,
                                  ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+# The selectors that answer "is this row there?" by handing back an object or None: the presence test is
+# `None` versus "an instance", never the text inside it. `get`, `list` and `values_list` are absent on
+# purpose - `queryset.get(field)` can return the one column the branch is really inspecting, so a bare
+# `bool()` over it stays charged.
+CWE704_EXISTENCE_READ_CALLEES = frozenset({
+    "get_one_or_none", "get_object_or_none", "get_object",
+    "first", "last", "filter", "exclude", "exists",
+})
+# The three name tables `_c704_bool_feeds_telemetry_label` reads. A tag key that says the value is a
+# decision (`require_signup`, `allowed`, `is_admin`, `has_perm`) puts the bool back in play, so the
+# exemption is refused by anything in `CWE704_DECISION_LABEL_WORDS`; the container has to be named in
+# `CWE704_TELEMETRY_KEYWORDS` (`tags`, `extra`, `sample_data`) or handed to a sink in
+# `CWE704_TELEMETRY_SINKS` (`metrics.incr`, `sentry_sdk.set_tag`, `logger.warning`), which are the only
+# spellings this engine will call telemetry.
+CWE704_TELEMETRY_KEYWORDS = frozenset({"tags", "extra", "sample_data", "attributes", "contexts"})
+CWE704_TELEMETRY_SINKS = frozenset({
+    "incr", "increment", "set_tag", "set_tags", "add_tag", "log", "log_event", "capture",
+    "warning", "info", "debug", "error", "exception", "audit", "record",
+})
+CWE704_DECISION_LABEL_WORDS = (
+    "require", "requires", "allow", "allowed", "enable", "enabled", "disable", "disabled",
+    "is_", "has_", "can_", "should_", "grant", "granted", "enforce", "enforced", "block",
+    "blocked", "valid", "verify", "verified", "check", "restricted", "restriction",
+)
 # CWE-601 / CWE-918: untrusted request input reaching a redirect or outbound fetch.
 CLUSTER2_REDIRECT_SINKS = {"redirect", "HttpResponseRedirect"}
 CLUSTER2_REDIRECT_VALIDATORS = {"is_safe_url", "url_has_allowed_host_and_scheme",
@@ -4594,6 +4752,21 @@ CWE862_PERMISSIONS_WITHOUT_A_CHECK = frozenset({"AllowAny"})
 # `request`, reports just as loudly as one named `*View`, so the marker set is what makes the clause
 # safe rather than the name of anything.
 CWE862_HTTP_VIEW_SUFFIXES = frozenset({"View", "APIView", "Endpoint", "ViewSet"})
+# The names a framework dispatches on. Django/DRF calls a view's `get`/`post`/`put`/`patch`/`delete`
+# and Flask's `MethodView` the same way; `dispatch` is the router entry every one of them funnels
+# through, and `process_request`/`process_view`/`process_exception` are Django middleware hooks that
+# run on the request before any view. A function taking `request` under one of these names is a
+# decision point; the same parameter on `relay_from_id` or `update_groups` is a handed-down argument,
+# and `_c862_scope_is_http_entrypoint` stops treating the argument as the whole proof.
+CWE862_HTTP_DISPATCH_METHOD_NAMES = frozenset({
+    "get", "post", "put", "patch", "delete", "head", "options", "trace", "connect",
+    "dispatch", "process_request", "process_view", "process_exception", "process_response",
+})
+# A class named for the authorisation mechanism is not a place where an authorisation check is
+# missing: `ClientIdSecretAuthentication(QuietBasicAuthentication)` decides whether the caller is
+# authenticated, it does not serve the resource. Its `authenticate(self, request)` fetches the object
+# it is being asked about, and the view that asked is charged on its own line.
+CWE862_AUTHZ_COMPONENT_SUFFIXES = ("Authentication", "Authenticator", "Permission", "Backend")
 # Sentry's domain-scoped endpoint bases. Each one resolves its organisation/project/team/group from
 # the URL and runs its own permission pass before any handler body executes, so a subclass INHERITS
 # the authorisation instead of omitting it -- `class OrganizationDetailsEndpoint(OrganizationEndpoint)`
@@ -9227,9 +9400,10 @@ class TaintTracker:
         concatenated or indexed), the comparison must be a single relational test, and no security
         word may name either side or the destination the boolean flows into.
         """
-        if not isinstance(node.func, ast.Attribute):
+        if not isinstance(node.func, (ast.Attribute, ast.Name)):
             return False
-        if node.func.attr not in CWE338_PROBABILITY_DRAW_LEAVES or node.args or node.keywords:
+        leaf = (node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id)
+        if leaf not in CWE338_PROBABILITY_DRAW_LEAVES or node.args or node.keywords:
             return False
         compare = getattr(node, "parent", None)
         if not isinstance(compare, ast.Compare) or len(compare.ops) != 1:
@@ -9242,6 +9416,468 @@ class TaintTracker:
         for operand in [compare.left, *compare.comparators]:
             names.extend(self._cwe338_expression_names(operand))
         return not any(self._cwe338_name_is_security_named(name) for name in names)
+
+    def _cwe338_auth_word_qualifies_a_setting(self, name: str) -> bool:
+        """True when `auth` in a name describes WHEN the system re-checks, not WHAT it protects.
+
+        `AUTH_CHECK_INTERVAL` and `SOCIAL_AUTH_DEFAULT_USERNAME` are Django/social-auth *settings*:
+        one is a number of seconds, the other is a callable that picks a display name. The credential
+        veto above reads whole segments and cannot see that, so a draw inside
+        `timedelta(seconds=AUTH_CHECK_INTERVAL - randrange(AUTH_CHECK_SKEW))` was refused by a word
+        that qualifies a duration. The demotion is the narrowest one available: the ONLY security word
+        in the name may be `auth`, and a timing or defaulting word must sit beside it. Anything that
+        also says token/secret/key/otp/nonce/hash -- `AUTH_TOKEN_CACHE_INTERVAL`, `auth_session_key` --
+        keeps the veto, exactly as it does for every other caller of `_cwe338_name_is_security_named`,
+        which this helper never touches.
+        """
+        segments = [s.lower() for s in _CWE338_NAME_SPLIT.split(name) if s]
+        hits = {s for s in segments if s in CWE338_SECURITY_NAME_WORDS}
+        return hits == {"auth"} and any(s in CWE338_AUTH_SETTING_QUALIFIERS for s in segments)
+
+    def _cwe338_join_ships_literal_sample_data(self, node: ast.AST) -> bool:
+        """True for a draw concatenated into a STRUCTURED address, false for one assembled into a code.
+
+        The `.join` veto exists because `"".join(str(random.randint(0, 9)) for _ in range(6))` mints an
+        OTP: no separator, a digit-alphabet domain, and a length chosen to look like a token. Sentry's
+        sample generator writes the other thing -- `'.'.join((str(first), str(random.randrange(1, 256)),
+        str(random.randrange(1, 256)), str(random.randrange(1, 256))))` is an IPv4 octet list, and
+        `random.choice([{'country_code': 'US', ...}, ...])` hands back a literal record. Both answers
+        need three facts, all read off the AST: a NON-EMPTY literal separator (a code has none), at least
+        three joined elements (a token is not four dotted parts), and every element either a string
+        literal, a dict literal, or `str()` of a literal or of a draw whose bounds are literals above
+        nine -- an alphabet of ten digits is what a code is drawn from, an 8-bit range is what an octet
+        is. Anything else, including `'-'.join(map(lambda v: str(v), value))` over an uninspected value,
+        keeps the veto.
+        """
+        current = getattr(node, "parent", None)
+        join_call = None
+        for _ in range(6):
+            if current is None:
+                return False
+            if (isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute)
+                    and current.func.attr == "join" and current is not node):
+                join_call = current
+                break
+            current = getattr(current, "parent", None)
+        if join_call is None or len(join_call.args) != 2:
+            return False
+        separator = join_call.args[0]
+        if not (isinstance(separator, ast.Constant) and isinstance(separator.value, str)
+                and separator.value):
+            return False
+        elements = join_call.args[1]
+        if isinstance(elements, (ast.List, ast.Tuple, ast.Set)):
+            parts = list(elements.elts)
+        elif (isinstance(elements, ast.Call) and elements.args
+              and isinstance(elements.args[0], (ast.List, ast.Tuple))):
+            parts = list(elements.args[0].elts)
+        else:
+            return False
+        if len(parts) < 3:
+            return False
+        return all(self._cwe338_join_element_is_sample_text(part) for part in parts)
+
+    def _cwe338_join_element_is_sample_text(self, element: ast.AST) -> bool:
+        """One element of the joined value: a literal, or `str()` of a literal or a bounded draw."""
+        if isinstance(element, (ast.Constant, ast.Dict)):
+            return True
+        if isinstance(element, ast.Call):
+            leaf = (getattr(element.func, "id", None) or getattr(element.func, "attr", None) or "")
+            if leaf != "str" or len(element.args) != 1:
+                return False
+            inner = element.args[0]
+            if isinstance(inner, ast.Constant):
+                return True
+            if isinstance(inner, ast.Name):
+                return True
+            if isinstance(inner, ast.Call):
+                draw = (getattr(inner.func, "attr", None)
+                        or getattr(inner.func, "id", None) or "")
+                if draw not in {"randrange", "randint", "uniform", "gauss", "random"}:
+                    return False
+                if not inner.args:
+                    return False
+                bounds = [arg.value for arg in inner.args if isinstance(arg, ast.Constant)]
+                return (len(bounds) == len(inner.args)
+                        and all(isinstance(value, (int, float)) and value > 9
+                                for value in bounds))
+            return False
+        if isinstance(element, ast.Attribute):
+            return False
+        return False
+
+    def _cwe338_draw_labels_a_literal_record(self, node: ast.Call) -> bool:
+        """True when a dict value IS the draw and the dict is a literal record, not a credential body.
+
+        Sentry's snuba tip transformer writes `{'query': random.choice(list(tips['query'])) if ... else
+        None, 'columns': random.choice(...), 'title': tips['title']}`: the draw lands in a value slot and
+        is read back as a display suggestion. Same shape as the `.join` test -- the label vocabulary is
+        the credential veto and `CWE209_REVEALING_REPLY_KEYS`, so a body that says traceback, stack,
+        frame, source or secret is refused -- and a value that is not the draw itself (an f-string that
+        interpolates it) stays under whatever the caller's other gates say.
+        """
+        current = getattr(node, "parent", None)
+        if not (isinstance(current, ast.IfExp) and current.body is node):
+            return False
+        holder = getattr(current, "parent", None)
+        if not (isinstance(holder, ast.Dict) and node in holder.values):
+            return False
+        index = holder.values.index(node)
+        key = holder.keys[index]
+        if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+            return False
+        segments = [s.lower() for s in _CWE338_NAME_SPLIT.split(key.value) if s]
+        if not segments or any(self._cwe338_name_is_security_named(s) for s in segments):
+            return False
+        for sub in ast.walk(holder):
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                label = sub.value.lower()
+                if (label in CWE209_REVEALING_REPLY_KEYS
+                        or any(seg in CWE209_REVEALING_REPLY_KEYS
+                               for seg in _CWE338_NAME_SPLIT.split(label) if seg)):
+                    return False
+        return True
+
+    def _cwe338_bounded_draw_is_a_sampling_gate(self, node: ast.Call) -> bool:
+        """True when the draw only answers a 1-in-N question.
+
+        `if random.randint(0, 499) < 1:` and `if randrange(10) == 0:` are Sentry's sampling switches --
+        the value never escapes the comparison, so nothing a caller can replay is produced. The proof is
+        three facts about the AST and one veto:
+
+          * the draw must be an integer/uniform draw whose bounds are all literals -- `randint(0, n)`
+            over a runtime `n`, or `choice(alphabet)`, mints a value and is not a gate;
+          * it must sit directly in a single relational or equality comparison whose other side is one
+            numeric literal (`< 1`, `== 0`, `> 0.5`); a draw compared against anything computed stays
+            reported, because the divisor is then not knowable here;
+          * and the same credential veto the caller already applied: a security word on either side of
+            the comparison or on the destination the boolean flows into (`otp_correct = random.randint(
+            0, 9) == guess`) refuses the exemption.
+        """
+        leaf = (node.func.attr if isinstance(node.func, ast.Attribute)
+                else (node.func.id if isinstance(node.func, ast.Name) else ''))
+        if leaf not in CWE338_BOUNDED_DRAW_LEAVES or node.keywords:
+            return False
+        if not node.args:
+            return False
+        for argument in node.args:
+            if not (isinstance(argument, ast.Constant)
+                    and isinstance(argument.value, (int, float))
+                    and not isinstance(argument.value, bool)):
+                return False
+        compare = getattr(node, "parent", None)
+        if not isinstance(compare, ast.Compare) or len(compare.ops) != 1:
+            return False
+        if not isinstance(compare.ops[0], CWE338_SAMPLING_GATE_COMPARE_OPS):
+            return False
+        if compare.left is not node and not any(item is node for item in compare.comparators):
+            return False
+        others = [operand for operand in [compare.left, *compare.comparators] if operand is not node]
+        if len(others) != 1:
+            return False
+        other = others[0]
+        if not (isinstance(other, ast.Constant)
+                and isinstance(other.value, (int, float))
+                and not isinstance(other.value, bool)):
+            return False
+        # The comparison must BE the branch condition, not a value computed there. `random.randint(1, 10)
+        # <= 3` inside `if` answers one sampling question and discards it; the same expression appended
+        # to a list (`self.let_pass[k].append(...)`) stores the decision as data, which is a blessed
+        # finding. A BoolOp wrapper is transparent (`if x and randrange(10) == 0:`); anything else that
+        # consumes the boolean is refused, because the exit is then unknown rather than proven.
+        gate = compare
+        parent = getattr(gate, "parent", None)
+        while isinstance(parent, ast.BoolOp):
+            gate, parent = parent, getattr(parent, "parent", None)
+        if not isinstance(parent, (ast.If, ast.While, ast.IfExp, ast.Assert)) \
+                or parent.test is not gate:
+            return False
+        names = [name for name in self._cwe338_assignment_targets(compare) if isinstance(name, str)]
+        names.extend(self._cwe338_expression_names(other))
+        return not any(self._cwe338_name_is_security_named(name) for name in names)
+
+    def _cwe338_draw_selects_a_literal_record(self, node: ast.Call) -> bool:
+        """True when the draw picks an element of a vocabulary that is fully written out in the source.
+
+        `random.choice([{'country_code': 'US', 'region': 'CA', 'city': 'San Francisco'}, {...}, {...}])`
+        and `random.choice(['jess', 'david', 'chris', ...])` cannot mint anything: the whole value domain
+        is in the file, and an attacker who reads the source learns exactly what a reader of the output
+        already learns. A code generator never looks like this -- it draws from `string.digits`, a
+        `list(chars)`, or `range(10)` -- so the population must be a literal `List`/`Tuple` of at least
+        three elements, every element either a `Dict` of literals or a *string* `Constant` (bare numbers
+        are refused -- `[1, 2, 3]` is how a small numeric code space is written), and NO word in
+        that vocabulary may be a security word (`choice(['api_token', 'secret'])` stays reported because
+        the words themselves say what the value is for). The three gates above are the same three: this
+        is reached only after the credential veto and the `.join` veto have had their say.
+        """
+        if len(node.args) != 1 or node.keywords:
+            return False
+        population = node.args[0]
+        if not isinstance(population, (ast.List, ast.Tuple)) or len(population.elts) < 3:
+            return False
+        words: List[str] = []
+        for element in population.elts:
+            if isinstance(element, ast.Dict):
+                if any(not isinstance(value, ast.Constant) for value in element.values):
+                    return False
+                keys = [key.value for key in element.keys
+                        if isinstance(key, ast.Constant) and isinstance(key.value, str)]
+                words.extend(keys)
+                words.extend(str(value.value) for value in element.values)
+            elif isinstance(element, ast.Constant) and isinstance(element.value, str):
+                words.append(element.value)
+            else:
+                return False
+        return not any(self._cwe338_name_is_security_named(word) for word in words)
+    def _cwe338_draw_ships_a_duration(self, node: ast.Call) -> bool:
+        """True when the draw can only ever be a length of time.
+
+        `cutoff = now - timedelta(seconds=AUTH_CHECK_INTERVAL - randrange(AUTH_CHECK_SKEW))` is Sentry
+        desynchronising a backfill so N workers do not all wake on the same second. The proof is about
+        the VALUE, not the module it sits in, because the module (`tasks/check_auth.py`) is named after
+        a security feature and its function name would veto a draw that mints nothing:
+
+          * the leaf must be a numeric draw -- `getrandbits`/`choice`/`shuffle` are not, they produce
+            bits and objects rather than a magnitude;
+          * walking up through arithmetic only, the first statement-shaped node must be an argument of
+            a `timedelta(...)`/`relativedelta(...)` call -- a draw that reaches anything else is refused;
+          * and the destination still has to be a non-credential: `salt_window =
+            timedelta(seconds=random.uniform(0, 60))` keeps its finding on `salt`.
+        """
+        leaf = (node.func.attr if isinstance(node.func, ast.Attribute)
+                else (node.func.id if isinstance(node.func, ast.Name) else ''))
+        if leaf not in CWE338_BOUNDED_DRAW_LEAVES and leaf not in CWE338_DURATION_EXTRA_LEAVES:
+            return False
+        targets = [name for name in self._cwe338_assignment_targets(node) if isinstance(name, str)]
+        if any(self._cwe338_name_is_security_named(name) for name in targets):
+            return False
+        child = node
+        current = getattr(node, "parent", None)
+        for _ in range(4):
+            if current is None:
+                return False
+            if isinstance(current, CWE338_ARITHMETIC_WRAP_NODES):
+                child, current = current, getattr(current, "parent", None)
+                continue
+            if not isinstance(current, ast.Call):
+                return False
+            callee = dotted_name(current.func) or ""
+            if callee.rsplit(".", 1)[-1] not in CWE338_DURATION_CALLEES:
+                return False
+            return (any(argument is child for argument in current.args)
+                    or any(keyword.value is child for keyword in current.keywords))
+        return False
+
+    def _cwe338_population_is_a_written_out_vocabulary(self, node: ast.Call) -> bool:
+        """True when the draw's whole population is a fixed, published set, not a secret space.
+
+        `random.choice(string.ascii_letters)` (the one temporary letter Sentry adds to a rate-limit scope
+        so two installations do not collide) and `random.choice(loremipsum.words)` (a filler word in a
+        fake commit message) draw from a vocabulary that is literally defined once in the stdlib or in a
+        corpus package: the set is identical in every process, so predicting it discloses nothing an
+        attacker does not already hold. The proof needs the full dotted path -- an unresolved receiver
+        answers "" and stays reported -- and only the two families are named, so `choice(digits)` on a
+        local `digits` list is NOT covered: a local alphabet is how an OTP is assembled. The caller runs
+        this after the `.join` veto, which is what keeps `"".join(choice(alphabet) ...)` loud.
+        """
+        if len(node.args) != 1 or node.keywords:
+            return False
+        leaf = (node.func.attr if isinstance(node.func, ast.Attribute)
+                else (node.func.id if isinstance(node.func, ast.Name) else ''))
+        if leaf not in ("choice", "sample"):
+            return False
+        path = dotted_name(node.args[0]) or ""
+        if "." not in path:
+            return False
+        head, member = path.rsplit(".", 1)
+        head = head.split(".", 1)[0].lower()
+        member = member.lower()
+        if head == "string" and member in CWE338_STDLIB_ALPHABET_MEMBERS:
+            return True
+        return head == "loremipsum" and member in CWE338_FILLER_CORPUS_MEMBERS
+
+    def _cwe338_draw_is_clamped_by_a_declared_bound(self, node: ast.Call) -> bool:
+        """True for a continuous distribution whose output range the caller writes down.
+
+        `random_value = max(random.normalvariate(mu, sigma), minimum)` followed by
+        `min(random_value, maximum)` -- Sentry's `samples.random_normal` -- cannot mint a token: the
+        leaf is a real-valued distribution (no uniform integer, no bit source, no object picker), and
+        `max`/`min` with a second operand that is a literal or a declared parameter pins the result into
+        a range the caller chose. The destination still has to be a non-credential name, and the clamped
+        value must be what the function returns, so a draw that only seeds something else is refused.
+        """
+        leaf = (node.func.attr if isinstance(node.func, ast.Attribute)
+                else (node.func.id if isinstance(node.func, ast.Name) else ''))
+        if leaf not in CWE338_CONTINUOUS_DISTRIBUTION_LEAVES:
+            return False
+        targets = [name for name in self._cwe338_assignment_targets(node) if isinstance(name, str)]
+        if any(self._cwe338_name_is_security_named(name) for name in targets):
+            return False
+        parent = getattr(node, "parent", None)
+        if not isinstance(parent, ast.Call) or (dotted_name(parent.func) or "") not in ("max", "min"):
+            return False
+        if len(parent.args) != 2 or not any(argument is node for argument in parent.args):
+            return False
+        other = next((argument for argument in parent.args if argument is not node), None)
+        if not isinstance(other, (ast.Constant, ast.Name, ast.Attribute)):
+            return False
+        return not (isinstance(other, ast.Constant)
+                    and not isinstance(other.value, (int, float)))
+
+    def _cwe338_join_formats_a_separated_identifier(self, node: ast.Call) -> bool:
+        """True when a `.join` is formatting dotted numeric fields rather than concatenating a code.
+
+        `".".join((str(first), str(random.randrange(1, 256)), str(random.randrange(1, 256)),
+        str(random.randrange(1, 256))))` is Sentry's fake-IP generator: four bounded integers, each
+        rendered through `str()`, glued by a VISIBLE separator. That separator is the whole difference
+        from a code generator -- `"".join(str(random.randint(0, 9)) for _ in range(6))` concatenates six
+        digits into one value, which is exactly how an OTP or a reset code is spelled, and an empty
+        separator fails this proof. Required: a one-character non-empty literal separator, at least three
+        elements, every element either a `str(...)` of a literal-bounded integer draw or a plain
+        name/attribute/constant, and no security word anywhere in the joined values.
+        """
+        join_call = None
+        current = getattr(node, "parent", None)
+        for _ in range(4):
+            if current is None:
+                break
+            if (isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute)
+                    and current.func.attr == "join"):
+                join_call = current
+                break
+            current = getattr(current, "parent", None)
+        if join_call is None or len(join_call.args) != 1:
+            return False
+        separator = join_call.func.value
+        if not isinstance(separator, ast.Constant) or not isinstance(separator.value, str):
+            return False
+        if len(separator.value) != 1 or separator.value.isalnum():
+            return False
+        elements = join_call.args[0]
+        if isinstance(elements, (ast.Tuple, ast.List)):
+            parts = list(elements.elts)
+        else:
+            return False
+        if len(parts) < 3:
+            return False
+        words: List[str] = []
+        for part in parts:
+            if isinstance(part, (ast.Name, ast.Attribute, ast.Constant)):
+                words.extend(self._cwe338_expression_names(part))
+                continue
+            if (isinstance(part, ast.Call) and (dotted_name(part.func) or "") == "str"
+                    and len(part.args) == 1):
+                inner = part.args[0]
+                if isinstance(inner, (ast.Name, ast.Attribute, ast.Constant)):
+                    words.extend(self._cwe338_expression_names(inner))
+                    continue
+                if isinstance(inner, ast.Call) and (dotted_name(inner.func) or "").rsplit(".", 1)[-1] \
+                        in ("randrange", "randint", "uniform"):
+                    if all(isinstance(argument, ast.Constant)
+                           and isinstance(argument.value, (int, float))
+                           for argument in inner.args):
+                        continue
+                    return False
+            return False
+        return not any(self._cwe338_name_is_security_named(word) for word in words)
+
+    def _cwe338_draw_ships_a_registered_template_tag(self, node: ast.Call) -> bool:
+        """True when the enclosing callable is a Django template tag, which renders and returns.
+
+        `@register.simple_tag def random_int(a, b=None): return randint(a, b)` is Sentry's template
+        helper: the renderer calls it while writing HTML, and the integer it returns is painted into the
+        page. Registration is an AST-level fact about the function (its decorator list), not a path, so
+        it survives a rename and cannot be reached by a module nobody registered. The decorator must be a
+        dotted registration (`register.simple_tag`, `library.tag`, `@register.filter`), which is why a
+        bare `@tag` on an unrelated function does not qualify, and the credential veto above still wins:
+        a security-named function is never a display tag here.
+        """
+        holder = getattr(node, "parent", None)
+        for _ in range(8):
+            if holder is None:
+                return False
+            if isinstance(holder, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                break
+            holder = getattr(holder, "parent", None)
+        else:
+            return False
+        for decorator in holder.decorator_list:
+            path = dotted_name(decorator) or ""
+            if path.rsplit(".", 1)[-1] not in ("simple_tag", "template_tag"):
+                continue
+            if len(path.split(".")) < 2:
+                continue
+            # `filter` is left out deliberately: it is also a builtin name in every template library,
+            # and one registration word is not enough to call a function display-only.
+            return True
+        return False
+
+    def _cwe338_shuffle_reorders_a_work_list(self, node: ast.Call) -> bool:
+        """True when `shuffle` only changes the ORDER in which existing work is processed.
+
+        `random.shuffle(indexes_needing_update)` before `for index in indexes_needing_update:` is
+        Sentry spreading backfill tasks so workers do not all grab the same row. Nothing is minted: the
+        collection already exists and the draw's only observable effect is which element the loop reads
+        first. Three shape facts, all fail-closed -- leaf `shuffle` with exactly one positional argument
+        that is a plain name; that same name is the iterable of a `for` in the enclosing function
+        (directly or through `enumerate`/`reversed`/`list`/`sorted`); and the name is never `return`ed,
+        because a permutation handed back to a caller can be a shuffle of something security-relevant.
+        """
+        leaf = (node.func.attr if isinstance(node.func, ast.Attribute)
+                else (node.func.id if isinstance(node.func, ast.Name) else ''))
+        if leaf != "shuffle" or len(node.args) != 1 or node.keywords:
+            return False
+        collection = node.args[0]
+        if not isinstance(collection, ast.Name):
+            return False
+        holder = getattr(node, "parent", None)
+        while holder is not None and not isinstance(
+                holder, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
+            holder = getattr(holder, "parent", None)
+        if holder is None or isinstance(holder, ast.Module):
+            return False
+        ordered_as_a_loop = False
+        for statement in ast.walk(holder):
+            if isinstance(statement, ast.Return):
+                return False
+            if not isinstance(statement, (ast.For, ast.AsyncFor)):
+                continue
+            iterable = statement.iter
+            if (isinstance(iterable, ast.Call)
+                    and (dotted_name(iterable.func) or "")
+                    in ("enumerate", "reversed", "list", "sorted", "iter")):
+                iterable = iterable.args[0] if iterable.args else None
+            if isinstance(iterable, ast.Name) and iterable.id == collection.id:
+                ordered_as_a_loop = True
+        return ordered_as_a_loop
+
+    def _cwe338_choices_call_is_a_django_choice_set(self, node: ast.Call) -> bool:
+        """True when `.choices()` enumerates a Choices class instead of drawing from a population.
+
+        Three facts, and the third is the one that makes this cheap to trust: `random.choices()` cannot
+        be called with nothing -- it needs the population it samples from -- so a zero-argument
+        `Something.choices()` is Django's `UpdateChannel.choices()`, `Priority.choices()`, building the
+        tuple a `CharField(choices=...)` expects. The receiver must therefore be a class, and classes
+        are spelled in CamelCase: a lowercase receiver (`random`, `rng`, `self`, a module) answers False,
+        and so does any receiver path that names a random source, which is what keeps `Random` and
+        `SystemRandom` out of this branch despite their capital letter.
+        """
+        if node.args or node.keywords or not isinstance(node.func, ast.Attribute):
+            return False
+        if node.func.attr != "choices":
+            return False
+        receiver_path = dotted_name(node.func.value) or ""
+        if not receiver_path:
+            return False
+        segments = [s for s in _CWE338_NAME_SPLIT.split(receiver_path) if s]
+        if not segments:
+            return False
+        if any(s in CWE338_RANDOM_SOURCE_SEGMENTS for s in segments):
+            return False
+        lowered = {s.lower() for s in segments}
+        if lowered & {"random", "secrets", "rng", "self", "cls", "choice", "choices"}:
+            return False
+        return segments[-1][:1].isupper()
 
     def _cwe338_display_only_draw(self, node: ast.Call, scope_id: str = "") -> bool:
         """True only for a PRNG draw that is provably not a secret -- by name, by consumer, or by path.
@@ -9280,6 +9916,12 @@ class TaintTracker:
         names: List[str] = [name for name in self._cwe338_assignment_targets(node) if isinstance(name, str)]
         for argument in list(node.args) + [kw.value for kw in node.keywords]:
             names.extend(self._cwe338_expression_names(argument))
+        # A keyword LABEL is part of the destination name exactly as an assignment target is:
+        # `start_transaction(..., sampled=random.random())` and `random_int(a=.., b=.., sampled=..)`
+        # carry their whole purpose in the label. Labels are added to the same list the credential veto
+        # reads, so `seed=` and `token=` veto here too -- `seed` is a locked-loud word above, and a label
+        # can only ever make the answer better evidenced, never thinner.
+        names.extend(kw.arg for kw in node.keywords if kw.arg)
         feeds_a_pause = False
         feeds_a_string_join = False
         child = node
@@ -9287,7 +9929,7 @@ class TaintTracker:
         for _ in range(6):
             if current is None:
                 break
-            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 names.append(current.name)
             elif isinstance(current, ast.Compare):
                 # The value a draw is compared against says what the draw is for. Sentry and the
@@ -9298,6 +9940,16 @@ class TaintTracker:
                 for comparator in [current.left] + list(current.comparators):
                     if comparator is not child:
                         names.extend(self._cwe338_expression_names(comparator))
+            elif isinstance(current, ast.BinOp):
+                # `next_run = time.time() + self.interval * random.random()` puts the purpose of the
+                # draw in its MULTIPLIER, not in its own (empty) argument list: `random.random()` here
+                # scales an interval. The sibling operand is read for the same reason the comparison
+                # operand above is, and with the same one-way effect -- the names it can add include
+                # `interval` and `cooldown`, and they also include `secret` and `token`, so a
+                # credential-named sibling vetoes the draw instead of exempting it.
+                for operand in (current.left, current.right):
+                    if operand is not child:
+                        names.extend(self._cwe338_expression_names(operand))
             elif isinstance(current, ast.Call) and current is not node:
                 callee = current.func
                 if isinstance(callee, ast.Attribute):
@@ -9306,17 +9958,58 @@ class TaintTracker:
                     elif callee.attr in CWE338_CODE_JOIN_SINK_LEAVES:
                         feeds_a_string_join = True
                     names.append(callee.attr)
+                    # The keyword a draw is handed UNDER is part of its destination name, exactly as an
+                    # assignment target is: `start_transaction(..., sampled=random.random())` says
+                    # sampling in three letters that appear nowhere else in the statement. Adding the
+                    # label can also add a security word (`otp=`, `key=`), so the credential veto above
+                    # reads it too -- this axis only ever makes the answer better evidenced.
+                    names.extend(kw.arg for kw in current.keywords if kw.arg)
                 elif isinstance(callee, ast.Name):
                     names.append(callee.id)
             child, current = current, getattr(current, 'parent', None)
-        if any(self._cwe338_name_is_security_named(name) for name in names):
+        if self._cwe338_draw_ships_a_duration(node):
+            # Read before the credential veto on purpose: the proof is about the value (a duration), and
+            # a module or function named after a security feature would otherwise veto a draw that can
+            # only ever move a deadline. The arm carries its own destination veto, so `salt_window =
+            # timedelta(seconds=random.uniform(0, 60))` is still reported.
+            return True
+        if any(self._cwe338_name_is_security_named(name)
+               and not self._cwe338_auth_word_qualifies_a_setting(name) for name in names):
             return False
-        if feeds_a_string_join:
+        if self._cwe338_choices_call_is_a_django_choice_set(node):
+            return True
+        if feeds_a_string_join and not (
+                self._cwe338_join_ships_literal_sample_data(node)
+                or self._cwe338_draw_labels_a_literal_record(node)
+                or self._cwe338_join_formats_a_separated_identifier(node)):
             return False
         for name in names:
             segments = [s.lower() for s in _CWE338_NAME_SPLIT.split(name) if s]
             if any(segment in CWE338_DISPLAY_VALUE_MARKERS for segment in segments):
                 return True
+        # Two more value-domain proofs, reached only after the credential veto has refused every name
+        # and the marker table has found nothing: a bounded integer compared against one literal is a
+        # 1-in-N sampling decision, and a draw whose whole population is written out in the source can
+        # mint nothing. Both read the `names` list above, so a security word anywhere in the statement
+        # has already returned False before either of them is consulted.
+        if self._cwe338_bounded_draw_is_a_sampling_gate(node):
+            return True
+        if self._cwe338_draw_selects_a_literal_record(node):
+            return True
+        # Three more shape proofs, all of them about where the value goes rather than what it is called:
+        # a published vocabulary the draw reads instead of minting, a distribution the caller clamps to a
+        # declared range, and a permutation of work that already exists. A draw used as a `range()` bound
+        # is deliberately NOT one of them: the loop-bound axis was withdrawn before this task and stays
+        # withdrawn, because `cwe338_prng_context_probe.py` pins `for i in range(random.randint(1, 9))`
+        # and `range(random.choice(k))` loud -- a selection is not a count. Each one refuses on any name it cannot resolve, so an unexplained draw stays reported.
+        if self._cwe338_population_is_a_written_out_vocabulary(node):
+            return True
+        if self._cwe338_shuffle_reorders_a_work_list(node):
+            return True
+        if self._cwe338_draw_is_clamped_by_a_declared_bound(node):
+            return True
+        if self._cwe338_draw_ships_a_registered_template_tag(node):
+            return True
         # Two value-domain proofs, both reached only after the credential and `.join` vetoes above have
         # already refused the draw, so a security-named destination still wins over either of them.
         # `random.uniform(0, 1)` can only produce a float in the closed unit interval: that is a
@@ -11518,26 +12211,38 @@ class TaintTracker:
         return False
 
     def _cwe328_helper_name_is_a_content_digest(self, node: ast.AST) -> bool:
-        """True when the function computing the digest is itself named `<thing>_hash`.
+        """True when the function computing the digest is itself named for the digest it returns.
 
-        `problem_hash(event)` and `event_id_hash(payload)` carry their qualifier in the helper's own
-        name, one level above the `return` that `_is_exempt_cwe327` stops at, and neither half is a
-        substring keyword. The name is read as SEGMENTS and must be a digest suffix (`hash`) or a
-        routing `key` qualified by a content word -- the same test that refuses the bytes, so
-        `password_hash`, `token_hash` and `session_key` fail it and stay reported.
+        `problem_hash(event)` and `event_id_hash(payload)` carry their qualifier one level above the
+        `return` that `_is_exempt_cwe327` stops at, and neither half is a substring keyword. The name is
+        read as SEGMENTS and must be a routing `key` or a digest `hash` qualified by a content word --
+        the same test that refuses the bytes. A bare digest NOUN is deliberately NOT enough:
+        `compute_digest(data)` names only what it returns, says nothing about what goes in, and is how a
+        real `store_password` helper is spelled, so the noun alone would silence a true positive.
         """
         curr = getattr(node, "parent", None)
         while curr is not None:
-            if isinstance(curr, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(curr, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 segments = [s.lower() for s in _CWE338_NAME_SPLIT.split(curr.name) if s]
+                if not self._cwe328_digest_name_is_not_a_credential(segments):
+                    return False
                 return (bool(set(segments) & (CWE328_DIGEST_SUFFIX_WORDS | CWE328_ROUTING_KEY_WORDS))
                         and any(s in CWE328_DIGEST_QUALIFIERS or s in CWE328_ROUTING_KEY_QUALIFIERS
-                                for s in segments)
-                        and not self._cwe328_input_is_credential_named(curr.name))
-            if isinstance(curr, (ast.ClassDef, ast.Module)):
-                return False
+                                for s in segments))
             curr = getattr(curr, "parent", None)
         return False
+
+    def _cwe328_digest_name_is_not_a_credential(self, segments) -> bool:
+        """No hard security word in a digest helper's own name, ignoring the noun that names the digest.
+
+        `hash`, `key` and the algorithm spellings are what these helpers are CALLED, so they cannot also
+        be the word that vetoes them; everything else in `CWE338_SECURITY_NAME_WORDS` still wins, which
+        is what keeps `password_hash`, `token_key`, `session_id_hash` and `salt_digest` reported.
+        """
+        return not any(s in CWE338_SECURITY_NAME_WORDS
+                       and s not in CWE328_DIGEST_NOUN_WORDS
+                       and s not in CWE328_ROUTING_KEY_WORDS
+                       for s in segments)
 
     def _cwe328_hash_input_is_non_credential(self, node: ast.Call, scope_id: str,
                                              lineno: int) -> bool:
@@ -11559,6 +12264,12 @@ class TaintTracker:
             # name and no digest to explain: refuse, the way every provenance helper here does, so no
             # caller shape can abort the scan.
             return False
+        if self._cwe328_hash_input_is_written_out_identifiers(node):
+            # Read FIRST, with its own veto inside, because the shared credential test below cannot see
+            # the difference between `md5(f"{project_id}:{password}")` and `sha1(joined_hashes)`: the
+            # second one's only security word is the noun that names the digest, and a digest of a
+            # digest discloses what a digest of the record already disclosed.
+            return True
         for argument in ([a for a in node.args]
                          + [kw.value for kw in node.keywords if kw.arg != "usedforsecurity"]):
             names.extend(self._cwe338_expression_names(argument))
@@ -11570,8 +12281,142 @@ class TaintTracker:
             return True
         if self._cwe328_helper_name_is_a_content_digest(node):
             return True
+        if self._cwe328_hasher_construction_has_no_input(node, scope_id, lineno):
+            return True
         return any(word in name.lower()
                    for name in names for word in CWE328_CONTENT_HASH_KEYWORDS)
+
+    @staticmethod
+    def _cwe328_literal_is_a_separator(text) -> bool:
+        """True for the short, non-alphanumeric chunks an address is stitched together from."""
+        if not isinstance(text, str):
+            return False
+        return not text or (len(text) <= CWE328_LITERAL_SEPARATOR_MAX_LENGTH
+                            and not any(character.isalnum() for character in text))
+
+    def _cwe328_hash_input_is_written_out_identifiers(self, node: ast.Call) -> bool:
+        """True when the bytes being digested ARE a record address, spelled out in the source.
+
+        Sentry addresses rows by hashing a composite of identifiers it already holds:
+        `md5(f"{project_id}:{event_id}")` in the eventstore, `sha1(f"{shard}{object}")` in the outbox
+        proxy, `sha1("-".join(span_hashes))` in the performance detector, `md5("/".join([slug, name,
+        str(user_id)]))` in the hybrid-cloud org builder, `sha1(prev_transaction_id)` in the deletion
+        watermark. None of these can be a credential derivation: the input is not an opaque parameter
+        or a secret, it is a written-out tuple of fields whose names the caller chose, and the digest
+        only exists to make that tuple a fixed-width key.
+
+        Three shapes answer, and everything else refuses:
+
+          * an f-string with at least two interpolated parts whose literal chunks are separators -- a
+            chunk carrying letters is prose, and prose can hold a secret, so it refuses;
+          * a `sep.join([...])` of at least two inspectable elements with a separator literal;
+          * a single name whose LAST segment says it is an identifier (`_id`, `identifier`, `slug`,
+            `name`) or is itself the digest noun (`hash`, `hashes`, `digest`) -- which is why the
+            `compute_digest(data)` true positive is NOT covered here: `data` names nothing.
+
+        Reached after the credential veto over the same argument names, so `md5(f"{token}:{user_id}")`
+        and `sha1(password_hash)` were refused before this function was ever asked.
+        """
+        if not isinstance(node, ast.Call) or len(node.args) != 1 or node.keywords:
+            return False
+        core = node.args[0]
+        for _ in range(3):
+            if isinstance(core, ast.Call) and isinstance(core.func, ast.Attribute) \
+                    and core.func.attr == "encode":
+                core = core.func.value
+                continue
+            if isinstance(core, ast.Call) and len(core.args) == 1 and not core.keywords \
+                    and not isinstance(core.func, ast.Attribute):
+                if (dotted_name(core.func) or "") in ("str", "force_str", "force_text", "text_type"):
+                    core = core.args[0]
+                    continue
+            break
+        names: List[str] = []
+        if isinstance(core, ast.JoinedStr):
+            parts = 0
+            for value in core.values:
+                if isinstance(value, ast.FormattedValue):
+                    parts += 1
+                    names.extend(name for name in self._cwe338_expression_names(value.value)
+                                 if isinstance(name, str))
+                    for sub in ast.walk(value.value):
+                        if isinstance(sub, ast.Constant) and isinstance(sub.value, str) \
+                                and not self._cwe328_literal_is_a_separator(sub.value):
+                            return False
+                elif isinstance(value, ast.Constant):
+                    if not self._cwe328_literal_is_a_separator(value.value):
+                        return False
+                else:
+                    return False
+            if parts < 2:
+                return False
+        elif (isinstance(core, ast.Call) and isinstance(core.func, ast.Attribute)
+                and core.func.attr == "join" and len(core.args) == 1):
+            separator = core.func.value
+            if not (isinstance(separator, ast.Constant)
+                    and self._cwe328_literal_is_a_separator(separator.value)):
+                return False
+            container = core.args[0]
+            if not isinstance(container, (ast.List, ast.Tuple)) or len(container.elts) < 2:
+                return False
+            for element in container.elts:
+                if isinstance(element, ast.Constant):
+                    if not self._cwe328_literal_is_a_separator(element.value):
+                        return False
+                    continue
+                if not isinstance(element, (ast.Name, ast.Attribute, ast.Subscript, ast.Call)):
+                    return False
+                names.extend(name for name in self._cwe338_expression_names(element)
+                             if isinstance(name, str))
+        else:
+            if not isinstance(core, (ast.Name, ast.Attribute)):
+                return False
+            names.extend(name for name in self._cwe338_expression_names(core)
+                         if isinstance(name, str))
+            if not names:
+                return False
+            for name in names:
+                segments = [s.lower() for s in _CWE338_NAME_SPLIT.split(name) if s]
+                if not segments or segments[-1] not in (
+                        CWE328_IDENTIFYING_SUFFIX_WORDS | CWE328_DIGEST_NOUN_WORDS):
+                    return False
+        return not any(self._cwe328_input_is_credential_named(name)
+                       and not self._cwe328_name_only_says_it_is_a_digest(name)
+                       for name in names)
+
+    @staticmethod
+    def _cwe328_name_only_says_it_is_a_digest(name: str) -> bool:
+        """True when every security word in a name is the noun that names the digest itself.
+
+        `joined_hashes`, `prefix_hash`, `span_digest` say what KIND of value this is and nothing more;
+        `password_hash`, `token_hash` and `session_digest` each carry a second word that is the actual
+        credential, and stay vetoed. Shared by the composite proof above, which runs before the general
+        credential test precisely because that test cannot make this distinction.
+        """
+        lowered = [s.lower() for s in _CWE338_NAME_SPLIT.split(name) if s]
+        hits = {s for s in lowered if s in CWE338_SECURITY_NAME_WORDS}
+        return bool(hits) and hits <= CWE328_DIGEST_NOUN_WORDS
+
+    def _cwe328_hasher_construction_has_no_input(self, node: ast.Call, scope_id: str,
+                                                 lineno: int) -> bool:
+        """True for `md5()` / `sha1()` with nothing inside it, where the digest is named elsewhere.
+
+        Sentry hands a hasher object to whoever will feed it: `hasher = md5()` in the collectstatic
+        bundle builder, `self.result = md5()` in the span grouper, `h = hashlib.sha1()` in the debug-file
+        indexer, `sha1().hexdigest()` for an empty attachment. At that line no bytes exist yet, so the
+        only thing the call can be accused of is picking an algorithm -- and the algorithm is picked for
+        the *destination*, which is named by the assignment target or the enclosing helper. This reuses
+        the existing name tests on that destination: `password_hasher = md5()` and
+        `session_id = md5()` answer False and stay reported, and a target it cannot name answers False
+        too, because an unnamed destination is not a proven non-credential one.
+        """
+        if node.args or node.keywords:
+            return False
+        target_names: List[str] = [name for name in self._cwe338_assignment_targets(node)
+                                   if isinstance(name, str)]
+        if not target_names:
+            return False
+        return all(not self._cwe328_input_is_credential_named(name) for name in target_names)
 
     def _is_definitely_safe_local_read(self, receiver: ast.AST, scope_id: str = "", lineno: int = 0) -> bool:
         if isinstance(receiver, ast.Call):
@@ -14124,12 +14969,49 @@ class TaintTracker:
                     return True
         return False
 
+    def _c862_base_name_is_a_scoped_endpoint(self, cls: ast.ClassDef) -> bool:
+        """The name-shape half of the same proof, for the bases no list can finish naming.
+
+        Sentry spells its authorising bases after the domain they resolve:
+        `OrganizationReleasesBaseEndpoint`, `OrganizationReleasesFileEndpoint`, `RuleEndpoint`,
+        `ExternalIssueBaseEndpoint`, `SentryAppInstallationBaseEndpoint`, `RelayEndpoint`,
+        `ControlSiloEndpoint`, `SiloLimitedBaseEndpoint`, `OrganizationEventsEndpointBase`. Each of
+        them runs the permission pass in its own `dispatch`, exactly as the named bases above do, and
+        the closed list could only ever grow one spelling at a time.
+
+        The shape has two hard limits. The bare word `Endpoint` is refused: it names no domain, and
+        TASK 13 pinned a class inheriting it LOUD (`generic_endpoint.py`), because that is where a
+        genuinely unguarded view lives. And the rule is on the BASE's own last segment, not on the
+        subclass's name, so `class PublicOrganizationView(APIView)` buys nothing here. The same
+        `permission_classes` opt-out refusal below still outranks it.
+        """
+        for base in cls.bases:
+            leaf = (dotted_name(base) or "").rsplit(".", 1)[-1]
+            if not leaf or leaf == "Endpoint":
+                continue
+            if leaf.endswith("Endpoint") or leaf.endswith("EndpointBase"):
+                return True
+        return False
+
     def _c862_class_inherits_domain_scoped_endpoint(self, cls: ast.ClassDef) -> bool:
         """The class declares a base that resolves a domain object and authorises it itself."""
         for base in cls.bases:
             if (dotted_name(base) or "").rsplit(".", 1)[-1] in CWE862_DOMAIN_SCOPED_ENDPOINT_BASES:
                 return True
-        return False
+        return self._c862_base_name_is_a_scoped_endpoint(cls)
+
+    def _c862_class_is_an_authorisation_component(self, cls: ast.ClassDef) -> bool:
+        """The class IS the check: an authentication/permission/backend implementation.
+
+        `ClientIdSecretAuthentication(QuietBasicAuthentication).authenticate(self, request)` looks up
+        the relay, app or user the caller claims to be -- that lookup is how the caller gets
+        authorised, so there is no missing check to report, and the view that calls `authenticate`
+        owns the decision about the resource. The proof is the suffix on the class or on one of its
+        bases; `authentication_classes = (...)` on a view is the opposite case and is not matched here.
+        """
+        names = [cls.name]
+        names.extend((dotted_name(base) or "").rsplit(".", 1)[-1] for base in cls.bases)
+        return any(name.endswith(CWE862_AUTHZ_COMPONENT_SUFFIXES) for name in names if name)
 
     def _c862_class_disables_permissions(self, cls: ast.ClassDef) -> bool:
         """The subclass's own `permission_classes` overrides the base with nothing to enforce.
@@ -14150,7 +15032,46 @@ class TaintTracker:
                 return True
         return False
 
-    def _c862_scope_is_http_entrypoint(self, call: ast.Call) -> bool:
+    def _c862_definition_reaches_http(self, func: ast.FunctionDef) -> bool:
+        """Whether a definition is where the framework puts a request into Python."""
+        for decorator in func.decorator_list:
+            target = decorator.func if isinstance(decorator, ast.Call) else decorator
+            if (dotted_name(target) or "").rsplit(".", 1)[-1] in CWE862_HTTP_ROUTE_DECORATORS:
+                return True
+        if func.name in CWE862_HTTP_DISPATCH_METHOD_NAMES and self._signature_takes_http_request(func):
+            return True
+        enclosing = getattr(func, "parent", None)
+        while enclosing is not None and not isinstance(enclosing, ast.ClassDef):
+            enclosing = getattr(enclosing, "parent", None)
+        if enclosing is None:
+            return False
+        if enclosing.name.endswith(tuple(CWE862_HTTP_VIEW_SUFFIXES)):
+            return True
+        return any((dotted_name(base) or "").rsplit(".", 1)[-1].endswith(
+            tuple(CWE862_HTTP_VIEW_SUFFIXES)) for base in enclosing.bases)
+
+    def _c862_helper_is_reached_from_a_surface(self, func: ast.FunctionDef, scope_id: str) -> bool:
+        """True when some caller in the scanned tree is itself somewhere a request enters.
+
+        A function that takes `request` and is called by a view has no authorisation decision of its own:
+        the view that handed the request down is charged, and charging the callee too counts one missing
+        check twice. The proof is a recorded call site -- `call_sites_by_target`, which the engine builds
+        over the whole scan, so a caller in another module counts -- whose own definition reaches HTTP by
+        the same markers this predicate uses. Having NO recorded caller is not a proof: `delete_group(
+        request, group_id)` in a file nothing calls has no other place the finding could live, so it stays
+        charged. That is the fail-closed direction, and it is the same answer `cwe22` reachability gives
+        for a caller that lives in code this scan never sees.
+        """
+        own_scope = f"{scope_module(scope_id)}:function:{func.name}"
+        for _call, caller_scope, _lineno in self.call_sites_by_target.get(own_scope) or []:
+            caller = self.functions.get(caller_scope)
+            if caller is None or caller is func:
+                continue
+            if self._c862_definition_reaches_http(caller):
+                return True
+        return False
+
+    def _c862_scope_is_http_entrypoint(self, call: ast.Call, scope_id: str = "") -> bool:
         """Whether an object fetch sits where a client request can reach it.
 
         The charge `MISSING_AUTHORIZATION` makes is that a row is read by an id nobody proved belongs to
@@ -14176,7 +15097,21 @@ class TaintTracker:
             current = getattr(current, "parent", None)
         if func is None:
             return True
-        if self._signature_takes_http_request(func):
+        # A `request` parameter proves dispatch only where the framework actually calls this
+        # function: a handler named for the verb it serves, a route decorator, a view-shaped class, or
+        # a class attribute the dispatcher reads. A helper that merely RECEIVES the request from a view
+        # -- `relay_from_id(request, relay_id)`, `update_groups(request, ...)`,
+        # `promote_request_rpc_user(request)` -- has no authorisation decision to miss, because the view
+        # that called it is where that decision is made and is itself reported. Charging the helper
+        # counts one missing check twice, so the parameter alone no longer answers "entrypoint" and what
+        # answers instead is a recorded call site whose own definition reaches HTTP.
+        takes_request = self._signature_takes_http_request(func)
+        if takes_request and func.name in CWE862_HTTP_DISPATCH_METHOD_NAMES:
+            return True
+        if takes_request and not self._c862_helper_is_reached_from_a_surface(func, scope_id):
+            # Nothing in the scanned tree hands a request to this function, so there is no caller that
+            # the finding could live on instead. The parameter is the whole proof again, exactly as it
+            # was before the verb table existed.
             return True
         for decorator in func.decorator_list:
             target = decorator.func if isinstance(decorator, ast.Call) else decorator
@@ -14222,6 +15157,9 @@ class TaintTracker:
         # is not limited by the handler signature below.
         for cls in classes:
             if self._class_declares_permission_guard(cls, mod_name):
+                return True
+            # The authorisation mechanism itself, not a view that forgot to use it.
+            if self._c862_class_is_an_authorisation_component(cls):
                 return True
             # The authorisation axis, not the reachability axis: a domain-scoped endpoint IS reachable
             # over HTTP, it is the base class that proves the caller was authorised. So the proof lives
@@ -20323,7 +21261,14 @@ class TaintTracker:
             # test belongs here and not only on a direct reply: `self.respond({"detail": str(exc)})`
             # ships the same fixed error labels `Response({"detail": str(exc)})` does. A traceback
             # call, a raw frame, or one key outside the vocabulary fails the test and keeps the row.
-            if isinstance(resolved, ast.Dict) and self._c209_payload_is_structured_envelope(resolved):
+            if self._c209_payload_is_structured_envelope(resolved) or (
+                    resolved is not argument
+                    and self._c209_payload_is_structured_envelope(argument)):
+                # The body this dispatcher hands to `Response(...)` is the caller's payload, so the
+                # envelope test belongs here and not only on a direct reply: `self.respond({"detail":
+                # str(exc)})`, `self.respond(json.dumps({"error": ...}))` and `self.respond(exc.detail)`
+                # ship the same fixed error labels their `Response(...)` spellings do. A traceback call,
+                # a raw frame, or one key outside the vocabulary fails the test and keeps the row.
                 continue
             for part in ([argument] if resolved is argument else [argument, resolved]):
                 if self._c209_carries_detail(part, names):
@@ -20372,9 +21317,44 @@ class TaintTracker:
                 or any(argument.arg == "request" or argument.arg in WSGI_HANDLER_ARGUMENTS
                        for argument in func.args.args))
 
+    def _c209_value_is_not_an_http_body(self, value) -> bool:
+        """True when the returned shape cannot be an HTTP error body in any framework here.
+
+        Two shapes, both read off the AST alone. A tuple is only a reply in the WSGI sense when it is
+        `(int status, headers, iterable body)`; `return (False, function, exc)` -- a Sentry pipeline's
+        `(completed, view, error)` triple -- matches nothing, so charging it invents an exposure that
+        no client can read. And `__str__` / `__repr__` / `__unicode__` build a *representation* of the
+        object that is returning it, which is the object's own text, not a response: `f'Content Error:
+        {e}'` inside `_ConfigBase.__str__` is charged only if some caller later ships that text, and
+        that caller is where the finding belongs.
+        """
+        if isinstance(value, ast.Tuple):
+            # A tuple that CONTAINS a reply factory is the framework's own shape --
+            # `return jsonify({"traceback": ...}), 500` is Flask's `(response, status)`, and that is a
+            # locked corpus row. A WSGI app returns `(status, headers, body)`, so a 3-tuple opening
+            # with an int or str literal is a reply too (and `False` is a bool, not an int, here).
+            # Anything else -- Sentry's `(completed, function, error)` triple -- names no body at all.
+            if any(isinstance(elt, ast.Call) for elt in value.elts):
+                return False
+            head = value.elts[0] if value.elts else None
+            if (len(value.elts) == 3 and isinstance(head, ast.Constant)
+                    and isinstance(head.value, (int, str)) and not isinstance(head.value, bool)):
+                return False
+            return True
+        current = getattr(value, "parent", None)
+        while current is not None:
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return current.name in CWE209_REPR_METHOD_NAMES
+            if isinstance(current, ast.ClassDef):
+                return False
+            current = getattr(current, "parent", None)
+        return False
+
     def _c209_exposed_in_reply(self, value, names, table, use_lineno):
         """True when *value* (or the call it was assigned from) ships exception detail to the client."""
         if value is None:
+            return False
+        if self._c209_value_is_not_an_http_body(value):
             return False
         resolved = self._c22_path_expression(value, table, use_lineno)
         if (self._c209_structured_error_envelope_only(value, table, use_lineno)
@@ -20409,6 +21389,7 @@ class TaintTracker:
         if not replies:
             return False
         for reply in replies:
+            payloads = []
             payload = next((arg for arg in reply.args if isinstance(arg, ast.Dict)), None)
             if payload is None:
                 payload = next((keyword.value for keyword in reply.keywords
@@ -20416,7 +21397,21 @@ class TaintTracker:
                                 and isinstance(keyword.value, ast.Dict)), None)
             if payload is None:
                 payload = self._c209_envelope_payload_via_assignment(reply, table, use_lineno)
-            if not self._c209_payload_is_structured_envelope(payload):
+            if payload is not None:
+                payloads.append(payload)
+            # Nothing named a dict body, so read the reply's own argument: an error-contract attribute
+            # (`Response(exc.field_errors)`) or a serialised envelope
+            # (`HttpResponse(json.dumps({"error": ...}))`) carries its proof in its shape, and
+            # `_c209_payload_is_structured_envelope` still refuses every other expression. The argument
+            # is tried alongside, never instead, because a dispatcher that forwards its own parameter
+            # resolves to a bare Name here -- and a Name is exactly what the call site must replace.
+            for argument in reply.args:
+                if isinstance(argument, (ast.Attribute, ast.Call)):
+                    payloads.append(argument)
+            if not payloads:
+                return False
+            if not any(self._c209_payload_is_structured_envelope(candidate)
+                       for candidate in payloads):
                 return False
         return True
 
@@ -20428,7 +21423,30 @@ class TaintTracker:
         one vocabulary and one veto. An empty dict, a non-dict, a `traceback`/`stack`/`env` key, a
         `traceback.format_*` call or a raw frame all answer False: an uninspected body is not a proven
         envelope.
+
+        Two non-dict bodies answer True, because the shape itself says the value is an error field and
+        not a frame: an attribute of the exception that belongs to its error contract (`.detail`,
+        `.body`, `.field_errors`, `.error_code`, `.messages`, `.validations` -- DRF and Sentry render
+        client-facing errors through exactly these and never through a traceback), and a
+        `json.dumps(<that dict>)`, which serialises a body instead of stringifying an exception. Every
+        other expression -- `str(exc)`, a bare name, `.args`, f-strings -- still answers False, so the
+        textbook `Response(str(exc), status=400)` echo stays charged.
         """
+        if isinstance(payload, ast.Call):
+            callee = dotted_name(payload.func) or ""
+            if (callee not in CWE209_PAYLOAD_SERIALIZERS
+                    and callee.rsplit(".", 1)[-1] not in CWE209_PAYLOAD_SERIALIZERS):
+                return False
+            if len(payload.args) != 1:
+                return False
+            payload = payload.args[0]
+        if isinstance(payload, ast.Attribute):
+            if payload.attr not in CWE209_ERROR_CONTRACT_ATTRIBUTES:
+                return False
+            for sub in ast.walk(payload):
+                if isinstance(sub, ast.Attribute) and sub.attr in CWE209_RAW_TRACE_ATTRIBUTES:
+                    return False
+            return True
         if not isinstance(payload, ast.Dict) or not payload.keys:
             return False
         for key in payload.keys:
@@ -22418,6 +23436,105 @@ class TaintTracker:
             child, current = current, getattr(current, "parent", None)
         return False
 
+    def _c704_bool_feeds_telemetry_label(self, node: ast.Call) -> bool:
+        """True when the `bool()` only labels an event, so no flag can be read back from it.
+
+        The hazard `bool()` keeps in this rule is a *stored* decision: a client sends "False", the
+        server stores `maintenance_mode = bool("False")`, and the operator's switch is stuck on. Sentry's
+        four rows are the other thing -- `metrics.incr('oauth_token.post.start',
+        tags={'client_id_exists': bool(client_id)})`, `sentry_sdk.set_tag('...stats_data',
+        bool(stats_data))`, `logger.warning(..., extra={'hasIntegration': bool(self.request.id)})`. A
+        tag and a log field travel to the metrics/telemetry pipeline, never into a branch, so the value
+        cannot flip behaviour and the finding has no consequence to describe.
+        The proof is a three-hop chain and every hop is a name the framework only uses for telemetry:
+        the `bool()` is the whole value of a dict entry; that dict is the value of a keyword called
+        `tags`/`extra`/`sample_data`, or the sole argument of a `set_tag`/`incr`/`log`-shaped call; and
+        neither side of the chain carries a word that makes it a decision, because the credential and
+        boolean-field names (`require`, `allow`, `enabled`, `is_`, `has_`) would put the value back in
+        play. An `if bool(...)` or an assignment to a flag keeps its finding.
+        """
+        holder = getattr(node, "parent", None)
+        if not (isinstance(holder, ast.Dict) and node in holder.values):
+            return False
+        index = holder.values.index(node)
+        key = holder.keys[index]
+        if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+            return False
+        label = key.value.lower()
+        if any(word in label for word in CWE704_DECISION_LABEL_WORDS):
+            return False
+        current = getattr(holder, "parent", None)
+        for _ in range(3):
+            if current is None:
+                return False
+            if isinstance(current, ast.keyword) and current.arg in CWE704_TELEMETRY_KEYWORDS:
+                return True
+            if isinstance(current, ast.Call):
+                leaf = (getattr(current.func, "attr", None)
+                        or getattr(current.func, "id", None) or "")
+                return (leaf in CWE704_TELEMETRY_SINKS and bool(current.args)
+                        and current.args[0] is holder)
+            current = getattr(current, "parent", None)
+        # The same proof one spelling out, for the call that carries its label as an argument rather
+        # than as a dict: `sentry_sdk.set_tag("performance.trendsv2.stats_data", bool(stats_data))`.
+        # Only the SECOND positional slot qualifies, so the metric name can never be mistaken for it.
+        for _ in range(3):
+            if isinstance(current, ast.Call):
+                leaf = (getattr(current.func, "attr", None)
+                        or getattr(current.func, "id", None) or "")
+                if leaf not in CWE704_TELEMETRY_SINKS:
+                    return False
+                if len(current.args) < 2 or current.args[1] is not node:
+                    return False
+                label = current.args[0]
+                if not (isinstance(label, ast.Constant) and isinstance(label.value, str)):
+                    return False
+                text = label.value.lower()
+                return not any(word in text for word in CWE704_DECISION_LABEL_WORDS)
+            current = getattr(current, "parent", None)
+        return False
+
+    def _c704_bool_operand_is_an_existence_read(self, expr) -> bool:
+        """True when `bool(x)` asks whether a record was found, not whether a string has length.
+
+        `auth = usersocialauth_service.get_one_or_none(filter={...})` then `return bool(auth)` -- both
+        plugin bases -- is an existence test on a model instance or `None`. The hazard this rule keeps
+        is the client that sends the literal `"False"` and is stored as true, and a selector that
+        returns an object cannot carry it. The proof is one hop and fully closed: EVERY assignment to
+        that name in the enclosing function must be a call to a selector from
+        `CWE704_EXISTENCE_READ_CALLEES`, which is limited to the spellings that hand back a row or a
+        queryset. `get`, `list`, `all` and `values_list` are not in that set because each of them can
+        answer with a string, and one non-call binding refuses the whole name. No binding at all (a
+        parameter) refuses too: an unresolved value is not a proven object.
+        """
+        if not isinstance(expr, ast.Name):
+            return False
+        holder = getattr(expr, "parent", None)
+        for _ in range(12):
+            if holder is None:
+                return False
+            if isinstance(holder, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                break
+            holder = getattr(holder, "parent", None)
+        else:
+            return False
+        bindings = 0
+        for statement in ast.walk(holder):
+            if isinstance(statement, (ast.Assign, ast.AugAssign)) \
+                    and any(isinstance(target, ast.Name) and target.id == expr.id
+                            for target in (statement.targets
+                                           if isinstance(statement, ast.Assign)
+                                           else [statement.target])):
+                value = statement.value
+                if not isinstance(value, ast.Call):
+                    return False
+                leaf = (getattr(value.func, "attr", None)
+                        or getattr(value.func, "id", None) or "")
+                if leaf not in CWE704_EXISTENCE_READ_CALLEES:
+                    return False
+                bindings += 1
+        return bindings > 0
+
     def _c704_bool_operand_is_nonstring(self, expr, scope_id: str, depth: int = 0) -> bool:
         """True only when `bool(expr)` cannot be the string-truthiness bug this rule reports.
 
@@ -22443,11 +23560,22 @@ class TaintTracker:
             return True
         if isinstance(expr, ast.Call):
             callee = expr.func
-            if isinstance(callee, ast.Attribute):
-                return callee.attr in CLUSTER2_BOOL_NONSTRING_CALLEES
-            if isinstance(callee, ast.Name):
-                return callee.id in CLUSTER2_BOOL_NONSTRING_CALLEES
+            leaf = (getattr(callee, "attr", None) or getattr(callee, "id", None) or "")
+            if leaf in CLUSTER2_BOOL_NONSTRING_CALLEES:
+                return True
+            # A call named for a verdict answers bool by contract, and `getattr` with a CONTAINER default
+            # answers the container: `bool(getattr(request, "COOKIES", {}))` is True or False about a dict
+            # that is either there or `{}`. A bool/None/number default is not that case -- `bool(getattr(
+            # request, "is_frontend", False))` still reads whatever attribute the client's request carries,
+            # and a literal "False" on it is the bug this rule reports -- so only a container literal
+            # exempts, and every other default stays charged like every other unread value.
+            if leaf.startswith(CLUSTER2_BOOL_PREDICATE_PREFIXES) or leaf.endswith("_exists"):
+                return True
+            if leaf == "getattr" and len(expr.args) == 3:
+                return isinstance(expr.args[2], CLUSTER2_BOOL_NONSTRING_NODES)
             return False
+        if isinstance(expr, ast.Attribute):
+            return expr.attr in CLUSTER2_BOOL_NONSTRING_ATTRIBUTES
         if isinstance(expr, ast.Name):
             records = self.assignments_by_scope.get((scope_id, expr.id)) or []
             if not records:
@@ -23182,8 +24310,10 @@ class TaintTracker:
                             # `bool` cannot produce a NaN; it keeps its finding unless the operand is
                             # provably not a string (see _c704_bool_operand_is_nonstring). float() and
                             # complex() are untouched, including over the very same operand.
-                            if node.func.id == "bool" and self._c704_bool_operand_is_nonstring(
-                                    arg, scope):
+                            if node.func.id == "bool" and (
+                                    self._c704_bool_operand_is_nonstring(arg, scope)
+                                    or self._c704_bool_feeds_telemetry_label(node)
+                                    or self._c704_bool_operand_is_an_existence_read(arg)):
                                 pass
                             else:
                                 _add(node, "NAN_UNVALIDATED_CONVERSION", "TYPE_CONFUSION", "CWE-704")
@@ -24581,7 +25711,7 @@ class TaintTracker:
                                     break
                             if (not has_owner_param and not has_owner_check
                                     and not scope_is_guarded_or_off_http
-                                    and self._c862_scope_is_http_entrypoint(node)):
+                                    and self._c862_scope_is_http_entrypoint(node, scope_id)):
                                 # One finding per view, not one per object fetch: a view that reads
                                 # three rows by client-supplied id has one authorisation gap, while
                                 # three line-level hits read as three defects. Report the finding at

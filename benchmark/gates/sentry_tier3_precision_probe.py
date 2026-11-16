@@ -808,20 +808,26 @@ MUTATIONS = {
         'losses': {('ssrf_loud.py', 'CWE-918', 13), ('ssrf_loud.py', 'CWE-918', 14)},
     },
     'choices_import_proof_disabled': {
-        'what': 'refuse BOTH choice-table proofs -- the imported chain (`ModelChoices.enum_labels.'
-                'choices` reached through `from myapp.models import ModelChoices`) and the owning '
-                'class (`manager.UpdateChannel.choices` reached through a parameter). They are two '
-                'arms of one `or`, so disabling a single arm proves nothing: the other still exempts '
-                'the row. Together they are what keeps a Django choices table off the PRNG report',
+        'what': 'refuse ALL THREE choice-table proofs -- the imported chain (`ModelChoices.'
+                'enum_labels.choices` reached through `from myapp.models import ModelChoices`), the '
+                'owning class (`manager.UpdateChannel.choices` reached through a parameter) and the '
+                'call-shape law, which reads a `X.choices()` whose receiver resolves to a class '
+                'carrying choice pairs. Any one of the three exempts the row, so disabling one or two '
+                'proves nothing; the three together are what keeps a Django choices table off the '
+                'PRNG report',
         'files': ('model_choices.py', 'prng_choices.py'),
         'apply': lambda: (setattr(TT, '_cwe338_choices_chain_is_an_imported_symbol',
-                                  lambda self, receiver, canon, mod: False),
+                                  lambda self, *a, **k: False),
                           setattr(TT, '_cwe338_choices_chain_denotes_a_choice_set',
-                                  lambda self, receiver: False)),
+                                  lambda self, *a, **k: False),
+                          setattr(TT, '_cwe338_choices_call_is_a_django_choice_set',
+                                  lambda self, *a, **k: False)),
         'restore': lambda: (setattr(TT, '_cwe338_choices_chain_is_an_imported_symbol',
                                     _ORIG['338']),
                             setattr(TT, '_cwe338_choices_chain_denotes_a_choice_set',
-                                    _ORIG['338_class'])),
+                                    _ORIG['338_class']),
+                            setattr(TT, '_cwe338_choices_call_is_a_django_choice_set',
+                                    _ORIG['338_shape'])),
         'gains': {('model_choices.py', 'CWE-338', 7)},
         'losses': set(),
     },
@@ -862,9 +868,10 @@ MUTATIONS = {
 _ORIG = {
     '918': TT._cwe918_request_is_a_query_builder,
     '338': TT._cwe338_choices_chain_is_an_imported_symbol,
-    # `model_choices.py` is exempted by either arm of the choice-table `or`, so the falsifier that
-    # owns it has to disable both -- which means both have to be restorable.
+    # `model_choices.py` is exempted by any arm of the choice-table `or`, so the falsifier that owns
+    # it has to disable all three -- which means all three have to be restorable.
     '338_class': TT._cwe338_choices_chain_denotes_a_choice_set,
+    '338_shape': TT._cwe338_choices_call_is_a_django_choice_set,
     '328_veto': TT._cwe328_input_is_credential_named,
     '328_qualifiers': ast_scanner.CWE328_ROUTING_KEY_QUALIFIERS,
     # `grouping_key` is demoted by either qualifier set -- `grouping` is a routing word AND a digest
@@ -992,6 +999,7 @@ def main() -> int:
     if (TT._cwe918_request_is_a_query_builder is _ORIG['918']
             and TT._cwe338_choices_chain_is_an_imported_symbol is _ORIG['338']
             and TT._cwe338_choices_chain_denotes_a_choice_set is _ORIG['338_class']
+            and TT._cwe338_choices_call_is_a_django_choice_set is _ORIG['338_shape']
             and TT._cwe328_input_is_credential_named is _ORIG['328_veto']
             and cli.NON_PRODUCTION_DIRS is _ORIG['debug_dirs']
             and ast_scanner.CWE328_ROUTING_KEY_QUALIFIERS is _ORIG['328_qualifiers']

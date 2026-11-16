@@ -690,6 +690,7 @@ _ORIG = {
     '209_hop': TT._c209_envelope_payload_via_assignment,
     '328_vocabulary': ast_scanner.CWE328_CONTENT_HASH_KEYWORDS,
     '328_qualifiers': ast_scanner.CWE328_DIGEST_QUALIFIERS,
+    '328_written': TT._cwe328_hash_input_is_written_out_identifiers,
     '704_checks': ast_scanner.CLUSTER2_NAN_CHECKS,
     '704_errors': ast_scanner.CLUSTER2_NAN_CONVERSION_ERRORS,
     '704_names': TT._c704_guarded_names,
@@ -780,11 +781,19 @@ MUTATIONS = {
         'losses': set(),
     },
     '328_digest_qualifiers_emptied': {
-        'what': 'empty the qualifier set that lets a `..._hash`/`..._key` name read as a bucket, so '
-                '`chunk_cache_key(content_hash)` charges again as CWE-328',
+        'what': 'take away BOTH paths that read `content_hash` as a bucket: the qualifier set that '
+                'lets a `..._hash`/`..._key` name demote, and the proof that the bytes being digested '
+                'are themselves a written-out identifier. Either one exempts the line on its own, so '
+                'removing one proves nothing; together they are what keeps '
+                '`chunk_cache_key(content_hash)` off the CWE-328 report',
         'files': ('content_digest.py', 'credential_digest.py'),
-        'apply': lambda: setattr(ast_scanner, 'CWE328_DIGEST_QUALIFIERS', frozenset()),
-        'restore': lambda: setattr(ast_scanner, 'CWE328_DIGEST_QUALIFIERS', _ORIG['328_qualifiers']),
+        'apply': lambda: (setattr(ast_scanner, 'CWE328_DIGEST_QUALIFIERS', frozenset()),
+                          setattr(TT, '_cwe328_hash_input_is_written_out_identifiers',
+                                  lambda self, node: False)),
+        'restore': lambda: (setattr(ast_scanner, 'CWE328_DIGEST_QUALIFIERS',
+                                    _ORIG['328_qualifiers']),
+                            setattr(TT, '_cwe328_hash_input_is_written_out_identifiers',
+                                    _ORIG['328_written'])),
         'gains': {('content_digest.py', 'CWE-328', 13)},
         'losses': set(),
     },
@@ -832,6 +841,8 @@ _RESTORED = {
         lambda: ast_scanner.CWE328_CONTENT_HASH_KEYWORDS is _ORIG['328_vocabulary'],
     'CWE328_DIGEST_QUALIFIERS':
         lambda: ast_scanner.CWE328_DIGEST_QUALIFIERS is _ORIG['328_qualifiers'],
+    'TT._cwe328_hash_input_is_written_out_identifiers':
+        lambda: TT._cwe328_hash_input_is_written_out_identifiers is _ORIG['328_written'],
     'CLUSTER2_NAN_CHECKS': lambda: ast_scanner.CLUSTER2_NAN_CHECKS is _ORIG['704_checks'],
     'CLUSTER2_NAN_CONVERSION_ERRORS':
         lambda: ast_scanner.CLUSTER2_NAN_CONVERSION_ERRORS is _ORIG['704_errors'],

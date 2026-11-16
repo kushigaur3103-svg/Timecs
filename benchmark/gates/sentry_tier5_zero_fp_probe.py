@@ -568,7 +568,9 @@ def tier3_laws():
     law('328_helper_name_needs_suffix_and_qualifier',
         'CWE328_DIGEST_SUFFIX_WORDS' in helper and 'CWE328_DIGEST_QUALIFIERS' in helper)
     law('328_helper_name_refuses_a_credential_name',
-        'not self._cwe328_input_is_credential_named' in helper)
+        '_cwe328_digest_name_is_not_a_credential' in helper
+        and 'CWE338_SECURITY_NAME_WORDS' in body(TT._cwe328_digest_name_is_not_a_credential),
+        'the digest-helper proof must still refuse a name that says credential')
     law('328_helper_name_reads_segments_not_substrings', '_CWE338_NAME_SPLIT.split' in helper)
 
     guarded = body(TT._c704_conversion_is_in_guarded_try)

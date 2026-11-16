@@ -252,7 +252,7 @@ def check_baseline_domain() -> list:
     if exempt != {'save_vocabulary', '_save_vocabulary'}:
         failures.append(f'the exemption vocabulary is {sorted(exempt)}, not the measured two-name '
                         'set; every extra name is a serializer whose blessed keys were never counted')
-    expected = {'parity_before.keys': (425, 8), 'big8_before.keys': (119, 16)}
+    expected = {'parity_before.keys': (424, 8), 'big8_before.keys': (119, 16)}
     for keys_name, (total_rows, c22_rows) in expected.items():
         with open(os.path.join(GATES_DIR, keys_name), encoding='utf-8') as handle:
             text = handle.read()

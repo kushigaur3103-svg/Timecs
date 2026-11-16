@@ -105,7 +105,7 @@ import cli  # noqa: E402
 from gate_common import META, corpus_dir, load_keys, verify_corpus  # noqa: E402
 
 LOCKED = {'parity': 8, 'big8': 16}
-TOTAL_KEYS = {'parity': 425, 'big8': 119}
+TOTAL_KEYS = {'parity': 424, 'big8': 119}
 HUB = 'from huggingface_hub import hf_hub_download\n'
 TAINT = '    user = request.args.get("name")\n'
 

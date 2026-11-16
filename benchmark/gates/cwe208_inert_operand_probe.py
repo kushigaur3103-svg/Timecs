@@ -58,7 +58,7 @@ import cli  # noqa: E402
 from gate_common import META, corpus_dir, load_keys, verify_corpus  # noqa: E402
 
 LOCKED = {'parity': 6, 'big8': 30}
-TOTAL_KEYS = {'parity': 425, 'big8': 119}
+TOTAL_KEYS = {'parity': 424, 'big8': 119}
 CLAUSE = '_c208_compare_is_inert_operand'
 OPERAND_READER = '_c208_operand_is_inert'
 COLLECTOR = '_collect_batch4_structural_findings'

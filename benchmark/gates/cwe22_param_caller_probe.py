@@ -216,7 +216,7 @@ from gate_common import META, load_keys  # noqa: E402
 
 # The blessed CWE-22 population, measured out of the frozen baselines this file refuses to re-bless.
 CWE22_LOCKED = {'parity': 8, 'big8': 16}
-BASELINE_TOTALS = {'parity': 425, 'big8': 119}
+BASELINE_TOTALS = {'parity': 424, 'big8': 119}
 
 
 def is_cwe22_record(meta) -> bool:

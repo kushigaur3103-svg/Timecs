@@ -964,7 +964,7 @@ def check_baseline_domain() -> list:
     behavioural half of the domain proof lives in check_blessed_lines_stay_loud instead.
     """
     failures = []
-    expected = {'parity_before.keys': (425, 9), 'big8_before.keys': (119, 7)}
+    expected = {'parity_before.keys': (424, 9), 'big8_before.keys': (119, 7)}
     for keys_name, (total_rows, c338_rows) in expected.items():
         with open(os.path.join(GATES_DIR, keys_name), encoding='utf-8') as handle:
             text = handle.read()

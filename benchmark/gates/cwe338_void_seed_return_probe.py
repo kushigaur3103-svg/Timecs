@@ -69,7 +69,7 @@ import ast_scanner  # noqa: E402
 import cli  # noqa: E402
 import rule_engine  # noqa: E402
 
-BASELINE_TOTALS = {'parity': 425, 'big8': 119}
+BASELINE_TOTALS = {'parity': 424, 'big8': 119}
 CWE338_LOCKED = {'parity': 9, 'big8': 7}
 
 # The corpus home, spelled the way `active_partition_probe.py` spells it: a module-level constant

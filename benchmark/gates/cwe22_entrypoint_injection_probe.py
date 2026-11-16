@@ -229,7 +229,7 @@ from gate_common import META, load_keys  # noqa: E402
 
 GENERIC = ('CWE-22: Unvalidated user input or dynamic variable used in file path operation')
 CWE22_LOCKED = {'parity': 8, 'big8': 16}
-BASELINE_TOTALS = {'parity': 425, 'big8': 119}
+BASELINE_TOTALS = {'parity': 424, 'big8': 119}
 # The rows the pin table must own, spelled the way the engine spells them.
 EXPECTED_PIN_KEYS = [('src__transformers__modeling_utils.py', 336),
                      ('src__transformers__modeling_utils.py', 3564)]

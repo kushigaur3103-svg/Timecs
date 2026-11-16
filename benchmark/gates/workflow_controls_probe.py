@@ -592,8 +592,8 @@ def check_blessed_reach() -> list:
         return ["the repository ships no .tcs.yaml, so the noise policy has nothing to lock"]
     rows = _baseline_rows()
     counts = {label: sum(1 for row in rows if row[0] == label) for label, _ in BASELINE_KEYS}
-    if counts != {"parity": 425, "big8": 119}:
-        failures.append(f"baseline row counts {counts} != {{'parity': 425, 'big8': 119}}")
+    if counts != {"parity": 424, "big8": 119}:
+        failures.append(f"baseline row counts {counts} != {{'parity': 424, 'big8': 119}}")
     if "CWE-798" in config.rule_excludes:
         failures.append("CWE-798 carries a rule exclusion; secrets are never path-excluded")
     for pattern in config.exclude_paths:

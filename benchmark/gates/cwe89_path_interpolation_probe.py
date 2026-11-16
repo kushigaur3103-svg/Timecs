@@ -51,14 +51,16 @@ The scope matters and is measured: with the veto reading only the enclosing *sta
 scratch/_c89_fix2.py. The function-wide sweep is what closes that, and `giant_function_cap` (400
 assignments, over the node limit) pins the fail-closed side of the same rule.
 
-Why the veto has to read identifiers, not just verbs: 5 of the 25 blessed parity CWE-89 keys carry no
+Why the veto has to read identifiers, not just verbs: 4 of the 24 blessed parity CWE-89 keys carry no
 SQL verb near the sink at all and are kept loud by their receiver (`connection.cursor().execute`,
-cross_file cases 03/04/06/07 and `benchmark/corpus/cwe_1004_cookies/test_v01_bad.py`). An exemption
-that looked only at literals could reach them.
+cross_file cases 03/04/06/07). An exemption that looked only at literals could reach them. The count
+was 25 until the parity baseline was re-blessed to 424: the fifth name was a CWE-89 row pointing at
+line 6 of `benchmark/corpus/cwe_1004_cookies/test_v01_bad.py`, a two-line cookie fixture that holds no
+SQL and no line 6. `parity_before.keys` records that removal in its header.
 
 Measured evidence behind the numbers
 -----------------------------------
-  blessed overlap            : CWE-89 keys -- 25 in parity, 0 in Big-8 (counted from the frozen key
+  blessed overlap            : CWE-89 keys -- 24 in parity, 0 in Big-8 (counted from the frozen key
                                files, TIER 1). All 20 CWE-89 records reproduced from the 31 files that
                                hold those keys come off `execute`, and none is a `.join` route, so none
                                is reachable by this branch (scratch/_c89_mem.py).
@@ -111,7 +113,7 @@ CWE89_SEAL = 'shipped'   # 'abstained' = the engine before the path-only branch 
 SEAL_TARGETS = ('abstained', 'shipped')
 
 # The blessed CWE-89 population, counted from the frozen baselines themselves.
-CWE89_LOCKED = {'parity': 25, 'big8': 0}
+CWE89_LOCKED = {'parity': 24, 'big8': 0}
 
 URL = 'from yarl import URL\n'
 
@@ -406,8 +408,8 @@ def main() -> int:
     if failures:
         print('VERDICT: FAIL - the CWE-89 path-only predicate no longer matches its measured evidence. '
               'Restore the answer or update the seal with a re-measured truth table; never re-bless a '
-              'baseline -- 25 blessed parity CWE-89 keys are hand-written true positives and the '
-              'literal-only version of this rule reaches the 5 of them that carry no verb near the sink.')
+              'baseline -- 24 blessed parity CWE-89 keys are hand-written true positives and the '
+              'literal-only version of this rule reaches the 4 of them that carry no verb near the sink.')
         return 1
     print(f'VERDICT: PASS - all {sum(CWE89_LOCKED.values())} blessed CWE-89 keys still reported, '
           f'parity corpus exact-set, {len(FP_ROWS)} route shapes silent, '

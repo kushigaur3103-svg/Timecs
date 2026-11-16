@@ -10,13 +10,13 @@
     "keys; a later intentional re-bless is documented in the header of the keys file it describes.",
     "The vendored corpus lives OUTSIDE benchmark/ on purpose: the parity gate scans the whole",
     "benchmark/ tree (scan_root above), so a copy inside benchmark/gates/corpus_big8 leaks 136",
-    "third-party keys into it and parity fails 425 vs 561. Directory choice never moves a key --",
+    "third-party keys into it and parity fails 424 vs 560. Directory choice never moves a key --",
     "canon_key collapses every Big-8 file to <corpus_marker>/<leaf> -- only the bytes matter.",
     "Edit this file only together with the baselines it describes."
   ],
   "parity": {
     "keys_file": "parity_before.keys",
-    "expected_keys": 425,
+    "expected_keys": 424,
     "recorded_root": "C:/Users/aarti gaur/OneDrive/Desktop/time code security",
     "scan_root": "benchmark"
   },

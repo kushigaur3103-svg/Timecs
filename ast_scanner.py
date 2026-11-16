@@ -8,7 +8,7 @@ import sys
 import tokenize
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from typing import Optional, List, Dict, Any, Union, Tuple
+from typing import Optional, List, Dict, Any, Union, Tuple, Set
 from rule_engine import match_sink_rule, check_sink_safety_rules, get_rule, SINK_MATCHER_NAMES
 from tcs.analysis.def_use import LocalDefUseTracker
 from tcs.analysis.function_contracts import FunctionContractExtractor, FunctionSinkContract, KNOWN_SINKS
@@ -633,6 +633,12 @@ CWE328_CONTENT_HASH_KEYWORDS = CWE327_NON_CRYPTO_KEYWORDS + (
     # helpers. `content_hash`/`file_hash` carry a `hash` segment of their own, which the veto below
     # demotes only when a content word names what is being hashed.
     "commit", "revision", "content_hash", "file_hash", "sha1_text", "md5_text", "cache", "mock",
+    # Two more address-shaped digests. A backup slug (`_generate_slug` hashes `date - name` and keeps
+    # `[:8]`) names an archive in a listing -- replaying it grants nothing and verifies nothing, because
+    # the archive's own name is already the input. Gravatar is a published protocol: the avatar URL IS
+    # `md5(email)`, so a Home Assistant helper that builds one is following the spec, not choosing a hash
+    # for integrity. The bytes veto above still runs first, so `md5(password)` never reaches either word.
+    "slug", "gravatar",
 )
 # A bucket word beside `key` says WHICH key: `shard_key`, `partition_key`, `ring_key` and
 # `grouping_key` name a routing index (a DB sharding column, a consistent-hash position, an event
@@ -1145,6 +1151,18 @@ CWE338_SECURITY_NAME_WORDS = frozenset({
 # A `token` segment beside one of these is a vocabulary index, not a bearer token. The list is
 # closed to the words actually observed in ML corpora: an unproven qualifier leaves the name
 # guarded, which costs a false positive at worst instead of hiding a credential.
+# An identifier SPACE is not a statistics column. `AID_MIN`/`AID_MAX` bound HomeKit's accessory-id
+# allocation, so the `min`/`max` segments in those names describe the range of an id space, not a value
+# the screen consumes -- the draw mints the identifier a pairing is addressed by. The display-marker
+# table below would otherwise demote it on `min`/`max` alone. This family is refused BEFORE the table is
+# read, and the refusal is one-way: it can only keep a row reported, never silence one. `nonce` is
+# already a credential word above; these are the identifiers that are not secrets but are still minted.
+# Measured before adding: 0 lines under benchmark/ pair a PRNG leaf with any of these words, so the
+# refusal re-loudens nothing the parity or Big-8 baselines hold quiet.
+CWE338_IDENTIFIER_SPACE_WORDS = frozenset({
+    "aid", "aids", "uuid", "uuids", "guid", "guids",
+    "serial", "serials", "identifier", "identifiers",
+})
 CWE338_TOKEN_WORDS = frozenset({"token", "tokens"})
 CWE338_ML_VOCAB_QUALIFIERS = frozenset({
     "eos", "pad", "bos", "unk", "cls", "sep", "mask", "special", "added", "type", "vocab",
@@ -1162,6 +1180,24 @@ _CWE338_NAME_SPLIT = re.compile(
 # the credential shapes that really use them (`page_token = random.randrange(...)`,
 # `otp = "".join(digits[random.randint(0, 9)] ...)`) would go silent. `items`, `data`, `value` and
 # `rows` are absent for the same reason -- they are what a record dict is built out of.
+# The cadence and statistics families. A microsecond/minute offset staggers a schedule exactly the
+# way `seconds`/`interval` already does above, a spread moves a poll away from the top of the minute,
+# and `mean`/`min`/`max`/`sum` are the columns of a synthetic statistics record (`kitchen_sink`'s fake
+# history writes them, Home Assistant's `random`/`simulated` sensors write the noise and gauge twins).
+# `hue`/`sat` are the two colour channels a light effect draws, and a light effect is screen content by
+# definition. None of these has a credential second life the way `seed` does, and every one of them is
+# still refused by the credential veto that runs before this table (`max_token = random.randrange(...)`
+# contains `token` and is reported), by the `.join` veto, and by the leaf gate above.
+#
+# These words are held apart from the older table because they are the ones that also spell a
+# FUNCTION'S FRAME: `def random_normal(mu, sigma, minimum, maximum=None)` and `def spread_the_hosts(hosts)`
+# name bounds and an operation, not the value the draw produces. `_cwe338_display_only_draw` therefore
+# refuses them when the only place they appear is the enclosing def's own name or parameter list, so a
+# clamped distribution draw stays the clamp clause's row and a shuffle stays the shuffle clause's row.
+CWE338_RECORD_STATISTIC_MARKERS = frozenset({
+    "microsecond", "microseconds", "minute", "minutes", "spread", "noise",
+    "hue", "sat", "mean", "min", "max", "sum", "minimum", "maximum",
+})
 CWE338_DISPLAY_VALUE_MARKERS = frozenset({
     "color", "colors", "colour", "colours", "delay", "delays", "jitter", "sleep",
     "preview", "previews", "display",
@@ -1218,7 +1254,7 @@ CWE338_DISPLAY_VALUE_MARKERS = frozenset({
     # is not a value a caller can replay -- the credential veto still runs first, so `key =
     # random.choice(host_keys)` keeps its finding on `key`.
     "host", "hosts", "client", "clients", "node", "nodes", "server", "servers",
-})
+}) | CWE338_RECORD_STATISTIC_MARKERS
 # The bounded integer draws, i.e. the leaves that can be a 1-in-N decision. `random()`/`uniform()` are
 # answered by `CWE338_PROBABILITY_DRAW_LEAVES`; this table is for the integer spellings, which cannot
 # be a unit-interval probability but CAN be a sampling gate (`randint(0, 499) < 1`, `randrange(10) == 0`).
@@ -2379,6 +2415,49 @@ CWE22_TEMPFILE_NAME_ATTRS = frozenset({"name", "filename"})
 # different proof, and a comprehension target is a different binding shape. The pattern must be a
 # constant carrying no `..` and no absolute root, because pathlib ignores the receiver for an
 # absolute pattern -- `Path(tmp).glob("/etc/*")` reads /etc, not the temp dir.
+# ─── CWE-89: an internal maintenance statement is SQL the file itself wrote ────────────────────
+# Home Assistant's recorder migrates its own schema:
+#
+#   connection.execute(text(f"ALTER TABLE {table_name} {column_def}"))
+#   session.execute(delete_states_rows(state_ids))
+#   conn.execute(text(f"OPTIMIZE TABLE {','.join(ALL_TABLES)}"))
+#   cursor.execute(f"SELECT * FROM {table};")            # for table in TABLES_TO_CHECK
+#
+# The SQL verb is a literal in the file, and the only values that reach the template are table and
+# column names taken from module-level collections, SQLAlchemy metadata attributes, or integer bind
+# parameters. Nothing a client controls is anywhere near it. The counterpart that must stay loud is
+# `components/sql`: there the whole statement is `conf[CONF_QUERY]`, i.e. text chosen by whoever wrote
+# the configuration. So the retirement is a provenance proof about the SQL text and its holes, never a
+# path or file-name rule, and a single config-shaped source anywhere in the chain refuses it.
+CWE89_STATEMENT_CONSTRUCT_LEAVES = frozenset({
+    "select", "delete", "update", "insert", "text", "table", "column", "index", "alter", "func",
+    "union", "intersect", "except_", "case", "literal", "literal_column", "bindparam",
+    "PrimaryKeyConstraint", "ForeignKeyConstraint", "UniqueConstraint", "CheckConstraint",
+    "DropConstraint", "AddConstraint", "CreateIndex", "DropIndex", "CreateTable", "DropTable",
+    "AlterColumn", "insertignore", "Table", "Column", "Index", "lambda_stmt", "statement_lambda",
+})
+# The verbs a schema-maintenance or bulk-housekeeping statement starts with. A SELECT that carries a
+# client-controlled predicate is not in this set; these templates have a fixed verb and no WHERE value
+# except a bound integer.
+CWE89_MAINTENANCE_SHAPE_RE = re.compile(
+    r"^\s*(ALTER\s+TABLE|CREATE\s+(UNIQUE\s+|FULLTEXT\s+)?(INDEX|TABLE)|DROP\s+(INDEX|TABLE|CONSTRAINT|"
+    r"PRIMARY\s+KEY)|OPTIMIZE\s+TABLE|VACUUM|ANALYZE|REINDEX|PRAGMA|UPDATE\s+\S+\s+SET|"
+    r"DELETE\s+FROM\s+\S+|INSERT\s+INTO\s+\S+\s+(SELECT|VALUES)|SELECT\s+\*\s+FROM\s+\S+"
+    r"(\s+LIMIT\s+\d+)?\s*;?\s*$|SELECT\s+[\w\s,.'\"=()*-]+FROM\s+sqlite(?:_temp)?_master"
+    r"[\w\s,.'\"=()*-]*$)", re.IGNORECASE)
+# Attribute leaves that name a schema object rather than carry data.
+CWE89_METADATA_ATTRIBUTE_WORDS = frozenset({
+    "name", "table_name", "column_name", "index_name", "constraint_name", "key", "dialect",
+})
+# A subscript or `.get()` on one of these bases is a value somebody outside the program supplied.
+# Bases that only ever hold something somebody outside the program typed. `query` and `statement` are
+# NOT in this list: they are the ordinary names for an internal SQL parameter, and in the recorder they
+# are filled from literals in the same file. What makes a `text(query)` a real finding is the CALLER, so
+# the caller set is what the proof resolves instead.
+CWE89_EXTERNAL_SOURCE_WORDS = frozenset({
+    "conf", "config", "user_input", "user_confirmation", "options", "request", "payload",
+    "environ", "argv", "form", "params",
+})
 CWE22_TEMP_ROOT_ENUMERATION_LEAVES = frozenset({"glob", "rglob", "iterdir"})
 # CWE-22 hub-cache proof. `huggingface_hub` resolves a (repo, filename) pair into a file it has
 # already downloaded under its own content-addressed cache directory and returns that path; the
@@ -9149,6 +9228,60 @@ class TaintTracker:
         return True
 
     @staticmethod
+    def _cwe338_draw_allocates_an_identifier(names: List[str]) -> bool:
+        """True when the draw's vocabulary names an identifier SPACE instead of a displayed value.
+
+        `yield random.randrange(AID_MIN, AID_MAX)` allocates a HomeKit accessory id: `min` and `max`
+        are the bounds of the id space, so the display-marker table must not read them as the
+        statistics columns they spell in `{"min": mean - random() * max_diff}`. Segment matching, not
+        substring, and one-way -- a hit refuses an exemption, it never grants one.
+        """
+        for name in names:
+            for segment in _CWE338_NAME_SPLIT.split(name):
+                if segment and segment.lower() in CWE338_IDENTIFIER_SPACE_WORDS:
+                    return True
+        return False
+
+    @staticmethod
+    def _cwe338_frame_and_operation_names(node: ast.AST) -> Set[str]:
+        """The enclosing def's name and parameters, plus the callees the draw is handed to.
+
+        `def random_normal(mu, sigma, minimum, maximum=None)` and `def spread_the_hosts(hosts)` spell
+        statistics words in their signature, and `max(random.normalvariate(mu, sigma), minimum)` spells
+        one in the builtin it is handed to. A signature describes what the caller hands in and what the
+        operation is called; a builtin describes the operation itself. Neither says anything about the
+        value the draw produces. Read only to REFUSE the cadence/statistics family
+        (`CWE338_RECORD_STATISTIC_MARKERS`), never the older display words, and never to grant an
+        exemption: a word that names a destination, a record key or an attribute the draw reads
+        (`self._minimum`, `{"min": ...}`) is not in this set and still answers on its own.
+
+        Paid only when a statistic word is the sole evidence for a draw, so the common path through the
+        marker table allocates nothing.
+        """
+        names: Set[str] = set()
+        current = getattr(node, 'parent', None)
+        for _ in range(8):
+            if current is None:
+                break
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                names.add(current.name)
+                arguments = current.args
+                for group in (arguments.posonlyargs, arguments.args, arguments.kwonlyargs):
+                    names.update(argument.arg for argument in group)
+                for extra in (arguments.vararg, arguments.kwarg):
+                    if extra is not None:
+                        names.add(extra.arg)
+                break
+            if isinstance(current, ast.Call):
+                callee = current.func
+                if isinstance(callee, ast.Attribute):
+                    names.add(callee.attr)
+                elif isinstance(callee, ast.Name):
+                    names.add(callee.id)
+            current = getattr(current, 'parent', None)
+        return names
+
+    @staticmethod
     def _cwe338_assignment_targets(node: ast.AST) -> List[str]:
         """Names the draw flows into, read from at most four parent links (no tree walk).
 
@@ -9851,6 +9984,56 @@ class TaintTracker:
                 ordered_as_a_loop = True
         return ordered_as_a_loop
 
+    def _cwe338_shuffle_moves_a_flag(self, node: ast.Call) -> bool:
+        """True when `.shuffle(x)` is a device's shuffle MODE, not `random.shuffle` on a list.
+
+        Spotify and ownCloud DAAP expose `player.shuffle(on)` -- a media-control setter that turns
+        random playback on or off. Home Assistant's media players call it with the flag they were
+        handed: `self.data.client.shuffle(shuffle)` and `await self.api.shuffle(shuffle)` inside
+        `async def async_set_shuffle(self, shuffle: bool)`. The callee leaf is `shuffle`, so the PRNG
+        rule books the line; but `random.shuffle()` cannot take a boolean -- it needs the mutable
+        sequence it permutes. So the argument's type is the proof, and it is a hard one:
+
+        * exactly one positional argument and no keywords (`random.shuffle(seq, random)` also takes a
+        function, and a keyword here means we are not looking at a bare flag);
+        * the argument is a `True`/`False` literal, or a name the enclosing def declares as `bool`;
+        * the receiver path names no random source (`random`, `Random`, `SystemRandom`, `secrets`), so
+        a genuine `random.shuffle(flag)` could never be exempted even if someone wrote it.
+
+        Anything else -- a list, a name with no `bool` declaration, an unresolvable receiver -- answers
+        False and the row stays reported.
+        """
+        if not isinstance(node.func, ast.Attribute) or node.func.attr != "shuffle":
+            return False
+        if len(node.args) != 1 or node.keywords:
+            return False
+        receiver = dotted_name(node.func.value) or ""
+        segments = [s.lower() for s in _CWE338_NAME_SPLIT.split(receiver) if s]
+        if set(segments) & {"random", "systemrandom", "secrets", "rng", "global_rng"}:
+            return False
+        argument = node.args[0]
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, bool):
+            return True
+        if not isinstance(argument, ast.Name):
+            return False
+        holder = getattr(node, "parent", None)
+        for _ in range(12):
+            if holder is None:
+                return False
+            if isinstance(holder, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                break
+            holder = getattr(holder, "parent", None)
+        else:
+            return False
+        declared = list(holder.args.posonlyargs) + list(holder.args.args) \
+            + list(holder.args.kwonlyargs)
+        for param in declared:
+            if param.arg != argument.id:
+                continue
+            annotation = param.annotation
+            return isinstance(annotation, ast.Name) and annotation.id == "bool"
+        return False
+
     def _cwe338_choices_call_is_a_django_choice_set(self, node: ast.Call) -> bool:
         """True when `.choices()` enumerates a Choices class instead of drawing from a population.
 
@@ -9983,9 +10166,35 @@ class TaintTracker:
                 or self._cwe338_draw_labels_a_literal_record(node)
                 or self._cwe338_join_formats_a_separated_identifier(node)):
             return False
+        if self._cwe338_draw_allocates_an_identifier(names):
+            # An id space's bounds (`AID_MIN`, `AID_MAX`) spell `min`/`max`, but the value drawn is the
+            # identifier itself. Refused before the display table so the pairing id stays reported.
+            return False
+        frame = None
         for name in names:
-            segments = [s.lower() for s in _CWE338_NAME_SPLIT.split(name) if s]
-            if any(segment in CWE338_DISPLAY_VALUE_MARKERS for segment in segments):
+            matched = False
+            statistic_only = True
+            for segment in _CWE338_NAME_SPLIT.split(name):
+                if not segment:
+                    continue
+                segment = segment.lower()
+                if segment in CWE338_DISPLAY_VALUE_MARKERS:
+                    matched = True
+                    if segment not in CWE338_RECORD_STATISTIC_MARKERS:
+                        statistic_only = False
+                        break
+            if not matched:
+                continue
+            if not statistic_only:
+                return True
+            # `minimum`/`maximum`/`spread` naming the enclosing def's bounds or its operation, and
+            # `max(...)`/`min(...)`/`sum(...)` naming the builtin the draw is handed to, are not the
+            # value the draw produces. That row belongs to the clause that proves the clamp or the
+            # permutation, and this table must not answer it a second time. The frame walk is paid
+            # only when a statistic word is the sole evidence, which is the rare case.
+            if frame is None:
+                frame = self._cwe338_frame_and_operation_names(node)
+            if name not in frame:
                 return True
         # Two more value-domain proofs, reached only after the credential veto has refused every name
         # and the marker table has found nothing: a bounded integer compared against one literal is a
@@ -10005,6 +10214,10 @@ class TaintTracker:
         if self._cwe338_population_is_a_written_out_vocabulary(node):
             return True
         if self._cwe338_shuffle_reorders_a_work_list(node):
+            return True
+        if self._cwe338_shuffle_moves_a_flag(node):
+            # A media player's shuffle MODE: `random.shuffle` cannot be handed a bool, so this cannot
+            # mint, permute or leak anything. Read after the credential veto, so `token = ...` still wins.
             return True
         if self._cwe338_draw_is_clamped_by_a_declared_bound(node):
             return True
@@ -11804,6 +12017,301 @@ class TaintTracker:
                 return False
         return self._c22_path_is_proven_temp_root(iter_expr.func.value, scope_id, lineno)
 
+    C22_REPO_ROOT_CONSTRUCTORS = frozenset({"Path", "PurePath", "WindowsPath", "PosixPath"})
+    C22_REPO_ROOT_UNWRAPPED_CALLS = frozenset({"resolve", "absolute"})
+    C22_REPO_ROOT_UNWRAPPED_ATTRS = frozenset({"parent"})
+
+    def _c22_module_alias_index(self, mod_name: str) -> dict:
+        """What each name this file imported actually points at (`download` -> `pkg.download`).
+
+        Built once per tree and cached on it, the same way the other module facts are.
+        """
+        tree = self.modules.get(mod_name)
+        if tree is None:
+            return {}
+        index = tree.__dict__.get("_c22_alias_index")
+        if index is None:
+            index = {}
+            if mod_name.endswith(".__init__"):
+                package = mod_name[:-len(".__init__")]
+            else:
+                package = mod_name.rsplit(".", 1)[0]
+            for node in self._module_nodes(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        local = (alias.asname or alias.name).split(".")[0]
+                        index[local] = alias.name
+                elif isinstance(node, ast.ImportFrom):
+                    if node.level:
+                        base = f"{package}.{node.module}" if node.module else package
+                    else:
+                        base = node.module or package
+                    for alias in node.names:
+                        local = (alias.asname or alias.name).split(".")[0]
+                        index[local] = f"{base}.{alias.name}"
+            tree.__dict__["_c22_alias_index"] = index
+        return index
+
+    def _c22_dotted_module(self, dotted: str, mod_name: str) -> str:
+        """The scanned module a dotted read (`download`, `os.path`) selects, or ''."""
+        if not dotted or not mod_name:
+            return ""
+        parts = dotted.split(".")
+        first = self._c22_module_alias_index(mod_name).get(parts[0], parts[0])
+        rest = parts[1:]
+        if not rest and first in self.modules:
+            return first
+        joined = ".".join([first] + rest)
+        if joined in self.modules:
+            return joined
+        for stop in range(len(rest), 0, -1):
+            probe = ".".join([first] + rest[:stop])
+            if probe in self.modules:
+                return probe
+        return ""
+
+    def _c22_literal_path_segment(self, expr: ast.AST) -> str:
+        """A path spelled as a fixed string: no wildcard, no format hole, no upward escape."""
+        if not isinstance(expr, ast.Constant) or not isinstance(expr.value, str):
+            return ""
+        text = expr.value.replace("\\", "/")
+        if not text.strip():
+            return ""
+        if any(segment == ".." for segment in text.split("/")):
+            return ""
+        if "%s" in text or "{" in text or "*" in text or "?" in text:
+            return ""
+        return text
+
+    def _c22_literal_glob_pattern(self, expr: ast.AST) -> str:
+        """A glob PATTERN written out in the source: wildcards are the point, escapes are not.
+
+        This is deliberately not `_c22_literal_path_segment`. A pattern is allowed `*`, `?` and
+        `[sets]` because that is what `glob` means, and it is still a closed shape: pathlib matches a
+        pattern against the children of the root it was called on, so a `*` can widen the match inside
+        that directory and nowhere else. What remains forbidden is anything that could leave it --
+        a `..` segment, an absolute root, or a hole the caller could fill in (`{}`, `%s`).
+        """
+        if not isinstance(expr, ast.Constant) or not isinstance(expr.value, str):
+            return ""
+        text = expr.value.replace("\\", "/")
+        if not text.strip():
+            return ""
+        if any(segment == ".." for segment in text.split("/")):
+            return ""
+        if "%s" in text or "{" in text or "}" in text:
+            return ""
+        return text
+
+    def _c22_module_constant_node(self, expr: ast.Attribute, mod_name: str):
+        """The value a `<imported module>.<NAME>` read names, when that module was scanned."""
+        owner = self._c22_dotted_module(dotted_name(expr.value) or "", mod_name)
+        if not owner:
+            return None
+        for origin, value in self._c89_module_globals().get(expr.attr) or []:
+            if origin == owner:
+                return value
+        return None
+
+    def _c22_prior_writes(self, name: str, scope_id: str, lineno: int):
+        """The one expression `name` was bound to before this line.
+
+        `[]` when no scope on the chain binds it, `None` when the resolving scope writes it more than
+        once. An ambiguous root is refused rather than picked from: the sink reads the LAST write, and
+        a proof about the first one is a proof about a different value.
+        """
+        current = scope_id
+        mod_name = scope_module(scope_id)
+        seen = set()
+        while current and current not in seen:
+            seen.add(current)
+            prior = [record for record in self.assignments_by_scope.get((current, name), [])
+                     if record.lineno <= lineno]
+            if prior:
+                return [prior[-1].value_node] if len(prior) == 1 else None
+            if "." in current and "function" in current:
+                current = current.rsplit(".", 1)[0]
+            elif ":function" in current:
+                current = f"{mod_name}:global"
+            elif current != f"{mod_name}:global":
+                current = f"{mod_name}:global"
+            else:
+                break
+        return []
+
+    def _c22_module_writes_once(self, name: str, mod_name: str) -> bool:
+        """False when this module binds the name at module level more than once."""
+        entries = self._c89_module_globals().get(name) or []
+        return sum(1 for origin, _value in entries if origin == mod_name) <= 1
+
+    def _c22_root_is_repository_constant(self, root: ast.AST, mod_name: str, scope_id: str,
+                                         lineno: int, depth: int = 0) -> bool:
+        """Was this whole expression fixed by the source file, with nothing left for a caller to steer?
+
+        The question CWE-22 actually asks is *who chose these bytes*. A pathlib chain built out of
+        literals, `__file__`, and module-level constants chosen by the same repository has no answer
+        to give: nobody outside the file can move it, so traversal is not available to anyone.
+
+        Accepted, and nothing else:
+
+        * a string constant with no `..`, no wildcard and no format hole;
+        * `Path(...)` / `PurePath` / `WindowsPath` / `PosixPath` whose every argument is itself
+          accepted here (a bare `Path()` is the current directory -- still nobody-supplied);
+        * `.parent`, `.resolve()`, `.absolute()` wrappers, unwrapped;
+        * `left / right` when the left is accepted here and the right is a plain literal segment;
+        * a name: its own assignment in this scope, a module-level constant in this module, or a
+          `<imported module>.<CONSTANT>` read resolved through the file's real import table, and a
+          loop target whose iterable is a proven repository enumeration;
+        * `__file__`, `__cached__`, `__package__`.
+
+        A parameter with no recorded binding, an attribute of an object, a subscript, a call that is
+        not a path constructor, a function whose callers are unknown -- all answer False, so an
+        unresolved path is always kept, never assumed safe.
+        """
+        if root is None or depth > 6 or not mod_name:
+            return False
+        if self._c22_literal_path_segment(root):
+            return True
+        if isinstance(root, ast.Name):
+            if root.id in self._C22_ANCHOR_NAMES:
+                return True
+            if self._c22_loop_target_is_repo_enumeration(root, mod_name, scope_id, lineno, depth):
+                return True
+            writes = self._c22_prior_writes(root.id, scope_id, lineno)
+            if writes is None:
+                # Written twice on the way to this sink: `root = Path(__file__).parent` followed by
+                # `root = Path(request.args.get("d"))` is not the repository's path any more, and
+                # either write alone would answer about a value the sink never reads.
+                return False
+            if writes:
+                return self._c22_root_is_repository_constant(
+                    writes[0], mod_name, scope_id, lineno, depth + 1)
+            if not self._c22_module_writes_once(root.id, mod_name):
+                return False
+            bound = self._c89_global_binding(root.id, mod_name)
+            if bound is not None:
+                return self._c22_root_is_repository_constant(
+                    bound[1], bound[0], f"{bound[0]}:global", 10 ** 9, depth + 1)
+            return False
+        if isinstance(root, ast.Attribute):
+            if root.attr in self.C22_REPO_ROOT_UNWRAPPED_ATTRS:
+                return self._c22_root_is_repository_constant(
+                    root.value, mod_name, scope_id, lineno, depth + 1)
+            constant = self._c22_module_constant_node(root, mod_name)
+            if constant is not None:
+                owner = self._c22_dotted_module(dotted_name(root.value) or "", mod_name)
+                return self._c22_root_is_repository_constant(
+                    constant, owner, f"{owner}:global", 10 ** 9, depth + 1)
+            return False
+        if isinstance(root, ast.BinOp) and isinstance(root.op, ast.Div):
+            return (self._c22_root_is_repository_constant(
+                        root.left, mod_name, scope_id, lineno, depth + 1)
+                    and bool(self._c22_literal_path_segment(root.right)))
+        if isinstance(root, ast.Call):
+            leaf = (dotted_name(root.func) or "").split(".")[-1]
+            if not leaf:
+                return False
+            if leaf in self.C22_REPO_ROOT_UNWRAPPED_CALLS and not root.args:
+                if not isinstance(root.func, ast.Attribute):
+                    return False
+                return self._c22_root_is_repository_constant(
+                    root.func.value, mod_name, scope_id, lineno, depth + 1)
+            if leaf in self.C22_REPO_ROOT_CONSTRUCTORS:
+                if root.keywords or any(isinstance(a, ast.Starred) for a in root.args):
+                    return False
+                if not root.args:
+                    return True
+                return all(self._c22_root_is_repository_constant(
+                    arg, mod_name, scope_id, lineno, depth + 1) for arg in root.args)
+            if leaf in ("join", "joinpath") and isinstance(root.func, ast.Attribute):
+                parts = [root.func.value] + list(root.args)
+                if root.keywords or any(isinstance(a, ast.Starred) for a in root.args):
+                    return False
+                return all(self._c22_root_is_repository_constant(
+                    part, mod_name, scope_id, lineno, depth + 1) for part in parts)
+            return False
+        return False
+
+    def _c22_enumeration_is_repository_scoped(self, iter_expr: ast.AST, mod_name: str,
+                                              scope_id: str, lineno: int,
+                                              depth: int = 0) -> bool:
+        """The iterable lists files under a directory the repository itself named.
+
+        `INTEGRATIONS_DIR.glob("*/strings.json")`, `integration.path.glob("**/*.json")`,
+        `Path(__file__).parent.glob("*.yaml")` -- each one returns existing files under a fixed root,
+        and a wildcard can only widen the match inside that root: pathlib globs never walk upward, so
+        the pattern cannot reach outside. Two shape facts plus one provenance fact:
+
+        * the leaf is `glob` / `rglob` / `iterdir`, with no keyword arguments and no unpacking;
+        * `iterdir` takes no argument, and `glob`/`rglob` take exactly one literal pattern -- a
+          computed pattern (`path.glob(glob_pattern)`) is a caller-chosen shape and is refused;
+        * the root is proven by `_c22_root_is_repository_constant`, or the receiver NAMES something
+          (an attribute or a bare name) and the file itself proves it has no untrusted input anywhere
+          in its AST (a `request`/`argv`/`environ` name, an untrusted import, or an `.argv`/`.environ`
+          attribute) -- the closed-world form of the same question, which is what
+          `self.integration.path` and a scaffold's `src_dir` can still answer. A receiver that
+          COMPUTES a value (`Path(temp_dir)`) is refused here: its provenance belongs to the temp-root
+          clause, and a name written twice is refused everywhere.
+        """
+        if not isinstance(iter_expr, ast.Call) or not isinstance(iter_expr.func, ast.Attribute):
+            return False
+        leaf = iter_expr.func.attr
+        if leaf not in CWE22_TEMP_ROOT_ENUMERATION_LEAVES:
+            return False
+        if iter_expr.keywords or any(isinstance(a, ast.Starred) for a in iter_expr.args):
+            return False
+        if leaf == "iterdir":
+            if iter_expr.args:
+                return False
+        else:
+            if len(iter_expr.args) != 1:
+                return False
+            pattern = self._c22_literal_glob_pattern(iter_expr.args[0])
+            if not pattern:
+                return False
+            if pattern.startswith("/") or (len(pattern) > 1 and pattern[1] == ":"):
+                return False
+        if self._c22_root_is_repository_constant(iter_expr.func.value, mod_name, scope_id,
+                                                 lineno, depth + 1):
+            return True
+        # The closed-world fallback answers a receiver that NAMES something (`integration.path`,
+        # `self.integration.path`, `src_dir`) in a file that names no untrusted input. It does not
+        # answer a receiver that COMPUTES something: `Path(temp_dir)` builds a new path at runtime,
+        # and where that value came from -- a temp dir, a parameter, a response body -- is the
+        # temp-root clause's question, not this one. Claiming it here would retire those rows a second
+        # time and leave that clause's own falsifier with nothing to move.
+        if isinstance(iter_expr.func.value, ast.Call):
+            return False
+        return self._c22_module_proves_no_untrusted_source(mod_name)
+
+    def _c22_loop_target_is_repo_enumeration(self, expr: ast.Name, mod_name: str, scope_id: str,
+                                             lineno: int, depth: int = 0) -> bool:
+        """Is this name bound by the `for` around it over a repository-scoped enumeration?
+
+        A loop variable is not an assignment, so the binding table cannot see it; the parent links
+        can. The FIRST enclosing `for` that names this target decides -- an inner loop that rebinds
+        the same name shadows the outer one -- and a callable boundary ends the search, because past
+        it the name is a parameter, not something enumerated here.
+        """
+        node = getattr(expr, "parent", None)
+        hops = 0
+        while node is not None and hops < 200:
+            hops += 1
+            if isinstance(node, (ast.For, ast.AsyncFor)):
+                if expr.id in _c22_target_names(node.target):
+                    return self._c22_enumeration_is_repository_scoped(
+                        node.iter, mod_name, scope_id, lineno, depth)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                return False
+            node = getattr(node, "parent", None)
+        return False
+
+    def _c22_path_is_repo_internal_enumeration(self, expr: ast.AST, scope_id: str,
+                                               lineno: int) -> bool:
+        """The single entry point the cascade asks: did the repository choose this path itself?"""
+        mod_name = self._c89_module_of(scope_module(scope_id))
+        return self._c22_root_is_repository_constant(expr, mod_name, scope_id, lineno)
+
     @staticmethod
     def _c22_enclosing_function(node):
         """The nearest enclosing `def`, read off the parent links parsing already set.
@@ -13279,6 +13787,140 @@ class TaintTracker:
             if (base, lineno) in CWE208_INERT_KEEP_LOUD:
                 return False
             return True
+        return False
+
+    CWE208_PATH_NAME_LEAVES = frozenset({
+        "basename", "dirname", "normpath", "realpath", "abspath", "relpath", "split",
+        "splitext", "join",
+    })
+    CWE208_FILE_NAME_SUFFIXES = (".yaml", ".yml", ".json", ".toml", ".ini", ".cfg", ".conf", ".py")
+    CWE208_STRUCTURAL_SUFFIXES = (
+        "_type", "_kind", "_class", "_category", "_status", "_state", "_version", "_id",
+    )
+    CWE208_CREDENTIAL_SUFFIXES = (
+        "token", "secret", "key", "password", "passwd", "signature", "hmac", "digest",
+        "nonce", "salt", "credential", "authorization", "auth",
+    )
+
+    def _c208_operand_is_a_path_name(self, expr: ast.AST) -> bool:
+        """Is this operand a call that hands back a FILE NAME (`os.path.basename(f)`)?"""
+        target = expr
+        if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Call):
+            # `os.path.splitext(name)[0]` -- the stem of a file name, still a name.
+            target = target.value
+        if not isinstance(target, ast.Call):
+            return False
+        if not isinstance(target.func, ast.Attribute) or not target.args:
+            return False
+        if target.func.attr not in self.CWE208_PATH_NAME_LEAVES:
+            return False
+        base = (dotted_name(target.func.value) or "").lower()
+        return bool(base) and base.split(".")[0] in {"os", "path", "posixpath", "ntpath", "pathlib"}
+
+    def _c208_operand_literal_text(self, expr: ast.AST, scope_id: str) -> str:
+        """The literal text of this operand: a string constant, or a module-level string constant.
+
+        Crossing into another module happens only through a real import (`from .const import
+        SECRET_YAML`), never by guessing on a name.
+        """
+        if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+            return expr.value
+        if not isinstance(expr, ast.Name):
+            return ""
+        mod_name = self._c89_module_of(scope_module(scope_id))
+        bound = self._c89_global_binding(expr.id, mod_name)
+        if bound is None:
+            return ""
+        value = bound[1]
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return value.value
+        return ""
+
+    def _c208_compare_is_a_filename_or_tag_filter(self, node: ast.Compare, scope_id: str) -> bool:
+        """True when the test picks a FILE OUT, not a credential.
+
+        `if os.path.basename(fname) == SECRET_YAML:` is Home Assistant's YAML loader deciding whether
+        the file it is merging is the `secrets.yaml` file. The rule books it because one side is named
+        after a secret, and that naming is exactly what makes it a false positive: the bytes on the
+        left are a path's last component and the bytes on the right are a file name read off disk --
+        neither operand is a credential, and both are already public in any log line or directory
+        listing. Two facts, both proven, and the second one is what closes the door:
+
+        * one side is a call whose function is a path-naming helper (`basename`, `dirname`, `split`,
+          `splitext`, `realpath`, `normpath`, `abspath`, `relpath`, `join` -- including the
+          `[0]`/`[1]` subscript of `splitext`);
+        * the other side is a literal string, or a module-level constant reached through a real
+          import, that ENDS in a file suffix.
+
+        A credential comparison never satisfies the second fact: `secret != entry_data.pairing_qr_secret`
+        and `config_entry.data[CONF_API_KEY] == api_key` have no path call and no suffix-bearing
+        literal, so they stay reported.
+        """
+        if len(node.ops) != 1 or len(node.comparators) != 1:
+            return False
+        if not isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
+            return False
+        operands = (node.left, node.comparators[0])
+        for index, probe in enumerate(operands):
+            if not self._c208_operand_is_a_path_name(probe):
+                continue
+            text = self._c208_operand_literal_text(operands[1 - index], scope_id)
+            if text and text.lower().endswith(self.CWE208_FILE_NAME_SUFFIXES):
+                return True
+        return False
+
+    def _c208_operand_read_segment(self, expr: ast.AST) -> str:
+        """The last name segment of a plain read (`token.token_type` -> `token_type`), or ''."""
+        if isinstance(expr, ast.Attribute):
+            return expr.attr.lower()
+        if isinstance(expr, ast.Name):
+            return expr.id.lower()
+        return ""
+
+    def _c208_compare_is_structural_field(self, node: ast.Compare, scope_id: str) -> bool:
+        """True when the comparison reads a record's CATEGORY, never the bytes of a credential.
+
+        Home Assistant's bearer-token gate asks `token_type == models.TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN`
+        and `token.id == connection.refresh_token_id`. Those lines are booked because the words
+        `token` and `refresh_token_id` appear in them -- and the rule's own precondition is a
+        credential-shaped name, so the naming is not evidence. What the line actually compares is a
+        discriminator: which KIND of token this row is, or which ROW it is. A kind has a handful of
+        published values and a row id is not a secret, so a timing difference here tells an attacker
+        nothing he cannot read out of the API response.
+
+        Proof, per operand pair (`==`/`!=` only), in either direction:
+
+        * the read's own name segment ends in a discriminator suffix (`_type`, `_kind`, `_class`,
+          `_category`, `_status`, `_state`, `_version`, `_id`) AND does not end in a credential word --
+          so `access_token`, `push_secret`, `api_key`, `pairing_qr_secret` are refused before anything
+          else is asked; and
+        * the other side is either an UPPER_SNAKE member reached through a module/object path
+          (`models.TOKEN_TYPE_SYSTEM`) -- an enumerated constant, not a value the caller supplied --
+          or a boolean expression (`ast.Compare`, `ast.BoolOp`, `not X`), which has exactly two
+          possible results and so cannot leak.
+
+        An unproven shape answers False, which is why every real secret comparison in the same pocket
+        keeps reporting.
+        """
+        if len(node.ops) != 1 or len(node.comparators) != 1:
+            return False
+        if not isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
+            return False
+        operands = (node.left, node.comparators[0])
+        for index, probe in enumerate(operands):
+            segment = self._c208_operand_read_segment(probe)
+            if not segment:
+                continue
+            if segment.endswith(self.CWE208_CREDENTIAL_SUFFIXES):
+                continue
+            other = operands[1 - index]
+            if segment.endswith(self.CWE208_STRUCTURAL_SUFFIXES) \
+                    and isinstance(other, ast.Attribute) and other.attr.isupper() \
+                    and "_" in other.attr and isinstance(other.value, (ast.Name, ast.Attribute)):
+                return True
+            if isinstance(other, (ast.Compare, ast.BoolOp)) or (
+                    isinstance(other, ast.UnaryOp) and isinstance(other.op, ast.Not)):
+                return True
         return False
 
     def _c208_is_tensor_dimension_compare(self, node: ast.Compare, file_path: str = "") -> bool:
@@ -23292,7 +23934,8 @@ class TaintTracker:
                     and isinstance(node.args[0].value, str) \
                     and CLUSTER1_PASSWORD_NAME_RE.search(node.args[0].value):
                 default = node.args[1]
-                if isinstance(default, ast.Constant) and default.value in ("", None):
+                if isinstance(default, ast.Constant) and default.value in ("", None) \
+                        and not self._c521_lookup_default_is_absent_marker(node, scope_id):
                     add("EMPTY_PASSWORD_DEFAULT", "WEAK_PASSWORD", "CWE-521")
 
         # B. CWE-96: dynamic subscript read of a namespace mapping (Load only; a store into
@@ -23314,7 +23957,8 @@ class TaintTracker:
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             names = {t.id for t in targets if isinstance(t, ast.Name)}
             if any(CLUSTER1_PASSWORD_NAME_RE.search(n) for n in names) \
-                    and isinstance(node.value, ast.Constant) and node.value.value == "":
+                    and isinstance(node.value, ast.Constant) and node.value.value == "" \
+                    and not self._c521_empty_constant_is_a_schema_default(node, scope_id):
                 add("EMPTY_PASSWORD_ASSIGNMENT", "WEAK_PASSWORD", "CWE-521")
             # B. CWE-96: an interpolated template literal that reaches render_template_string.
             elif names & template_consumers and self._c1_is_dynamic_template(node.value):
@@ -23348,6 +23992,97 @@ class TaintTracker:
         rows = [(p, defaults[i - gap]) for i, p in enumerate(positional) if i >= gap]
         return rows + [(p, d) for p, d in zip(node.args.kwonlyargs, node.args.kw_defaults)
                        if d is not None]
+
+    CWE521_SCHEMA_DEFAULT_KEYWORDS = frozenset({"default", "value"})
+    CWE521_SCHEMA_CALL_LEAVES = frozenset({
+        "optional", "required", "schema", "field", "add_argument", "argument",
+    })
+
+    def _c521_enclosing_callable(self, node: ast.AST) -> ast.AST:
+        """The function or method whose body contains `node`, or None at module level."""
+        current = getattr(node, "parent", None)
+        for _ in range(40):
+            if current is None:
+                return None
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return current
+            current = getattr(current, "parent", None)
+        return None
+
+    def _c521_lookup_default_is_absent_marker(self, node: ast.Call, scope_id: str) -> bool:
+        """Is this `.get("password", "")` reading a mapping the caller filled in?
+
+        CWE-521 is about the credential the product *ships*: `PASSWORD = ""`, `set_password("")`,
+        `default="admin"`. A `dict.get("password", "")` is a different animal — the empty string is
+        what `get` hands back when the key was never written, and the real value came from outside
+        this function. Home Assistant's improv_ble pairing flow proves exactly that:
+        `Credentials(user_input.get("password", ""), user_input["ssid"])`, where `user_input` is the
+        parameter carrying the validated form the human just submitted. Same when the mapping is an
+        attribute of the object (`self._config.get(...)`) that some other layer populated.
+
+        Fail-closed in every other shape: a literal dict, a mapping built inside this function, or a
+        module-level config table can still be the product's own shipped default, so those report.
+        """
+        receiver = node.func.value
+        if isinstance(receiver, ast.Attribute):
+            base = receiver.value
+            return isinstance(base, ast.Name) and base.id in ("self", "cls")
+        if not isinstance(receiver, ast.Name):
+            return False
+        owner = self._c521_enclosing_callable(node)
+        if owner is None:
+            return False
+        params = list(getattr(owner.args, "posonlyargs", [])) + list(owner.args.args) \
+            + list(owner.args.kwonlyargs)
+        return receiver.id in {p.arg for p in params}
+
+    def _c521_read_is_a_schema_default(self, load: ast.Name) -> bool:
+        """Is this single read of a module constant the `default=` of a schema/option call?"""
+        parent = getattr(load, "parent", None)
+        call = None
+        if isinstance(parent, ast.keyword):
+            if parent.arg not in self.CWE521_SCHEMA_DEFAULT_KEYWORDS:
+                return False
+            call = getattr(parent, "parent", None)
+        elif isinstance(parent, ast.Call):
+            call = parent
+        else:
+            return False
+        if not isinstance(call, ast.Call):
+            return False
+        leaf = (dotted_name(call.func) or "").split(".")[-1].lower()
+        return leaf in self.CWE521_SCHEMA_CALL_LEAVES
+
+    def _c521_empty_constant_is_a_schema_default(self, node: ast.AST, scope_id: str) -> bool:
+        """A module-level `DEFAULT_PASSWORD = ""` that only ever feeds a schema default.
+
+        Home Assistant's config schemas carry a placeholder for every optional field, and the
+        placeholder for "the operator has not typed anything yet" is the empty string:
+        `vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD)`. Nothing is hardcoded as a
+        credential there — an empty default means the field arrives unset and the UI still asks for
+        a value. A non-empty weak default (`"admin"`, `"1234"`, `"password"`) never reaches this
+        proof: the emitter only books `""`.
+
+        The proof is the name's whole read-set: a UPPER_CASE module global whose every Load sits in
+        a `default=`/schema position. A constant that is also read anywhere else — passed to a
+        setter, compared, written to a session — stays loud, because one unproven read sinks the
+        whole arm.
+        """
+        if not scope_id.endswith(":global"):
+            return False
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        names = [t.id for t in targets if isinstance(t, ast.Name)]
+        if len(names) != 1 or not names[0].isupper() or len(names[0]) < 2:
+            return False
+        mod_name = self._c89_module_of(scope_module(scope_id))
+        tree = self.modules.get(mod_name)
+        if tree is None:
+            return False
+        loads = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Name) and n.id == names[0] and isinstance(n.ctx, ast.Load)]
+        if not loads:
+            return False
+        return all(self._c521_read_is_a_schema_default(load) for load in loads)
 
     def _c704_guarded_names(self, node: ast.Call, arg: ast.AST) -> set:
         """The names a `math.isnan`/`isfinite`/`x != x` test could be vouching for at this call.
@@ -27276,7 +28011,10 @@ class TaintTracker:
                                     all_names, evidence_names, sensitive_markers)
                                 and not self._c208_timing_is_llm_domain_compare(
                                     node, mod_name, all_names, evidence_names, sensitive_markers)
-                                and not self._c208_is_unit_test_assertion(node, file_path)):
+                                and not self._c208_is_unit_test_assertion(node, file_path)
+                                and not self._c208_compare_is_a_filename_or_tag_filter(
+                                    node, scope_id)
+                                and not self._c208_compare_is_structural_field(node, scope_id)):
                             key = ("CWE-208", getattr(node, "lineno", 1), getattr(node, "col_offset", 0))
                             if key not in seen:
                                 seen.add(key)
@@ -28934,6 +29672,786 @@ class TaintTracker:
                     _emit(node, mod_name, scope_id)
                     break
 
+    # ─── CWE-89: is this SQL written by the program, or by somebody outside it? ───────────────
+    # Every arm below answers the same question about the executed text: can a value the program did
+    # not write enter the statement? A verb that is a literal in the file plus holes that are table
+    # names, metadata attributes or bound integers means no. A statement that arrives as one opaque
+    # variable means the answer lives in the CALLERS, so the proof walks there and refuses as soon as
+    # any caller hands over config text. Nothing reads a path, a folder or a file name.
+    def _c89_functions_by_name(self) -> dict:
+        index = getattr(self, "_c89_func_index", None)
+        if index is None:
+            index = {}
+            for scope_id, func in self.functions.items():
+                index.setdefault(func.name, []).append((scope_id, func))
+            self._c89_func_index = index
+        return index
+
+    def _c89_assigned_expr(self, name: str, scope_id: str, lineno: int):
+        current = scope_id
+        mod_name = scope_module(scope_id)
+        seen = set()
+        while current and current not in seen:
+            seen.add(current)
+            records = self.assignments_by_scope.get((current, name), [])
+            prior = [record for record in records if record.lineno <= lineno]
+            if prior:
+                return prior[-1].value_node
+            if "." in current and "function" in current:
+                current = current.rsplit(".", 1)[0]
+            elif ":function" in current:
+                current = f"{mod_name}:global"
+            elif current != f"{mod_name}:global":
+                current = f"{mod_name}:global"
+            else:
+                break
+        return None
+
+    def _c89_module_of(self, mod_like: str) -> str:
+        """A scope's module spelling mapped onto a scanned module (`x.py` and `x.y` both arrive).
+
+        A record created by the file-level pass carries the module name with the `.py` still on it, so
+        every lookup that has to find a binding in the table lists has to normalise first; an
+        unresolvable name just means the proof cannot be made, which refuses the retirement.
+        """
+        if not mod_like:
+            return ""
+        if mod_like in self.modules:
+            return mod_like
+        if mod_like.endswith(".py"):
+            candidate = mod_like[:-3].replace("/", ".").replace("\\", ".")
+            if candidate in self.modules:
+                return candidate
+        return mod_like
+
+    def _c89_owner_index(self) -> tuple:
+        """`({file spelling: module}, module keys longest-first)`, built once per tracker.
+
+        Every path a record can arrive with is indexed alongside the spelling `self.file_paths` stores,
+        because the two are written by different passes and are not always the same string.
+        """
+        index = getattr(self, "_c89_owner_index_cache", None)
+        if index is None:
+            by_file = {}
+            for mod_name, file_path in self.file_paths.items():
+                if not file_path:
+                    continue
+                for spelling in (file_path,
+                                 os.path.normcase(file_path).replace("\\", "/"),
+                                 file_path.replace("\\", "/")):
+                    by_file.setdefault(spelling, mod_name)
+            index = (by_file, sorted(self.modules, key=len, reverse=True))
+            self._c89_owner_index_cache = index
+        return index
+
+    def _c89_record_owner_module(self, scope_id: str, file_path: str) -> str:
+        """The scanned module that OWNS a sink record, read off the record rather than the loop.
+
+        A record carries the same fact twice: the scope id holds the module as the parser spelled it
+        (absolute, dotted) and the location holds the file the AST node lives in. Neither spelling is
+        the key `self.modules` uses when the CLI has been through a worker boundary, so both are asked
+        and the file wins, because the file is what a finding has to point at. Returning "" is the
+        honest answer when neither resolves: a repair stamped onto the wrong file is worse than no
+        repair -- that is how a 2-line cookie fixture came to own line 6 of a SQL file.
+        """
+        by_file, keys_longest_first = self._c89_owner_index()
+        for spelling in (file_path, os.path.normcase(file_path or "").replace("\\", "/")):
+            owner = by_file.get(spelling)
+            if owner in self.modules:
+                return owner
+        scope_mod = scope_module(scope_id)
+        if scope_mod in self.modules:
+            return scope_mod
+        for candidate in keys_longest_first:
+            if scope_mod == candidate or scope_mod.endswith("." + candidate):
+                return candidate
+        return ""
+
+    def _c89_module_globals(self) -> dict:
+        """`{name: [(module, value_node), ...]}` for top-level assignments, indexed once."""
+        index = getattr(self, "_c89_global_index", None)
+        if index is None:
+            index = {}
+            for mod_name, tree in self.modules.items():
+                for stmt in getattr(tree, "body", []):
+                    targets, value = [], None
+                    if isinstance(stmt, ast.Assign):
+                        targets, value = stmt.targets, stmt.value
+                    elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+                        targets, value = [stmt.target], stmt.value
+                    if value is None:
+                        continue
+                    for target in targets:
+                        if isinstance(target, ast.Name):
+                            index.setdefault(target.id, []).append((mod_name, value))
+            self._c89_global_index = index
+        return index
+
+    def _c89_import_origins(self, mod_name: str, name: str) -> list:
+        """Modules this file provably imports `name` out of, resolved to scanned modules only."""
+        tree = self.modules.get(mod_name)
+        if tree is None or not mod_name:
+            return []
+        origins = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                bound = {(alias.asname or alias.name).split(".")[0] for alias in node.names}
+                if name not in bound or "*" in bound:
+                    continue
+                if node.level:
+                    if mod_name.endswith(".__init__"):
+                        base = mod_name[:-len(".__init__")]
+                    else:
+                        base = mod_name.rsplit(".", 1)[0]
+                    base = base.rsplit(".", node.level - 1)[0] if node.level > 1 else base
+                    relative = (node.module or "").lstrip(".")
+                    origin = f"{base}.{relative}" if relative else base
+                else:
+                    origin = node.module or ""
+            elif isinstance(node, ast.Import):
+                # `import homeassistant.components.recorder.db_schema as db_schema` style spellings.
+                for alias in node.names:
+                    local = (alias.asname or alias.name).split(".")[0]
+                    if local != name and alias.name != name:
+                        continue
+                    origin = alias.name
+                    if local == name and alias.asname is None and name not in self.modules:
+                        continue
+                    if origin in self.modules:
+                        origins.append(origin)
+                continue
+            else:
+                continue
+            if origin and origin in self.modules and origin != mod_name:
+                origins.append(origin)
+        return origins
+
+    def _c89_global_binding(self, name: str, mod_name: str, depth: int = 0):
+        """(module, value) for a module-level constant, crossed only through a real import."""
+        if not name or not mod_name or depth > 3:
+            return None
+        entries = self._c89_module_globals().get(name) or []
+        if not entries:
+            return None
+        for origin_mod, value in entries:
+            if origin_mod == mod_name:
+                return origin_mod, value
+        for origin in self._c89_import_origins(mod_name, name):
+            for origin_mod, value in entries:
+                if origin_mod == origin:
+                    return origin_mod, value
+        return None
+
+    def _c89_text_is_client_supplied(self, expr: ast.AST, scope_id: str, lineno: int,
+                                     depth: int = 0) -> bool:
+        """True when config/request/env text is anywhere in this expression's short history."""
+        if expr is None or depth > 4:
+            return False
+        if isinstance(expr, ast.Attribute):
+            base = expr
+            leaves = []
+            while isinstance(base, (ast.Attribute, ast.Subscript, ast.Call)):
+                if isinstance(base, ast.Attribute):
+                    leaves.append(base.attr)
+                    base = base.value
+                else:
+                    break
+            if isinstance(base, ast.Name) and base.id in CWE89_EXTERNAL_SOURCE_WORDS:
+                return True
+            return self._c89_text_is_client_supplied(expr.value, scope_id, lineno, depth + 1)
+        if isinstance(expr, ast.Subscript):
+            if isinstance(expr.value, ast.Name) and expr.value.id in CWE89_EXTERNAL_SOURCE_WORDS:
+                return True
+            return self._c89_text_is_client_supplied(expr.value, scope_id, lineno, depth + 1)
+        if isinstance(expr, ast.Call):
+            leaf = dotted_name(expr.func) or ""
+            if leaf.split(".")[-1] in {"environ", "argv"} or leaf.startswith("os.environ"):
+                return True
+            if leaf.split(".")[-1] == "get" and isinstance(expr.func, ast.Attribute) \
+                    and isinstance(expr.func.value, ast.Name) \
+                    and expr.func.value.id in CWE89_EXTERNAL_SOURCE_WORDS:
+                return True
+            return any(self._c89_text_is_client_supplied(value, scope_id, lineno, depth + 1)
+                       for value in list(expr.args) + [kw.value for kw in expr.keywords])
+        if isinstance(expr, ast.Name):
+            assigned = self._c89_assigned_expr(expr.id, scope_id, lineno)
+            if assigned is None:
+                return False
+            return self._c89_text_is_client_supplied(assigned, scope_id, lineno, depth + 1)
+        if isinstance(expr, (ast.JoinedStr, ast.BinOp, ast.List, ast.Tuple, ast.Set)):
+            parts = (list(expr.values) if isinstance(expr, ast.JoinedStr) else
+                     (expr.elts if isinstance(expr, (ast.List, ast.Tuple, ast.Set)) else
+                      [expr.left, expr.right, expr]))
+            return any(self._c89_text_is_client_supplied(part, scope_id, lineno, depth + 1)
+                       for part in parts)
+        return False
+
+    def _c89_table_name_constant(self, name: str, scope_id: str, lineno: int,
+                                 depth: int = 0) -> bool:
+        """`TABLE_STATES = "states"` -- a member of an internal table list, literal to the byte."""
+        if not name or depth > 3:
+            return False
+        value = self._c89_assigned_expr(name, scope_id, lineno)
+        if value is None:
+            cross = self._c89_global_binding(name, self._c89_module_of(scope_module(scope_id)))
+            if cross is None:
+                return False
+            value = cross[1]
+            if cross[0] != self._c89_module_of(scope_module(scope_id)):
+                scope_id, lineno = f"{cross[0]}:global", 10 ** 9
+        if isinstance(value, ast.Constant):
+            return isinstance(value.value, str)
+        if isinstance(value, ast.Name):
+            return self._c89_table_name_constant(value.id, scope_id, lineno, depth + 1)
+        return False
+
+    def _c89_collection_is_internal_table_list(self, node: ast.AST, scope_id: str,
+                                              lineno: int, depth: int = 0) -> bool:
+        """A module-level collection of table names / schema objects, spelled out in the source."""
+        if node is None or depth > 3:
+            return False
+        if isinstance(node, ast.Call) and dotted_name(node.func) == "frozenset":
+            node = node.args[0] if node.args else node
+        if isinstance(node, ast.ListComp):
+            node = node.elt
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set, ast.GeneratorExp)):
+            elements = node.elts
+        elif isinstance(node, ast.Name):
+            bound = self._c89_assigned_expr(node.id, scope_id, lineno)
+            if bound is not None:
+                return self._c89_collection_is_internal_table_list(
+                    bound, scope_id, lineno, depth + 1)
+            cross = self._c89_global_binding(node.id, self._c89_module_of(scope_module(scope_id)))
+            if cross is None:
+                return False
+            if cross[0] == self._c89_module_of(scope_module(scope_id)):
+                return self._c89_collection_is_internal_table_list(
+                    cross[1], scope_id, lineno, depth + 1)
+            return self._c89_collection_is_internal_table_list(
+                cross[1], f"{cross[0]}:global", 10 ** 9, depth + 1)
+        else:
+            elements = None
+        if not elements:
+            return False
+        for element in elements:
+            if isinstance(element, ast.Constant):
+                if not isinstance(element.value, str):
+                    return False
+            elif isinstance(element, ast.Attribute):
+                if element.attr not in CWE89_METADATA_ATTRIBUTE_WORDS:
+                    return False
+            elif isinstance(element, ast.Name):
+                # `[TABLE_STATES, TABLE_EVENTS]` is only a table list if every member is a name literal.
+                if not self._c89_table_name_constant(element.id, scope_id, lineno, depth + 1):
+                    return False
+            else:
+                return False
+        return True
+
+    def _c89_loop_target_is_table_enumeration(self, name: str, expr: ast.AST, scope_id: str,
+                                              lineno: int) -> bool:
+        """`for table in STATISTICS_TABLES:` -- the hole is one element of an internal list."""
+        current = getattr(expr, "parent", None)
+        for _ in range(12):
+            if current is None:
+                return False
+            if isinstance(current, (ast.For, ast.AsyncFor)) \
+                    and any(isinstance(target, ast.Name) and target.id == name
+                            for target in ast.walk(current.target)):
+                iterable = current.iter
+                if isinstance(iterable, ast.Name):
+                    module_scope = f"{self._c89_module_of(scope_module(scope_id))}:global"
+                    bound = self._c89_assigned_expr(iterable.id, module_scope, 10 ** 9)
+                    return self._c89_collection_is_internal_table_list(
+                        bound if bound is not None else iterable, module_scope, 10 ** 9)
+                return self._c89_collection_is_internal_table_list(iterable, scope_id, lineno)
+            current = getattr(current, "parent", None)
+        return False
+
+    def _c89_hole_is_internal(self, expr: ast.AST, scope_id: str, lineno: int,
+                              depth: int = 0) -> bool:
+        if expr is None or depth > 5:
+            return False
+        if isinstance(expr, ast.Constant):
+            return isinstance(expr.value, (str, int, float, bool, type(None)))
+        if isinstance(expr, ast.Attribute):
+            return expr.attr in CWE89_METADATA_ATTRIBUTE_WORDS or \
+                self._c89_hole_is_internal(expr.value, scope_id, lineno, depth + 1)
+        if isinstance(expr, ast.Call):
+            leaf = (dotted_name(expr.func) or "").split(".")[-1]
+            if leaf == "join":
+                return all(self._c89_hole_is_internal(arg, scope_id, lineno, depth + 1)
+                           for arg in expr.args) and \
+                    all(isinstance(kw.value, ast.Constant) for kw in expr.keywords)
+            if leaf in CWE89_STATEMENT_CONSTRUCT_LEAVES:
+                return True
+            return self._c89_factory_returns_statement(expr.func, scope_id, lineno, depth + 1)
+        if isinstance(expr, ast.Name):
+            if self._c89_loop_target_is_table_enumeration(expr.id, expr, scope_id, lineno):
+                return True
+            assigned = self._c89_assigned_expr(expr.id, scope_id, lineno)
+            hole_scope, hole_lineno = scope_id, lineno
+            if assigned is None:
+                cross = self._c89_global_binding(expr.id, self._c89_module_of(scope_module(scope_id)))
+                if cross is not None:
+                    # Inside another module's global scope this file's line numbers mean nothing.
+                    assigned, hole_scope, hole_lineno = cross[1], f"{cross[0]}:global", 10 ** 9
+            if assigned is not None:
+                if self._c89_collection_is_internal_table_list(assigned, hole_scope, hole_lineno):
+                    return True
+                return self._c89_hole_is_internal(assigned, hole_scope, hole_lineno, depth + 1)
+            return self._c89_parameter_callers_are_internal(expr.id, scope_id, lineno, depth + 1)
+        if isinstance(expr, ast.JoinedStr):
+            return self._c89_template_is_maintenance(expr, scope_id, lineno, depth + 1)
+        if isinstance(expr, ast.ListComp):
+            return self._c89_hole_is_internal(expr.elt, scope_id, lineno, depth + 1)
+        if isinstance(expr, (ast.BinOp, ast.Subscript)):
+            parts = ([expr.left, expr.right] if isinstance(expr, ast.BinOp)
+                     else [expr.value])
+            return all(self._c89_hole_is_internal(part, scope_id, lineno, depth + 1)
+                       for part in parts)
+        if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+            return all(self._c89_hole_is_internal(element, scope_id, lineno, depth + 1)
+                       for element in expr.elts)
+        if isinstance(expr, ast.IfExp):
+            return all(self._c89_hole_is_internal(part, scope_id, lineno, depth + 1)
+                       for part in (expr.body, expr.orelse))
+        if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
+            return True
+        return False
+
+    def _c89_statement_pieces(self, expr: ast.AST, scope_id: str, lineno: int):
+        """(static text, holes) for f-strings, `%`, `+`, and `"...".format(...)` spellings.
+
+        Each hole also leaves a `X` token in the static text, because `UPDATE {table} SET x=1` is a
+        maintenance statement and the concatenated residue `UPDATE SET x=1` is not recognisable as one.
+        """
+        static, holes = [], []
+        stack = [expr]
+        while stack:
+            current = stack.pop()
+            if current is None:
+                continue
+            if isinstance(current, ast.JoinedStr):
+                for value in current.values:
+                    if isinstance(value, ast.FormattedValue):
+                        holes.append(value.value)
+                        static.append(" X ")
+                    else:
+                        static.append(getattr(value, "value", "") or "")
+            elif isinstance(current, ast.Constant) and isinstance(current.value, str):
+                static.append(current.value)
+            elif isinstance(current, ast.BinOp) and isinstance(current.op, (ast.Add, ast.Mod)):
+                stack.extend([current.left, current.right])
+            elif isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute) \
+                    and current.func.attr == "format":
+                stack.append(current.func.value)
+                static.append(" X " * (len(current.args) + len(current.keywords)))
+                holes.extend(kw.value for kw in current.keywords)
+                holes.extend(current.args)
+            elif isinstance(current, ast.Call) and (dotted_name(current.func) or "").split(".")[-1] \
+                    in {"text", "execute"}:
+                stack.extend(current.args)
+            else:
+                holes.append(current)
+                static.append(" X ")
+        return "".join(static), holes
+
+    def _c89_template_is_maintenance(self, expr: ast.AST, scope_id: str, lineno: int,
+                                     depth: int = 0) -> bool:
+        static, holes = self._c89_statement_pieces(expr, scope_id, lineno)
+        if not static.strip() or depth > 4:
+            return False
+        probe = re.sub(r"\s+", " ", static)
+        probe = re.sub(r"\{[^{}]*\}", " X ", probe)
+        probe = probe.replace("%s", " X ").replace("{}", " X ")
+        if not CWE89_MAINTENANCE_SHAPE_RE.match(probe.strip()):
+            return False
+        return all(self._c89_hole_is_internal(hole, scope_id, lineno, depth + 1) for hole in holes)
+
+    def _c89_factory_interpolates_parameters(self, func: ast.AST, ret: ast.Return) -> bool:
+        """True when the factory drops a parameter INTO the text instead of binding it.
+
+        `lambda_stmt(lambda: delete(States).where(States.state_id.in_(state_ids)))` hands the value to
+        the driver as a bound parameter; `text(f"DELETE FROM t WHERE id = {state_id}")` pastes it into
+        the statement. Only the first shape is safe, so the second one is what this refuses.
+        """
+        params = {parameter.arg for parameter in
+                  list(getattr(func.args, "posonlyargs", [])) + list(func.args.args)
+                  + list(func.args.kwonlyargs)}
+        if not params:
+            return False
+        for sub in ast.walk(ret.value):
+            if isinstance(sub, ast.JoinedStr):
+                for value in sub.values:
+                    if isinstance(value, ast.FormattedValue):
+                        names = {node.id for node in ast.walk(value.value)
+                                 if isinstance(node, ast.Name)}
+                        if names & params:
+                            return True
+            elif isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.Mod):
+                names = {node.id for node in ast.walk(sub.right) if isinstance(node, ast.Name)}
+                if names & params:
+                    return True
+            elif isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) \
+                    and sub.func.attr == "format":
+                names = {node.id for value in list(sub.args) + [kw.value for kw in sub.keywords]
+                         for node in ast.walk(value) if isinstance(node, ast.Name)}
+                if names & params:
+                    return True
+        return False
+
+    def _c89_factory_returns_statement(self, func_expr: ast.AST, scope_id: str, lineno: int,
+                                       depth: int = 0) -> bool:
+        """`delete_states_rows(state_ids)` is internal when the factory only builds ORM statements."""
+        if depth > 3:
+            return False
+        target = None
+        if isinstance(func_expr, (ast.Name, ast.Attribute)):
+            name = func_expr.id if isinstance(func_expr, ast.Name) else func_expr.attr
+            candidates = self._c89_functions_by_name().get(name) or []
+            if len(candidates) == 1:
+                target = candidates[0][1]
+        if target is None:
+            return False
+        returns = [node for node in ast.walk(target) if isinstance(node, ast.Return)
+                   and node.value is not None]
+        if not returns:
+            return False
+        for ret in returns:
+            if self._c89_factory_interpolates_parameters(target, ret):
+                return False
+            value = ret.value
+            if isinstance(value, ast.Call):
+                value_leaf = (dotted_name(value.func) or "").split(".")[-1]
+                if value_leaf in {"lambda_stmt", "statement_lambda"} and value.args:
+                    value = value.args[0]
+            if isinstance(value, ast.Lambda):
+                value = value.body
+            while isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute) \
+                    and value.func.attr in {"where", "order_by", "limit", "offset", "join",
+                                            "group_by", "having", "values", "distinct", "all",
+                                            "scalar", "filter", "in_", "params", "execution_options",
+                                            "options", "prefix_with", "returning", "outerjoin",
+                                            "select_from", "whereclause", "add_columns"}:
+                value = value.func.value
+            leaf = (dotted_name(value.func) or "").split(".")[-1] if isinstance(value, ast.Call) \
+                and value.func is not None else ""
+            if leaf not in CWE89_STATEMENT_CONSTRUCT_LEAVES:
+                if not self._c89_template_is_maintenance(value, scope_id, lineno, depth + 1):
+                    return False
+        return True
+
+    def _c89_parameter_callers_are_internal(self, name: str, scope_id: str, lineno: int,
+                                            depth: int = 0) -> bool:
+        """A statement that arrives as one variable is internal only if every caller says so.
+
+        `text(query)` inside `_execute_or_collect_error` proves nothing on its own; what makes it safe is
+        that the recorded call-site set for that function is non-empty and every argument written into
+        that slot is a literal DDL string or an ORM construct in this repository. An unresolvable or
+        missing call-site set refuses, so a dynamically dispatched caller keeps the row loud.
+        """
+        if depth > 3 or ":function" not in (scope_id or ""):
+            return False
+        func = self.functions.get(scope_id)
+        args = getattr(getattr(func, "args", None), "args", None) if func is not None else None
+        if args is None:
+            return False
+        posonly = list(getattr(func.args, "posonlyargs", []))
+        declared = posonly + list(args)
+        position = None
+        for index, parameter in enumerate(declared):
+            if parameter.arg == name:
+                position = index
+                break
+        if position is None:
+            return False
+        if declared and declared[0].arg in {"self", "cls"}:
+            # The receiver is written by the dot, not in the parenthesis, so every slot shifts left.
+            position -= 1
+        own_scope = f"{self._c89_module_of(scope_module(scope_id))}:function:{func.name}"
+        sites = self.call_sites_by_target.get(own_scope) or []
+        if not sites:
+            return False
+        for site in sites:
+            if isinstance(site, tuple):
+                call, caller_scope = site[0], (site[1] if len(site) > 1 else "") or scope_id
+            else:
+                call, caller_scope = site, scope_id
+            if not isinstance(call, ast.Call):
+                return False
+            argument = None
+            for keyword in call.keywords:
+                if keyword.arg == name:
+                    argument = keyword.value
+                    break
+            if argument is None:
+                if position < 0 or position >= len(call.args):
+                    return False
+                argument = call.args[position]
+            resolved = argument
+            use_lineno = getattr(argument, "lineno", lineno)
+            for _ in range(3):
+                if not isinstance(resolved, ast.Name):
+                    break
+                nxt = self._c89_assigned_expr(resolved.id, caller_scope, use_lineno)
+                if nxt is None:
+                    cross = self._c89_global_binding(resolved.id, self._c89_module_of(
+                        self._c89_module_of(scope_module(caller_scope))))
+                    if cross is None:
+                        break
+                    nxt, caller_scope, use_lineno = cross[1], f"{cross[0]}:global", 10 ** 9
+                if nxt is resolved:
+                    break
+                resolved = nxt
+            if self._c89_text_is_client_supplied(resolved, caller_scope, use_lineno):
+                return False
+            if isinstance(resolved, ast.Call):
+                leaf = (dotted_name(resolved.func) or "").split(".")[-1]
+                if leaf in CWE89_STATEMENT_CONSTRUCT_LEAVES \
+                        and leaf not in {"text", "lambda_stmt", "statement_lambda"}:
+                    continue
+            if self._c89_template_is_maintenance(resolved, caller_scope, use_lineno, depth + 1):
+                continue
+            if self._c89_hole_is_internal(resolved, caller_scope, use_lineno, depth + 1):
+                continue
+            return False
+        return True
+
+    def _c89_expression_rides_an_external_source(self, expr: ast.AST, depth: int = 0) -> bool:
+        """`request.GET.get("sql")`, `conf["query"]`, `options.pop("q")`: the base Name answers it.
+
+        `_c89_text_is_client_supplied` reads an Attribute/Subscript base but stops at a Call, so a value
+        pulled out of a request by a method call -- the most common shape in a web handler -- arrives
+        here unclaimed. Walking the callee instead keeps that helper's meaning untouched.
+        """
+        while expr is not None and depth < 6:
+            if isinstance(expr, ast.Name):
+                return expr.id in CWE89_EXTERNAL_SOURCE_WORDS
+            if isinstance(expr, ast.Attribute):
+                expr = expr.value
+            elif isinstance(expr, ast.Call):
+                expr = expr.func
+            elif isinstance(expr, ast.Subscript):
+                expr = expr.value
+            else:
+                return False
+            depth += 1
+        return False
+
+    def _c89_cross_module_call_sites(self, mod_name: str, fname: str) -> list:
+        """Call sites of `mod_name.fname`, read off `raw_calls` instead of the call-site index.
+
+        The repair loop runs while the registry is being collected, and `call_sites_by_target` is only
+        filled after Phase 4.3 -- asking it for callers at this moment answers "nobody calls this" for
+        every cross-module sink, which is how a genuinely tainted callee (an `execute(statement)` fed
+        `request.GET.get("sql")` from another file) went quiet. `raw_calls` is complete here, so the same
+        canonical-name resolution the indexer uses is applied directly. The binding is matched tolerantly
+        because the import map can name a module by the short spelling the file wrote
+        (`from repo04 import exec_query`) while `functions` keys it by its dotted path, which is why
+        `_resolve_function_scope` answers None for it at this point in the pipeline. Memoized per
+        (module, function), and a same-module caller is left out: the single-file walk already saw it.
+        """
+        cache = getattr(self, "_c89_cross_call_sites_cache", None)
+        if cache is None:
+            cache = self._c89_cross_call_sites_cache = {}
+        key = (mod_name, fname)
+        if key in cache:
+            return cache[key]
+        owner = self._c89_module_of(mod_name)
+        found = []
+        for call_node, caller_scope, _lineno in self.raw_calls:
+            if not caller_scope:
+                continue
+            caller_module = self._c89_module_of(scope_module(caller_scope))
+            if caller_module == owner:
+                # Same file: the single-file walk already had its chance at this flow.
+                continue
+            func = call_node.func
+            leaf = (func.attr if isinstance(func, ast.Attribute)
+                    else func.id if isinstance(func, ast.Name) else None)
+            if leaf is None:
+                continue
+            binding = (getattr(self, "imports", None) or {}).get(
+                scope_module(caller_scope), {}).get(leaf)
+            # `run_q(...)` calls `exec_query` just as loudly as `repo04.exec_query(...)` does, so the leaf
+            # is only a fast path; the caller's own import binding is what names the callee.
+            if leaf != fname and not (isinstance(binding, str) and binding.endswith("." + fname)):
+                continue
+            parts = (binding or self.resolve_canonical_name(func, caller_scope)
+                     or dotted_name(func) or "").split(".")
+            if len(parts) < 2 or parts[-1] != fname:
+                continue
+            bound_to = self._c89_module_of(".".join(parts[:-1]))
+            if bound_to != owner and not owner.endswith("." + bound_to):
+                continue
+            found.append((call_node, caller_scope, _lineno))
+        cache[key] = found
+        return found
+
+    def _c89_statement_arrives_from_a_tainted_caller(self, call: ast.Call, scope_id: str,
+                                                     mod_name: str) -> bool:
+        """A parameter-shaped sink is loud when a caller really does feed it client text.
+
+        This is the mirror of `_c89_parameter_callers_are_internal`, and it exists because the
+        cross-claiming repair loop used to write this row by accident: `execute(statement)` in one file
+        was credited with another file's f-string, which is how a finding came to name a file that does
+        not contain the sink node. The proof here is the dataflow itself -- a call site in a DIFFERENT
+        scanned module whose argument resolves to config/request/env text -- so the row is written
+        against the file the sink lives in and for a reason that can be read off the AST. An empty or
+        unresolvable call-site set answers False, which is the same answer the repair gave before: a
+        statement this engine cannot trace is left exactly as the registry pass reported it.
+        """
+        if ":function:" not in (scope_id or "") or not isinstance(call.func, ast.Attribute):
+            return False
+        query = None
+        for keyword in call.keywords:
+            if keyword.arg in {"query", "sql", "statement"}:
+                query = keyword.value
+        if query is None:
+            if len(call.args) != 1 or call.keywords:
+                return False
+            query = call.args[0]
+        if not isinstance(query, ast.Name):
+            return False
+        fname = scope_id.rsplit(":function:", 1)[1].split(":")[0]
+        own_scope = f"{mod_name}:function:{fname}" if mod_name else ""
+        func = self.functions.get(scope_id) or (self.functions.get(own_scope) if own_scope else None)
+        args = getattr(getattr(func, "args", None), "args", None) if func is not None else None
+        if args is None:
+            return False
+        declared = list(getattr(func.args, "posonlyargs", [])) + list(args)
+        position = None
+        for index, parameter in enumerate(declared):
+            if parameter.arg == query.id:
+                position = index
+                break
+        if position is None:
+            return False
+        if declared and declared[0].arg in {"self", "cls"}:
+            position -= 1
+        if not own_scope:
+            own_scope = f"{self._c89_module_of(scope_module(scope_id))}:function:{func.name}"
+        sites = self.call_sites_by_target.get(own_scope) or []
+        if not sites:
+            sites = self.call_sites_by_target.get(f"{scope_module(scope_id)}:function:{func.name}") or []
+        if not sites:
+            # The repair loop runs before call-site indexing exists, so an empty index here means "not
+            # indexed yet", not "nobody calls this". `raw_calls` and the import map are both complete.
+            sites = self._c89_cross_module_call_sites(mod_name, fname)
+        for site in sites:
+            if isinstance(site, tuple):
+                caller_call, caller_scope = site[0], (site[1] if len(site) > 1 else "") or ""
+            else:
+                caller_call, caller_scope = site, scope_id
+            if not isinstance(caller_call, ast.Call) or not caller_scope:
+                continue
+            if self._c89_module_of(scope_module(caller_scope)) == mod_name:
+                # Same file: the single-file walk already had its chance at this flow.
+                continue
+            argument = None
+            for keyword in caller_call.keywords:
+                if keyword.arg == query.id:
+                    argument = keyword.value
+                    break
+            if argument is None:
+                if position < 0 or position >= len(caller_call.args):
+                    continue
+                argument = caller_call.args[position]
+            resolved = argument
+            use_lineno = getattr(argument, "lineno", getattr(call, "lineno", 1))
+            for _ in range(3):
+                if not isinstance(resolved, ast.Name):
+                    break
+                nxt = self._c89_assigned_expr(resolved.id, caller_scope, use_lineno)
+                if nxt is None:
+                    cross = self._c89_global_binding(
+                        resolved.id, self._c89_module_of(scope_module(caller_scope)))
+                    if cross is None:
+                        break
+                    nxt, caller_scope, use_lineno = cross[1], f"{cross[0]}:global", 10 ** 9
+                if nxt is resolved:
+                    break
+                resolved = nxt
+            if self._c89_text_is_client_supplied(resolved, caller_scope, use_lineno) or \
+                    self._c89_expression_rides_an_external_source(resolved):
+                return True
+        return False
+
+    def _c89_statement_is_internal_maintenance(self, resolved: ast.AST, res_scope: str,
+                                               res_lineno: int, scope_id: str,
+                                               mod_name: str) -> bool:
+        if resolved is None or self._c89_text_is_client_supplied(resolved, res_scope, res_lineno):
+            return False
+        # An ORM/DDL construct object is not text with a hole in it: `DropConstraint(alter["old_fk"])`,
+        # `update(Events)`, `delete(States)` -- the driver composes the SQL.
+        if isinstance(resolved, ast.Call):
+            leaf = (dotted_name(resolved.func) or "").split(".")[-1]
+            if leaf in CWE89_STATEMENT_CONSTRUCT_LEAVES \
+                    and leaf not in {"text", "lambda_stmt", "statement_lambda"}:
+                return True
+            if leaf in {"execute", "text"}:
+                inner = resolved.args[0] if resolved.args else None
+                if inner is not None:
+                    return self._c89_statement_is_internal_maintenance(
+                        inner, res_scope, res_lineno, scope_id, mod_name)
+            if leaf and self._c89_factory_returns_statement(resolved.func, res_scope,
+                                                            res_lineno):
+                if not self._c89_text_is_client_supplied(resolved, res_scope, res_lineno):
+                    return True
+        if self._c89_template_is_maintenance(resolved, res_scope, res_lineno):
+            return True
+        if isinstance(resolved, ast.Name):
+            # A bare variable holding the statement: prove it through the binding or the callers.
+            assigned = self._c89_assigned_expr(resolved.id, res_scope, res_lineno)
+            if assigned is not None and assigned is not resolved:
+                return self._c89_statement_is_internal_maintenance(
+                    assigned, res_scope, res_lineno, scope_id, mod_name)
+            return self._c89_parameter_callers_are_internal(resolved.id, res_scope, res_lineno)
+        return False
+
+    def _c89_registry_sink_is_internal(self, record) -> bool:
+        """Ask the maintenance proof about a registry-created sink (`session.execute(...)`)."""
+        call = getattr(record, "node", None)
+        statement_expr = None
+        if not isinstance(call, ast.Call):
+            # The engine books a multi-line sink on the call line AND on the argument line, so the same
+            # statement arrives twice: once as `session.execute(...)`, once as the bare `text(f"...")`
+            # argument node. Both are the same bytes, so the argument spelling is proved directly.
+            parent = getattr(call, "parent", None)
+            if isinstance(parent, ast.Call) and parent.args and call in parent.args \
+                    and ((dotted_name(parent.func) or "").split(".")[-1]
+                         in {"text", "execute", "executemany"}):
+                statement_expr = call
+            else:
+                return False
+        else:
+            statement_expr = call.args[0] if call.args else None
+            if statement_expr is None:
+                for keyword in call.keywords:
+                    if keyword.arg in {"query", "sql", "statement", "text"}:
+                        statement_expr = keyword.value
+                        break
+        if statement_expr is None:
+            return False
+        scope_id = getattr(record, "scope_id", "") or ""
+        lineno = getattr(statement_expr, "lineno", 1) or getattr(call, "lineno", 1)
+        resolved, res_scope, res_lineno = statement_expr, scope_id, lineno
+        for _ in range(4):
+            if not isinstance(resolved, ast.Name):
+                break
+            nxt = self._c89_assigned_expr(resolved.id, res_scope, res_lineno)
+            if nxt is None:
+                cross = self._c89_global_binding(resolved.id, self._c89_module_of(scope_module(res_scope)))
+                if cross is None:
+                    break
+                nxt, res_scope, res_lineno = cross[1], f"{cross[0]}:global", 10 ** 9
+            if nxt is resolved:
+                break
+            resolved = nxt
+        return self._c89_statement_is_internal_maintenance(resolved, res_scope, res_lineno,
+                                                           scope_id, self._c89_module_of(scope_module(scope_id)))
+
     def _collect_cwe89_driver_querybuilder_findings(self) -> None:
         """Phase 10.2: driver alias expansion, ORM query-builder sinks, and edge repair.
 
@@ -29301,6 +30819,12 @@ class TaintTracker:
                 # Only the no-SQL-shape branch can be talked out of a finding by its template: the
                 # shape-required branch has already seen a verb.
                 return False
+            # ... unless the statement is maintenance SQL the program wrote itself, with no value from
+            # outside the file able to reach it. This is asked last so the veto above still owns every
+            # config-shaped source.
+            if self._c89_statement_is_internal_maintenance(resolved, res_scope, res_lineno,
+                                                            scope_id, mod_name):
+                return False
             return True
 
         def _emit89(call: ast.Call, mod_name: str, scope_id: str) -> None:
@@ -29365,19 +30889,31 @@ class TaintTracker:
             if record.security_node.metadata.get("cwe") == "CWE-89"
             and isinstance(record.node, ast.Call)
         ]
+        # P1 must be attributed to the module that OWNS the sink. This loop used to sit inside
+        # `for mod_name, tree in self.modules.items()`, so every module claimed every record and the
+        # alphabetically first file stamped OTHER files' callee linenos onto its own path -- 21 CWE-89
+        # rows landed on homeassistant/__main__.py at lines 416..2562, which that 300-line file does
+        # not have, and a 2-line cookie fixture came to own line 6 of a SQL file. The owner is read off
+        # the record itself; when it cannot be read the repair is skipped, because inventing a
+        # (file, line) is worse than leaving the finding as the registry pass wrote it.
+        for record in repair_candidates:
+            if any(key.endswith("source_id") for key in record.security_node.metadata):
+                continue
+            call = record.node
+            scope_id = record.scope_id
+            attr = call.func.attr if isinstance(call.func, ast.Attribute) else None
+            if attr not in execute_attrs and attr not in driver_attrs:
+                continue
+            mod_name = self._c89_record_owner_module(scope_id,
+                                                     record.security_node.location.file)
+            if not mod_name:
+                continue
+            if _vulnerable_call(call, scope_id, mod_name, require_shape_or_db=True) or \
+                    self._c89_statement_arrives_from_a_tainted_caller(call, scope_id, mod_name):
+                _emit89(call, mod_name, scope_id)
+
         for mod_name, tree in self.modules.items():
             mod_file = self.file_paths.get(mod_name, "")
-            for record in repair_candidates:
-                if any(key.endswith("source_id") for key in record.security_node.metadata):
-                    continue
-                call = record.node
-                scope_id = record.scope_id
-                attr = call.func.attr if isinstance(call.func, ast.Attribute) else None
-                if attr not in execute_attrs and attr not in driver_attrs:
-                    continue
-                if _vulnerable_call(call, scope_id, mod_name, require_shape_or_db=True):
-                    _emit89(call, mod_name, scope_id)
-
             for node in self._reachable_nodes(tree):
                 if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
                     continue
@@ -33778,6 +35314,14 @@ class TaintTracker:
             stype = sink.metadata.get("sink_type")
             op = sink.metadata.get("operation")
 
+            if cwe == "CWE-22" and target_expr is not None and \
+                    self._c22_path_is_repo_internal_enumeration(
+                        target_expr, record.scope_id, getattr(record.node, "lineno", 1)):
+                # The repository picked every byte of this path, so there is no traversal to report.
+                if sink in self.sinks:
+                    self.sinks.remove(sink)
+                continue
+
             if self._c22_slice_g_proves_safe_sink(record, target_expr):
                 if sink in self.sinks:
                     self.sinks.remove(sink)
@@ -33966,7 +35510,12 @@ class TaintTracker:
                 continue
 
             p4_source_id = sink.metadata.get("p4_source_id")
-            if p4_source_id and not c22_open_owes_taint:
+            # A CWE-89 sink whose statement the file itself wrote owes its taint to proof, not to an
+            # invented source. Skipping the short-circuit hands the decision to the provenance walk
+            # below, which finds no client-controlled value in maintenance SQL and still finds one in
+            # `components/sql`, where the statement is `conf[CONF_QUERY]`.
+            if p4_source_id and not c22_open_owes_taint \
+                    and not (cwe == "CWE-89" and self._c89_registry_sink_is_internal(record)):
                 # The generic fallback emitter (`_collect_cwe22_parameter_path_sinks`) reports by
                 # adopting or creating a sink and stamping this key, so this arm -- not the phase-11
                 # one -- is where `CWE-22: Unvalidated user input or dynamic variable used in file
@@ -34123,6 +35672,17 @@ class TaintTracker:
                 pg = None
                 if taint.state in (TaintState.TAINTED, TaintState.UNKNOWN):
                     pg = self._build_proof_graph(taint, sink, record, cwe)
+                if cwe == "CWE-89" and self._c89_registry_sink_is_internal(record):
+                    # What made this sink look tainted is an OPAQUE CALL inside the builder --
+                    # `lambda_stmt(...)`, `select(...)`, the recorder's own `find_*`/`delete_*` factories
+                    # -- not a value anybody outside the program supplied. The statement proof above
+                    # already walked that builder and found only ORM constructs, bound parameters and
+                    # table names from module-level collections, so there is no flow to report. A
+                    # request/config value anywhere in the template vetoes the proof and this row is
+                    # still written with the same message it always had.
+                    if sink in self.sinks:
+                        self.sinks.remove(sink)
+                    continue
                 if taint.state == TaintState.TAINTED:
                     kind = "CONFIRMED_DATA_FLOW" if taint.confidence >= 1.0 else "POTENTIAL_DATA_FLOW"
                     self.edges.append(DataFlowEdge(source_id=taint.source_id or "UNKNOWN", target_id=sink.id, kind=kind, confidence=taint.confidence, transform=full_path_str, proof_graph=pg))

@@ -1,4 +1,12 @@
 {'total_discovered_files': 609, 'scanned_files': 608, 'fast_path_skipped_files': 1, 'unparseable_files': 0, 'scope': 'all'}
+# Re-blessed 425 -> 424 (TASK 15, Home Assistant pocket retirement). Exactly one key was removed:
+#   benchmark/corpus/cwe_1004_cookies/test_v01_bad.py:6 CWE-89 SQL_QUERY_EXECUTION CRITICAL
+# That corpus file is two lines long and contains no SQL at all, so line 6 cannot be a finding about
+# it. The CWE-89 registry repair used to run inside the per-module loop, letting the alphabetically
+# first module stamp another module's callee line number onto its own path; the owner is now read off
+# the record. The real sink this phantom duplicated is still blessed below as
+# benchmark/corpus/cwe_89_sqli/test_v01_bad.py:6. Nothing else moved: NEW=0, and the CWE-338 (9) and
+# CWE-22 (8) key censuses are unchanged.
 ('C:\\Users\\aarti gaur\\OneDrive\\Desktop\\time code security\\benchmark\\fixtures\\cross_file\\case_01_multihop_sqli\\views01.py', 6, 'CWE-89', 'cross_file', 'Cross-file leak: fixtures.cross_file.case_01_multihop_sqli.views01.profile_view flows into fixtures.cross_file.case_01_multihop_sqli.service01.load_profile (execute) at C:\\Users\\aarti gaur\\OneDrive\\Desktop\\time code security\\benchmark\\fixtures\\cross_file\\case_01_multihop_sqli\\repo01.py:7', 'HIGH')
 ('C:\\Users\\aarti gaur\\OneDrive\\Desktop\\time code security\\benchmark\\fixtures\\cross_file\\case_02_kwargs_command\\api02.py', 6, 'CWE-78', 'cross_file', 'Cross-file leak: fixtures.cross_file.case_02_kwargs_command.api02.tool_view flows into fixtures.cross_file.case_02_kwargs_command.shell02.launch (run) at C:\\Users\\aarti gaur\\OneDrive\\Desktop\\time code security\\benchmark\\fixtures\\cross_file\\case_02_kwargs_command\\shell02.py:5', 'HIGH')
 ('C:\\Users\\aarti gaur\\OneDrive\\Desktop\\time code security\\benchmark\\fixtures\\cross_file\\case_03_oop_instance_sqli\\views03.py', 7, 'CWE-89', 'cross_file', 'Cross-file leak: fixtures.cross_file.case_03_oop_instance_sqli.views03.account_view flows into fixtures.cross_file.case_03_oop_instance_sqli.accounts03.UserService.search (execute) at C:\\Users\\aarti gaur\\OneDrive\\Desktop\\time code security\\benchmark\\fixtures\\cross_file\\case_03_oop_instance_sqli\\gateway03.py:6', 'HIGH')
@@ -9,7 +17,6 @@
 ('C:\\Users\\aarti gaur\\OneDrive\\Desktop\\time code security\\benchmark\\fixtures\\cross_file\\case_19_multi_sink_fanout_bad\\controller.py', 7, 'CWE-89', 'cross_file', 'Cross-file leak: fixtures.cross_file.case_19_multi_sink_fanout_bad.controller.dashboard_view flows into fixtures.cross_file.case_19_multi_sink_fanout_bad.db_mod.query_records (execute) at C:\\Users\\aarti gaur\\OneDrive\\Desktop\\time code security\\benchmark\\fixtures\\cross_file\\case_19_multi_sink_fanout_bad\\db_mod.py:7', 'HIGH')
 ('C:\\Users\\aarti gaur\\OneDrive\\Desktop\\time code security\\benchmark\\fixtures\\cross_file\\case_19_multi_sink_fanout_bad\\controller.py', 8, 'CWE-78', 'cross_file', 'Cross-file leak: fixtures.cross_file.case_19_multi_sink_fanout_bad.controller.dashboard_view flows into fixtures.cross_file.case_19_multi_sink_fanout_bad.os_mod.run_tool (system) at C:\\Users\\aarti gaur\\OneDrive\\Desktop\\time code security\\benchmark\\fixtures\\cross_file\\case_19_multi_sink_fanout_bad\\os_mod.py:5', 'HIGH')
 ('benchmark/corpus/cwe_1004_cookies/test_v01_bad.py', 2, 'CWE-614', 'INSECURE_COOKIE_CONFIGURATION', 'CWE-614: Insecure Cookie Configuration (Missing Secure, HttpOnly, SameSite)', 'MEDIUM')
-('benchmark/corpus/cwe_1004_cookies/test_v01_bad.py', 6, 'CWE-89', 'SQL_INJECTION', 'CWE-89: SQL_QUERY_EXECUTION', 'CRITICAL')
 ('benchmark/corpus/cwe_1004_cookies/test_v01_good.py', 2, 'CWE-1275', 'INSECURE_COOKIE_SAMESITE', 'CWE-1275: Insecure Cookie Configuration (Missing SameSite)', 'LOW')
 ('benchmark/corpus/cwe_1004_cookies/test_v02_bad.py', 2, 'CWE-614', 'INSECURE_COOKIE_CONFIGURATION', 'CWE-614: Insecure Cookie Configuration (Missing Secure, HttpOnly, SameSite)', 'MEDIUM')
 ('benchmark/corpus/cwe_1004_cookies/test_v02_good.py', 2, 'CWE-1275', 'INSECURE_COOKIE_SAMESITE', 'CWE-1275: Insecure Cookie Configuration (Missing SameSite)', 'LOW')

@@ -20,8 +20,8 @@ Measured on the shipped engine, this tier by tier:
 * TIER 3 -- the filter is display-only: a fixed row list at floors None/low/medium/high, the
   missing-label default, purity (subset, never mutation), and the unknown-label fallback.
 * TIER 4 -- the blessed distribution, recomputed from both frozen corpora and joined to the frozen
-  keys: parity ``HIGH=404 MEDIUM=15 LOW=6`` over 425, Big-8 ``HIGH=18 MEDIUM=71 LOW=30`` over 119.
-  The mandate's "all 119 and all 425 retain high" is FALSE by 422-of-544, and the two families it
+  keys: parity ``HIGH=403 MEDIUM=15 LOW=6`` over 424, Big-8 ``HIGH=18 MEDIUM=71 LOW=30`` over 119.
+  The mandate's "all 119 and all 424 retain high" is FALSE by 421-of-543, and the two families it
   names are the reason: CWE-208 is 36/36 LOW and Big-8 CWE-117 is 43/43 MEDIUM.
 * TIER 5 -- the blindness proof, both directions: two rows differing only in ``confidence`` yield
   the SAME canonical key (so a label drift is invisible to the baselines), and two rows differing in
@@ -212,12 +212,12 @@ def _run_cli(argv, cwd):
     return json.loads(text[start:])
 
 
-EXPECTED_MIX = {'parity': {'HIGH': 404, 'MEDIUM': 15, 'LOW': 6},
+EXPECTED_MIX = {'parity': {'HIGH': 403, 'MEDIUM': 15, 'LOW': 6},
                 'big8': {'HIGH': 18, 'MEDIUM': 71, 'LOW': 30}}
 
 
 def _corpus_labels(kind, cwd):
-    # `--include-tests` is load-bearing here, not cosmetic. 27 of the 425 blessed parity keys live under
+    # `--include-tests` is load-bearing here, not cosmetic. 27 of the 424 blessed parity keys live under
     # a `fixtures/` directory, which `cli.py` now holds back from a default directory walk, and this tier
     # joins every key in the frozen baseline before it compares the severity mix against EXPECTED_MIX --
     # without the flag it reads 27 corpus files as dropped true positives and buckets the wrong set.
@@ -407,7 +407,7 @@ def main(argv) -> int:
         print(f'failures={len(FAILURES)}')
         return 1
     print('failures=0')
-    print('VERDICT: PASS - confidence bucketing law pinned, blessed mix 404/15/6 + 18/71/30, '
+    print('VERDICT: PASS - confidence bucketing law pinned, blessed mix 403/15/6 + 18/71/30, '
           'key blindness proved')
     return 0
 

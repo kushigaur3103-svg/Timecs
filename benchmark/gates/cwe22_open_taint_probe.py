@@ -586,7 +586,7 @@ from gate_common import META, load_keys  # noqa: E402
 GENERIC = ('CWE-22: Unvalidated user input or dynamic variable used in file path operation')
 OPEN_MSG = 'CWE-22: open'
 CWE22_LOCKED = {'parity': 8, 'big8': 16}
-BASELINE_TOTALS = {'parity': 425, 'big8': 119}
+BASELINE_TOTALS = {'parity': 424, 'big8': 119}
 # Every identity the rule is allowed to keep loud by pinning rather than by proving. Spelled out here
 # because a pin is a suspension of the rule, and a suspension nobody can count is a rule that has been
 # quietly deleted; `open_pin_table_emptied` and `check_blessed_loud` are what make each row below earn

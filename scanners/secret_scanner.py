@@ -20,6 +20,16 @@ shell interpolation (`${VAR}`, `$VAR`), empty and boolean/null literals, a 40-ch
 with no credential name (a git commit SHA), and any value carrying a placeholder word. A template
 or example document is never read at all -- `.env.example` exists to hold fake values.
 
+Statistics alone cannot tell a credential from a sentence about a credential, so a generic
+assignment must also pass a lexical test (`_is_literal_credential`): it may carry no space or tab,
+and it may not be wrapped in a macro or reference marker. The bug this closes is Home Assistant's
+`strings.json` localisation catalogues, whose UI labels sit under real sensitive names and clear
+every statistical floor -- `"access_token": "Personal Access Token (PAT)"` measures 3.78 bits per
+character over 27, and `"api_key": "[%key:common::config_flow::data::api_key%]"` (4.14 over 42) is a
+reference to a string stored elsewhere, not the string itself. Both gates apply to the generic
+branch only: a PEM header contains spaces by definition, and a URL password may legitimately carry
+one, so those families keep their own proof and gain no new way to go quiet.
+
 The matched secret is never copied into a finding. Reports, SARIF and logs are shared artefacts;
 a scanner that re-publishes the credential it found has moved the leak rather than reported it.
 """
@@ -75,6 +85,40 @@ INTERPOLATION = re.compile(r"\$(?:\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*)")
 COMMIT_SHA = re.compile(r"[0-9a-fA-F]{40}")
 MIN_GENERIC_LENGTH = 16
 MIN_GENERIC_ENTROPY = 3.3
+# The lexical floor for a *literal* credential, sitting under a sensitive name. Prose says what a
+# credential is; a macro reference says where one lives. Neither is a secret, and no length,
+# character-class or entropy threshold can separate them from one -- only shape can.
+PROSE_CHARACTERS = (" ", "\t")
+# The closing marker is optional in every pattern below because ASSIGNMENT's unquoted alternative
+# stops before `]`, `}` and `)`: `api_key: [%key:common::config_flow::data::api_key%]` arrives here
+# as `[%key:common::config_flow::data::api_key%`. A reference is a reference either way.
+REFERENCE_WRAPPERS = (
+    # Home Assistant localisation catalogues (and Jinja/Template Toolkit references): the whole
+    # value is `[%key:section::name%]`, a pointer into a string table.
+    re.compile(r"\[\%.*\%\]?"),
+    re.compile(r"\{\{.*\}\}?"),   # {{ expression }}
+    re.compile(r"\{%.*%\}?"),     # {% statement %}
+    re.compile(r"\$\{.*\}?"),     # ${VAR}
+    re.compile(r"\$\(.*\)?"),     # $(command)
+    re.compile(r"\<.*\>?"),       # <value supplied somewhere else>
+)
+
+
+def _is_literal_credential(value: str) -> bool:
+    """False when the value is prose or an indirect reference rather than a secret itself.
+
+    Gated on the generic-assignment branch only, by design: `-----BEGIN RSA PRIVATE KEY-----`
+    carries spaces and `VENDOR_PATTERNS` / `SERVICE_URL` prove their own shapes, so this rule must
+    never be able to silence them. A generic assignment is the one place where the name, not the
+    value, did the identifying -- which is exactly where a UI label can impersonate a credential.
+    """
+    if not value:
+        return False
+    if any(char in value for char in PROSE_CHARACTERS):
+        return False
+    if any(pattern.fullmatch(value) for pattern in REFERENCE_WRAPPERS):
+        return False
+    return True
 
 
 def is_secret_path(path: str) -> bool:
@@ -171,6 +215,8 @@ def _iter_hits(source: str) -> Iterator[Tuple[int, str, str, str, str]]:
                 continue
             value = _unquote(match.group("value"))
             if is_refused(value, named=True):
+                continue
+            if not _is_literal_credential(value):
                 continue
             if len(value) < MIN_GENERIC_LENGTH or _character_classes(value) < 2:
                 continue

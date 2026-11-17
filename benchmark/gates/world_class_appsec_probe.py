@@ -22,6 +22,12 @@ The contract, in ten tiers:
    SHA with no credential name, every placeholder word, low entropy, a single character class, a
    short value, an innocuous name, and every lockfile/template path. Each refusal is paired with
    a loud twin in the same call shape, so a quiet tree cannot hide a reader that never ran.
+2b. LEXICAL REFUSALS -- a generic assignment whose value carries a space or tab, or is wrapped in a
+   macro/reference marker (`[%key:...%]`, `{{...}}`, `{%...%}`, `${...}`, `$(...)`, `<...>`), is a
+   UI label or a localisation pointer, not a credential. Every fixture re-measures above all three
+   statistical floors, so the lexical rule is the only thing that can explain the silence -- the
+   Home Assistant `strings.json` bug (123 CWE-798 rows at 2c62569) -- while vendor tokens, PEM
+   headers, URL passwords and plain high-entropy literals are pinned loud beside it.
 3. CVE VAULT -- the size band, every CVE the task names, parseable and ordered intervals, 30
    loud/quiet twins across the new packages, and 9 partial-immunity pins proving that fixing one
    advisory does not silence the next.
@@ -391,6 +397,117 @@ def check_secret_refusals():
     if not SS.is_refused(COMMIT_SHA) or SS.is_refused(COMMIT_SHA, named=True):
         failures.append("the commit-SHA refusal is not name-conditional")
     return failures, len(REFUSALS), len(REFUSED_PATHS)
+
+
+# ── tier 2b: the lexical refusal -- UI labels and localisation macros ──────
+# The Home Assistant `strings.json` shapes that each produced a CWE-798 finding at 2c62569. The
+# bug was structural: `api_key` and `access_token` are real sensitive names, and the value only had
+# to clear length 16, two character classes and 3.3 bits per character. English prose and macro
+# references clear all three ("Personal Access Token (PAT)" = 3.78, the macro = 4.14), so entropy
+# could never have separated a credential from a sentence about one.
+# (label, quiet line, loud twin line). Every quiet value is re-measured below against the three
+# floors, so the only thing left that can explain its silence is `_is_literal_credential`.
+PROVEN_LEXICAL = (
+    ("prose_ui_label", 'ACCESS_TOKEN="Personal Access Token (PAT)"',
+     "ACCESS_TOKEN=" + GENERIC_VALUE),
+    ("prose_error_string", 'API_KEY="Invalid authentication credentials"',
+     "API_KEY=" + GENERIC_VALUE),
+    ("prose_prompt", 'API_KEY="Please enter your access token value"',
+     "API_KEY=" + GENERIC_VALUE),
+    ("ha_localisation_macro", 'API_KEY="[%key:common::config_flow::data::api_key%]"',
+     "API_KEY=" + GENERIC_VALUE),
+    # Unquoted, so ASSIGNMENT drops the closing `]` -- the truncated capture must refuse too.
+    ("ha_localisation_unquoted", "API_KEY: [%key:common::config_flow::error::auth_failed%]",
+     "API_KEY: " + GENERIC_VALUE),
+    ("jinja_expression", 'SECRET_KEY="{{vault.read.token}}"', "SECRET_KEY=" + GENERIC_VALUE),
+    ("jinja_statement", 'SECRET_KEY="{%generate_label%}"', "SECRET_KEY=" + GENERIC_VALUE),
+    ("angle_reference", 'DB_PASSWORD="<rotated-vault-handle>"', "DB_PASSWORD=" + GENERIC_VALUE),
+    ("command_reference", 'AUTH_TOKEN="$(vault-read-token)"', "AUTH_TOKEN=" + GENERIC_VALUE),
+)
+LEXICAL_QUIET_FILES = {f"lx{index:02d}.env": module(quiet)
+                       for index, (_label, quiet, _loud) in enumerate(PROVEN_LEXICAL)}
+LEXICAL_TWIN_FILES = {f"lx{index:02d}.env": module(loud)
+                      for index, (_label, _quiet, loud) in enumerate(PROVEN_LEXICAL)}
+# Reported strings whose silence the length floor already explained. Kept as fixtures because a
+# regression that re-loudens them is the same bug wearing a different hat.
+REGRESSION_LEXICAL = (
+    'api_key: "Your API key"',
+    'access_token: "Unknown error."',
+)
+# Zero-FN pin: every credential family the lexical rule must NOT be able to touch. These are the
+# shapes the task names -- vendor prefixes, a PEM header (which carries spaces by definition), a
+# URL password and a plain high-entropy literal.
+LEXICAL_LOUD_FILES = {
+    "loud_hex.env": module('api_key = "a9f8d7c6b5e4a3f2d1c0b9a8e7f6d5c4"'),
+    "loud_vendor.env": module("GITHUB_TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij",
+                              "STRIPE_KEY=sk_live_4eC39HqLyjWDarjtT1zdp7dc",
+                              "SLACK_TOKEN=xoxb-QRSTUVWXYZ-9876543210",
+                              "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7REALKEY",
+                              "GH_FINE=github_pat_11ABCDEFG0abcdefghij_"
+                              "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"),
+    "loud_pem.sh": module("export PEM='-----BEGIN RSA PRIVATE KEY-----'"),
+    "loud_url.env": module("DB_URL=" + LOUD_URL),
+    "loud_generic.env": module("API_KEY=" + GENERIC_VALUE, "SECRET_KEY=Zx9Qm2Vb7Lp4Rt8Yw1Nc"),
+}
+
+
+def _assignment_value(line):
+    """The value ASSIGNMENT actually captures for a line -- the engine's own parse, not a guess."""
+    match = SS.ASSIGNMENT.search(line)
+    return SS._unquote(match.group("value")) if match else None
+
+
+def check_lexical_refusals():
+    failures = []
+    leaks = SS.audit_secret_files(LEXICAL_QUIET_FILES)
+    for item in leaks:
+        failures.append(f"a UI label or localisation macro went loud: "
+                        f"{item['file']} {item['secret_type']} {item['evidence']}")
+    for index, (label, quiet, loud) in enumerate(PROVEN_LEXICAL):
+        twins = SS.audit_secret_files({f"lx{index:02d}.env": module(loud)})
+        if not twins:
+            failures.append(f"{label}: the loud twin {loud!r} is quiet too")
+        value = _assignment_value(quiet)
+        if value is None:
+            failures.append(f"{label}: {quiet!r} is not an assignment ASSIGNMENT can parse")
+            continue
+        # The refusal must be attributable. If the old floors or the word list already silenced
+        # this value, the fixture proves nothing about the lexical rule.
+        if len(value) < SS.MIN_GENERIC_LENGTH:
+            failures.append(f"{label}: {value!r} fails the length floor, so it does not test "
+                            f"the lexical rule")
+        if SS._character_classes(value) < 2:
+            failures.append(f"{label}: {value!r} fails the class floor, so it does not test "
+                            f"the lexical rule")
+        if SS.shannon_entropy(value) < SS.MIN_GENERIC_ENTROPY:
+            failures.append(f"{label}: {value!r} (entropy "
+                            f"{SS.shannon_entropy(value):.2f}) fails the entropy floor, so it "
+                            f"does not test the lexical rule")
+        if SS.is_refused(value, named=True):
+            failures.append(f"{label}: {value!r} is refused by the word list, not by the "
+                            f"lexical rule")
+        if SS._is_literal_credential(value):
+            failures.append(f"{label}: {value!r} still looks like a literal credential")
+    for line in REGRESSION_LEXICAL:
+        if SS.audit_secret_files({"reg.env": module(line)}):
+            failures.append(f"the reported string {line!r} went loud")
+    # Whitespace is the proof that the rule is name-scoped: a PEM header carries spaces and stays
+    # loud, because the lexical gate only ever sees the generic-assignment branch.
+    loud_rows = SS.audit_secret_files(LEXICAL_LOUD_FILES)
+    for path in LEXICAL_LOUD_FILES:
+        rows = [item for item in loud_rows if item["file"] == path]
+        if not rows:
+            failures.append(f"a real credential went quiet under the lexical rule: {path}")
+    if {item["secret_type"] for item in loud_rows} != {
+            "Hard-coded API_KEY", "Hard-coded SECRET_KEY", "GitHub Personal Access Token",
+            "Stripe Live Secret Key", "Slack Token", "AWS Access Key ID",
+            "GitHub Fine-Grained Token", "PEM Private Key",
+            "Service URL With Embedded Password"}:
+        failures.append(f"the lexical zero-FN pin moved families: "
+                        f"{sorted({item['secret_type'] for item in loud_rows})}")
+    if not SS._is_literal_credential("a9f8d7c6b5e4a3f2d1c0b9a8e7f6d5c4"):
+        failures.append("a real 32-hex literal is refused by the lexical rule")
+    return failures, len(PROVEN_LEXICAL) + len(REGRESSION_LEXICAL), len(LEXICAL_LOUD_FILES)
 
 
 # ── tier 3: the expanded offline vault ────────────────────────────────────
@@ -1069,6 +1186,16 @@ MUTATIONS = {
         ((SS, "is_refused", _const(False)),),
         lambda: {item["secret_kind"] for item in SS.audit_secret_files(REFUSAL_PROOF_FILES)}
                 == {"vendor", "service_url", "generic"}),
+    # Removing the lexical gate must make every UI label and macro reference loud again -- and only
+    # those. That is what proves this rule, not the entropy floor, is what holds Home Assistant down.
+    "lexical_refusal_removed": (
+        ((SS, "_is_literal_credential", _const(True)),),
+        lambda: len(SS.audit_secret_files(LEXICAL_QUIET_FILES)) == len(PROVEN_LEXICAL)
+                and {item["secret_kind"] for item in SS.audit_secret_files(LEXICAL_QUIET_FILES)}
+                == {"generic"}),
+    "lexical_refusal_blind": (
+        ((SS, "_is_literal_credential", _const(False)),),
+        lambda: not _kinds(SS.audit_secret_files(LEXICAL_LOUD_FILES), "generic")),
     "path_refusal_removed": (
         ((SS, "is_secret_path", _const(True)),),
         lambda: len(SS.audit_secret_files(REFUSED_PATH_FILES)) >= len(REFUSED_PATHS)),
@@ -1152,8 +1279,12 @@ def main():
 
     refusal_failures, refusals, paths = check_secret_refusals()
     failures += refusal_failures
-    print(f"TIER 2 - zero-FP refusals over {refusals} values and {paths} refused paths: "
-          f"{len(refusal_failures)} failure(s)")
+    lexical_failures, lexical_rows, lexical_loud = check_lexical_refusals()
+    failures += lexical_failures
+    print(f"TIER 2 - zero-FP refusals over {refusals} values and {paths} refused paths, plus "
+          f"{lexical_rows} lexical (UI label / localisation macro) refusals against "
+          f"{lexical_loud} loud pins: {len(refusal_failures) + len(lexical_failures)} "
+          f"failure(s)")
 
     vault_failures, vault = check_vault()
     failures += vault_failures

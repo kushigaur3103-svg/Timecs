@@ -1,4 +1,4 @@
-"""Modular auxiliary security scanners: containers and CI/IaC.
+"""Modular auxiliary security scanners: containers, CI/IaC and dependency composition.
 
 These run beside the Python AST engine, never inside it. ``ast_scanner.py`` is not imported for
 detection here and is not modified by this package; the only shared surface is the finding dict
@@ -8,6 +8,11 @@ shape that ``cli._merge_findings`` already consumes.
 unpinned-action row. The scanners in this package add the Snyk-container and Snyk-IaC rule families
 on top, and ``audit_security_files`` suppresses a second CWE-250 on a file the legacy auditor
 already booked so one defect is never reported twice.
+
+``sca_scanner`` is the Snyk-Open-Source family: manifests and lockfiles matched against the offline
+advisory index in ``cve_index``, then labelled by an import-reachability proof the caller supplies.
+It is deliberately separate from ``audit_security_files`` because reachability needs the Python
+engine's parsed trees, which only the caller has.
 """
 
 from __future__ import annotations
@@ -27,12 +32,18 @@ from .iac_scanner import (
     is_terraform_path,
     is_workflow_yaml_path,
 )
+from .sca_scanner import (
+    audit_sca_files,
+    is_manifest_path,
+    tag_reachability,
+)
 
 __all__ = [
     "audit_container_files", "audit_iac_security_files", "audit_security_files",
     "is_container_path", "is_compose_path", "is_dockerfile_name",
     "is_iac_security_path", "is_workflow_yaml_path", "is_terraform_path",
     "is_kubernetes_manifest", "is_aux_security_path",
+    "audit_sca_files", "is_manifest_path", "tag_reachability",
 ]
 
 

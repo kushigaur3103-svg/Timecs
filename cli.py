@@ -21,11 +21,14 @@ from diff_scan import changed_line_intervals, resolve_repo_root
 from html_auditor import audit_templates, is_template_path
 from iac_auditor import audit_iac_files
 from scanners import (
+    audit_sca_files,
     audit_security_files,
     is_container_path,
     is_kubernetes_manifest,
+    is_manifest_path,
     is_terraform_path,
     is_workflow_yaml_path,
+    tag_reachability,
 )
 from rule_engine import get_rule
 from suppression_resolver import resolve_line_suppressions
@@ -95,9 +98,9 @@ PROGRESS_FILE_EVERY = 250
 
 # Every finding belongs to exactly one analysis scope: template, container and CI/IaC paths are
 # routed to their auditors, everything else is Python. --scope selects which collectors run.
-SCOPE_ORDER = ("python", "docker", "iac", "html")
+SCOPE_ORDER = ("python", "docker", "iac", "sca", "html")
 SCOPE_LABELS = {"python": "Python Code", "docker": "Container/Config",
-                "iac": "CI/CD & IaC", "html": "HTML Templates"}
+                "iac": "CI/CD & IaC", "sca": "Dependencies (SCA)", "html": "HTML Templates"}
 
 # Confidence is a display label, never a detection decision: `--min-confidence` hides rows
 # from the report, the engine still emits every finding it emitted before.
@@ -125,6 +128,8 @@ def _scope_of(path, aux_scopes=None):
         return "docker"
     if is_workflow_yaml_path(lowered) or is_terraform_path(lowered):
         return "iac"
+    if is_manifest_path(lowered):
+        return "sca"
     return "python"
 
 
@@ -387,7 +392,7 @@ AUX_YAML_SUFFIXES = (".yml", ".yaml")
 
 def _collect_auxiliary_files(scan_path, exclude_patterns=None, config_excludes=None,
                              skip_non_production=False):
-    """Collect non-Python artefacts in one walk: (templates, security documents, scope map).
+    """Collect non-Python artefacts in one walk: (templates, security documents, manifests, scope map).
 
     Keys match _collect_files so findings share a single path namespace, and
     `--exclude` applies here too: a template under an excluded directory is just as
@@ -395,10 +400,11 @@ def _collect_auxiliary_files(scan_path, exclude_patterns=None, config_excludes=N
     as in _collect_files, as does `skip_non_production` -- a template inside a skipped
     `examples/` tree is out of scope for exactly the same reason.
 
-    The third return value maps each security document's key to its scope ("docker" for
-    images and compose, "iac" for workflows, Kubernetes and Terraform). It exists because a
-    Kubernetes manifest is recognised from content, not from its path, so the bucketing
-    decision has to survive the walk for `_scope_of` to report it honestly.
+    The fourth return value maps each security document's and manifest's key to its scope
+    ("docker" for images and compose, "iac" for workflows, Kubernetes and Terraform, "sca" for
+    dependency manifests and lockfiles). It exists because a Kubernetes manifest is recognised
+    from content, not from its path, so the bucketing decision has to survive the walk for
+    `_scope_of` to report it honestly.
     """
     cwd = Path.cwd().resolve()
     if not scan_path.exists():
@@ -417,10 +423,11 @@ def _collect_auxiliary_files(scan_path, exclude_patterns=None, config_excludes=N
             and not (config_excludes and config_excludes(_file_key(path, cwd)))
         )
     else:
-        return {}, {}, {}
+        return {}, {}, {}, {}
 
     templates = {}
     iac = {}
+    manifests = {}
     aux_scopes = {}
     buckets = {}
     skipped = 0
@@ -432,6 +439,8 @@ def _collect_auxiliary_files(scan_path, exclude_patterns=None, config_excludes=N
             buckets[path] = (iac, "docker")
         elif is_workflow_yaml_path(relative) or is_terraform_path(relative):
             buckets[path] = (iac, "iac")
+        elif is_manifest_path(relative):
+            buckets[path] = (manifests, "sca")
         elif relative.lower().endswith(AUX_YAML_SUFFIXES):
             # Scope undecided until the content is read: only a Kubernetes workload manifest
             # is claimed, every other YAML document is dropped again.
@@ -459,13 +468,53 @@ def _collect_auxiliary_files(scan_path, exclude_patterns=None, config_excludes=N
             scope = "iac"
         key = _file_key(path, cwd)
         bucket[key] = source
-        if bucket is iac:
+        if bucket is not templates:
             aux_scopes[key] = scope
     if skipped:
         print(f"Warning: skipped {skipped} of {total} auxiliary files; "
-              f"{len(templates) + len(iac)} scanned.", file=sys.stderr)
+              f"{len(templates) + len(iac) + len(manifests)} scanned.", file=sys.stderr)
     _PARTIAL["current_file"] = None
-    return templates, iac, aux_scopes
+    return templates, iac, manifests, aux_scopes
+
+
+def _imported_roots(tracker):
+    """Top-level import roots across the Python files the engine already parsed.
+
+    Reuses the ``tracker.modules`` trees instead of re-reading or re-parsing anything, so the
+    reachability proof never adds a second AST pass to a scan. A tree that is not a stdlib AST
+    (the opt-in tree-sitter reader) is parsed from the engine's own source snapshot. The first
+    importer wins, which makes the evidence deterministic regardless of module iteration order.
+    """
+    roots = {}
+    if tracker is None:
+        return roots
+    paths = getattr(tracker, "file_paths", {}) or {}
+    sources = getattr(tracker, "files", {}) or {}
+    for module, tree in (getattr(tracker, "modules", {}) or {}).items():
+        if not isinstance(tree, ast.AST):
+            source = sources.get(paths.get(module))
+            if not source:
+                continue
+            try:
+                tree = ast.parse(source)
+            except (SyntaxError, ValueError):
+                continue
+        path = str(paths.get(module, module))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                # A relative import names this project's own module, not a distribution.
+                if node.level or not node.module:
+                    continue
+                names = [node.module]
+            else:
+                continue
+            for name in names:
+                root = name.split(".", 1)[0]
+                if root and root not in roots:
+                    roots[root] = (path, node.lineno)
+    return roots
 
 
 def _merge_findings(*finding_groups):
@@ -1579,16 +1628,18 @@ def _scan(args):
         skip_non_production = tree_scan and not bool(getattr(args, "include_tests", False))
         _SCOPE_STATS["skipped_dirs"] = 0
         _SCOPE_STATS["skipped_files"] = 0
-        templates, iac, aux_scopes = _collect_auxiliary_files(
+        templates, iac, manifests, aux_scopes = _collect_auxiliary_files(
             args.path, exclude_patterns, config_excludes, skip_non_production)
         if scope not in ("all", "html"):
             templates = {}
+        if scope not in ("all", "sca"):
+            manifests = {}
         if scope in ("docker", "iac"):
             iac = {key: source for key, source in iac.items() if aux_scopes.get(key) == scope}
-            aux_scopes = {key: value for key, value in aux_scopes.items() if value == scope}
         elif scope != "all":
             iac = {}
-            aux_scopes = {}
+        aux_scopes = {key: value for key, value in aux_scopes.items()
+                      if scope == "all" or value == scope}
         _clock.mark("AuxCollect")
         tracker = None
         files = {}
@@ -1598,7 +1649,7 @@ def _scan(args):
                                        config_excludes=config_excludes,
                                        skip_non_production=skip_non_production)
             except ValueError:
-                if not templates and not iac:
+                if not templates and not iac and not manifests:
                     raise
         _clock.mark("CollectPy")
         
@@ -1640,13 +1691,14 @@ def _scan(args):
             _clock.mark("Parse+Init")
             _clock.mark("Analyze")
             _clock.mark("ASTFindings")
-        aux_file_counts = {"docker": 0, "iac": 0}
+        aux_file_counts = {"docker": 0, "iac": 0, "sca": 0}
         for aux_scope in aux_scopes.values():
             aux_file_counts[aux_scope] += 1
         file_counts = {
             "python": len(tracker.modules) if tracker else 0,
             "docker": aux_file_counts["docker"],
             "iac": aux_file_counts["iac"],
+            "sca": aux_file_counts["sca"],
             "html": len(templates),
         }
         scanned_files = sum(file_counts.values())
@@ -1669,6 +1721,10 @@ def _scan(args):
             "iac": {
                 "discovered": aux_file_counts["iac"],
                 "scanned": file_counts["iac"],
+            },
+            "sca": {
+                "discovered": aux_file_counts["sca"],
+                "scanned": file_counts["sca"],
             },
             "html": {
                 "discovered": len(templates),
@@ -1694,11 +1750,17 @@ def _scan(args):
         # pair, byte-identical. The modular scanners add the container and CI/IaC rule families on
         # top and are handed the legacy rows so one root-user defect is never booked twice.
         legacy_iac = audit_iac_files(iac, audit_all=getattr(args, "audit_all", False))
+        sca_findings = audit_sca_files(manifests)
+        if sca_findings:
+            # The import walk is paid for only when a vulnerable pin exists, so a Python-only tree
+            # -- every latency gate's workload -- does no extra work at all.
+            tag_reachability(sca_findings, _imported_roots(tracker))
         findings = _merge_findings(
             ast_findings,
             audit_templates(templates),
             legacy_iac,
             audit_security_files(iac, legacy_findings=legacy_iac),
+            sca_findings,
         )
         findings = consolidate_findings(findings)
         # Template/IaC auditors report a structural match and no data-flow provenance, which
@@ -1732,7 +1794,7 @@ def _scan(args):
         # directory. Applied after every producer so cross-file and JS rows obey it too.
         findings = _apply_config_filters(findings, config, path_excludes=tree_scan,
                                          scan_root=_config_root, aux_scopes=aux_scopes)
-        findings = _apply_inline_suppressions(findings, {**files, **templates, **iac})
+        findings = _apply_inline_suppressions(findings, {**files, **templates, **iac, **manifests})
 
         # --diff narrows *reporting* to added/modified lines. The analysis above already
         # saw the whole tree, so cross-file context is never truncated.
@@ -1879,10 +1941,12 @@ def _scan(args):
                 print(f"SARIF File Size:          {sarif_size_mb:.2f} MB {'✓' if sarif_size_mb < 10 else '⚠ EXCEEDS 10 MB'}", file=sys.stderr)
             print(f"Files Discovered:         {total_discovered_files} "
                   f"(python: {python_discovered}, docker: {aux_file_counts['docker']}, "
-                  f"iac: {aux_file_counts['iac']}, html: {len(templates)})", file=sys.stderr)
+                  f"iac: {aux_file_counts['iac']}, sca: {aux_file_counts['sca']}, "
+                  f"html: {len(templates)})", file=sys.stderr)
             print(f"Files Scanned:            {scanned_files} "
                   f"(python: {file_counts['python']}, docker: {file_counts['docker']}, "
-                  f"iac: {file_counts['iac']}, html: {file_counts['html']})", file=sys.stderr)
+                  f"iac: {file_counts['iac']}, sca: {file_counts['sca']}, "
+                  f"html: {file_counts['html']})", file=sys.stderr)
             print(f"Zero-Risk Fast-Path Skip: {fast_path_skipped_files} skipped", file=sys.stderr)
             print(f"Unparseable Files:        {unparseable_files} skipped", file=sys.stderr)
             print("="*70, file=sys.stderr)
@@ -2044,12 +2108,12 @@ def _print_compare_scoreboard(tool, tcs_ms, competitor_ms, matched, tcs_only, co
 def _compare(args):
     try:
         exclude_patterns = _parse_exclude_patterns(getattr(args, "exclude", None))
-        templates, iac, _aux_scopes = _collect_auxiliary_files(args.path, exclude_patterns)
+        templates, iac, manifests, _aux_scopes = _collect_auxiliary_files(args.path, exclude_patterns)
 
         try:
             files = _collect_files(args.path, exclude_patterns=exclude_patterns)
         except ValueError:
-            if not templates and not iac:
+            if not templates and not iac and not manifests:
                 raise
             files = {}
         started = time.perf_counter()
@@ -2059,9 +2123,14 @@ def _compare(args):
             ast_findings = _findings_for(tracker, edges)
         else:
             ast_findings = []
+            tracker = None
         legacy_iac = audit_iac_files(iac)
+        sca_findings = audit_sca_files(manifests)
+        if sca_findings:
+            tag_reachability(sca_findings, _imported_roots(tracker))
         tcs_findings = _merge_findings(ast_findings, audit_templates(templates), legacy_iac,
-                                       audit_security_files(iac, legacy_findings=legacy_iac))
+                                       audit_security_files(iac, legacy_findings=legacy_iac),
+                                       sca_findings)
         tcs_ms = (time.perf_counter() - started) * 1000
     except (OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -2105,9 +2174,10 @@ def main(argv=None):
     scan_parser.add_argument("--fail-on-critical", action="store_true", help="Only exit 1 on a Critical or High finding (default: any finding exits 1, matching tcs_cli.py)")
     scan_parser.add_argument("--format", choices=("table", "json"), default="table", help="Output format (default: table)")
     scan_parser.add_argument(
-        "--scope", choices=("all", "python", "docker", "iac", "html"), default="all",
+        "--scope", choices=("all", "python", "docker", "iac", "sca", "html"), default="all",
         help="Limit analysis to Python code, container images/compose, CI-CD & IaC "
-             "(workflows, Kubernetes, Terraform), or HTML templates (default: all)",
+             "(workflows, Kubernetes, Terraform), dependency manifests/lockfiles (SCA), "
+             "or HTML templates (default: all)",
     )
     scan_parser.add_argument(
         "--with-autofix", action="store_true", default=False,

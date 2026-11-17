@@ -14,6 +14,7 @@ import subprocess
 import time
 import traceback
 from typing import Optional
+import banner
 from cross_file_engine import CrossFileTaintEngine
 from ast_scanner import TaintTracker, PARSER_MODES, DEFAULT_PARSER_MODE
 from ci_reporter import sanitize_symbol_display
@@ -224,6 +225,23 @@ def _progress(message):
     lives in `_PARTIAL["current_file"]` so the throttled gap stays diagnosable.
     """
     print(f"[progress] {message}", file=sys.stderr, flush=True)
+
+
+def _ux_enabled(args):
+    """True only for a human watching a terminal, never for a data pipe or a log.
+
+    `--format json` is an absolute veto: that stdout is parsed by every benchmark and CI job, so
+    the styled UX stays off even when TIMECS_FORCE_BANNER asks for it. Otherwise a real TTY turns
+    it on, and the env var exists so a test can drive the same code path over a pipe.
+    """
+    if getattr(args, "format", "table") == "json":
+        return False
+    if os.environ.get("TIMECS_FORCE_BANNER") == "1":
+        return True
+    try:
+        return bool(sys.stderr.isatty())
+    except (AttributeError, ValueError):
+        return False
 
 
 class _StageClock:
@@ -1622,6 +1640,9 @@ def _scan(args):
     
     # Parse workers argument and pass to TaintTracker
     workers = _parse_workers_arg(getattr(args, "workers", None))
+    ux = _ux_enabled(args)
+    if ux:
+        banner.print_banner(args.path, scope=scope, workers=workers, stream=sys.stderr)
     
     try:
         line_ranges = _parse_line_ranges(getattr(args, "lines", None))
@@ -1669,7 +1690,12 @@ def _scan(args):
                 if not templates and not iac and not manifests and not secrets:
                     raise
         _clock.mark("CollectPy")
-        
+        if ux:
+            auxiliary = len(templates) + len(iac) + len(manifests) + len(secrets)
+            banner.print_phase(1, 4, "discovery", stream=sys.stderr)
+            banner.print_step(1, "files discovered",
+                              f"{len(files)} python, {auxiliary} auxiliary", stream=sys.stderr)
+
         # TimeCodeSecurity: Capture pre-scan memory stats
         try:
             import psutil
@@ -1680,6 +1706,10 @@ def _scan(args):
             available_ram_before_gb = 0
             rss_before_mb = 0
         
+        if ux:
+            banner.print_phase(2, 4, "analysis", stream=sys.stderr)
+            for worker_id in range(workers if files else 0):
+                banner.print_worker(worker_id, "ready", stream=sys.stderr)
         started = time.perf_counter()
         if files:
             _PARTIAL["files"] = files
@@ -1708,6 +1738,8 @@ def _scan(args):
             _clock.mark("Parse+Init")
             _clock.mark("Analyze")
             _clock.mark("ASTFindings")
+        if ux:
+            banner.print_step(2, "ast findings", f"{len(ast_findings)} row(s)", stream=sys.stderr)
         aux_file_counts = {"docker": 0, "iac": 0, "sca": 0, "secrets": 0}
         for aux_scope in aux_scopes.values():
             aux_file_counts[aux_scope] += 1
@@ -1803,6 +1835,10 @@ def _scan(args):
         else:
             _clock.mark("CrossScan")
             _clock.mark("Suppression")
+        if ux:
+            banner.print_phase(3, 4, "correlation", stream=sys.stderr)
+            banner.print_step(3, "cross-file + suppression", f"{len(findings)} row(s)",
+                              stream=sys.stderr)
 
         # Incremental scan: keep only diagnostics intersecting the modified lines.
         # Applied before autofix generation so patching work is scoped too.
@@ -1874,6 +1910,8 @@ def _scan(args):
     except (OSError, ValueError) as exc:
         return _scan_failure(args, exc)
 
+    if ux:
+        banner.print_phase(4, 4, "reporting", stream=sys.stderr)
     if args.format == "json":
         print(json.dumps({
             "scope": scope,
@@ -1996,6 +2034,10 @@ def _scan(args):
     # to just before exit-code computation. Stages before `started` (AuxCollect, CollectPy)
     # are inside TOTAL but NOT inside duration_ms - that is the CLI-vs-UI boundary gap.
     _clock.report()
+    if ux:
+        banner.print_completion(duration_ms / 1000, len(findings),
+                                sarif_path=str(args.sarif) if args.sarif else None,
+                                sbom_path=sbom_path_text or None, stream=sys.stderr)
 
     # Exit-code parity with `tcs_cli.py`: a scan that finds something exits 1, so CI can gate
     # on either entry point. 2 stays reserved for an internal error (see the crash handler).

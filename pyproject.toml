@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "time-code-security"
+name = "timecs"
 version = "2.0.0"
 description = "Deterministic AST Security Scanner, Proof Graph Engine & Automated Remediation Framework"
 readme = "README.md"
@@ -39,20 +39,22 @@ dependencies = [
 ]
 
 [project.scripts]
+timecs = "cli:main"
 timecode = "cli:main"
 tcsec = "cli:main"
-tcs = "cli:main"
 
 [tool.setuptools]
 py-modules = [
     "app",
     "ast_scanner",
+    "banner",
     "ci_reporter",
     "cli",
     "config_loader",
     "cross_file_engine",
     "delivery_models",
     "delivery_repository",
+    "diff_scan",
     "durable_delivery_sink",
     "event_bus",
     "event_publisher",
@@ -61,6 +63,7 @@ py-modules = [
     "html_auditor",
     "iac_auditor",
     "in_app_adapter",
+    "js_scanner",
     "manifest_parser",
     "master_rules_bank",
     "notification_models",
@@ -71,6 +74,7 @@ py-modules = [
     "osv_client",
     "rule_engine",
     "sarif_adapter",
+    "sarif_exporter",
     "secret_filters",
     "secret_scanner",
     "sqlite_delivery_repository",
@@ -80,6 +84,7 @@ py-modules = [
     "suppression_resolver",
     "symbol_indexer",
     "tcs_cli",
+    "tcs_config",
     "tcs_gui",
     "version_matcher",
     "webhook_adapter",
@@ -89,6 +94,7 @@ py-modules = [
 packages = [
     "remediation",
     "sca_reachability",
+    "scanners",
     "tcs",
     "tcs.analysis",
 ]

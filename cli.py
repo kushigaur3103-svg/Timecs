@@ -19,7 +19,14 @@ from ast_scanner import TaintTracker, PARSER_MODES, DEFAULT_PARSER_MODE
 from ci_reporter import sanitize_symbol_display
 from diff_scan import changed_line_intervals, resolve_repo_root
 from html_auditor import audit_templates, is_template_path
-from iac_auditor import audit_iac_files, is_iac_path
+from iac_auditor import audit_iac_files
+from scanners import (
+    audit_security_files,
+    is_container_path,
+    is_kubernetes_manifest,
+    is_terraform_path,
+    is_workflow_yaml_path,
+)
 from rule_engine import get_rule
 from suppression_resolver import resolve_line_suppressions
 from tcs_config import load_config
@@ -86,10 +93,11 @@ TEMPLATE_INTERPOLATION_TOKENS = ("{{", "}}")
 # `_PARTIAL["current_file"]` so a kill still reports where the scan was stuck.
 PROGRESS_FILE_EVERY = 250
 
-# Every finding belongs to exactly one analysis scope: template and IaC paths are routed to
-# their auditors, everything else is Python. --scope selects which collectors run.
-SCOPE_ORDER = ("python", "docker", "html")
-SCOPE_LABELS = {"python": "Python Code", "docker": "Container/Config", "html": "HTML Templates"}
+# Every finding belongs to exactly one analysis scope: template, container and CI/IaC paths are
+# routed to their auditors, everything else is Python. --scope selects which collectors run.
+SCOPE_ORDER = ("python", "docker", "iac", "html")
+SCOPE_LABELS = {"python": "Python Code", "docker": "Container/Config",
+                "iac": "CI/CD & IaC", "html": "HTML Templates"}
 
 # Confidence is a display label, never a detection decision: `--min-confidence` hides rows
 # from the report, the engine still emits every finding it emitted before.
@@ -100,12 +108,23 @@ CONFIDENCE_ORDER = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
 LOW_CONFIDENCE_SINK_TYPES = frozenset({"TIMING_ATTACK"})
 
 
-def _scope_of(path):
-    lowered = str(path).lower()
+def _scope_of(path, aux_scopes=None):
+    """Scope of one finding's file.
+
+    ``aux_scopes`` is the discovery map for auxiliary documents. It is the authority for a
+    Kubernetes workload manifest, which can sit at any path and is only recognisable from its
+    content; every other family is decidable from the path alone.
+    """
+    key = str(path)
+    if aux_scopes and key in aux_scopes:
+        return aux_scopes[key]
+    lowered = key.lower()
     if is_template_path(lowered):
         return "html"
-    if is_iac_path(lowered):
+    if is_container_path(lowered):
         return "docker"
+    if is_workflow_yaml_path(lowered) or is_terraform_path(lowered):
+        return "iac"
     return "python"
 
 
@@ -363,15 +382,23 @@ def _collect_files(scan_path, exclude_patterns=None, config_excludes=None,
     return files
 
 
+AUX_YAML_SUFFIXES = (".yml", ".yaml")
+
+
 def _collect_auxiliary_files(scan_path, exclude_patterns=None, config_excludes=None,
                              skip_non_production=False):
-    """Collect non-Python artefacts in one walk: (templates, IaC documents).
+    """Collect non-Python artefacts in one walk: (templates, security documents, scope map).
 
     Keys match _collect_files so findings share a single path namespace, and
     `--exclude` applies here too: a template under an excluded directory is just as
     out of scope as a .py file under it. `config_excludes` carries the same contract
     as in _collect_files, as does `skip_non_production` -- a template inside a skipped
     `examples/` tree is out of scope for exactly the same reason.
+
+    The third return value maps each security document's key to its scope ("docker" for
+    images and compose, "iac" for workflows, Kubernetes and Terraform). It exists because a
+    Kubernetes manifest is recognised from content, not from its path, so the bucketing
+    decision has to survive the walk for `_scope_of` to report it honestly.
     """
     cwd = Path.cwd().resolve()
     if not scan_path.exists():
@@ -390,27 +417,34 @@ def _collect_auxiliary_files(scan_path, exclude_patterns=None, config_excludes=N
             and not (config_excludes and config_excludes(_file_key(path, cwd)))
         )
     else:
-        return {}, {}
+        return {}, {}, {}
 
     templates = {}
     iac = {}
+    aux_scopes = {}
     buckets = {}
     skipped = 0
     for path in paths:
         relative = str(path).replace("\\", "/")
         if is_template_path(relative):
-            buckets[path] = templates
-        elif is_iac_path(relative):
-            buckets[path] = iac
+            buckets[path] = (templates, "html")
+        elif is_container_path(relative):
+            buckets[path] = (iac, "docker")
+        elif is_workflow_yaml_path(relative) or is_terraform_path(relative):
+            buckets[path] = (iac, "iac")
+        elif relative.lower().endswith(AUX_YAML_SUFFIXES):
+            # Scope undecided until the content is read: only a Kubernetes workload manifest
+            # is claimed, every other YAML document is dropped again.
+            buckets[path] = (iac, None)
 
     total = len(buckets)
     _progress(f"discovered {total} template/IaC file(s) under {scan_path}")
-    for index, (path, bucket) in enumerate(buckets.items(), 1):
+    for index, (path, (bucket, scope)) in enumerate(buckets.items(), 1):
         _PARTIAL["current_file"] = str(path)
         if index == 1 or index == total or index % PROGRESS_FILE_EVERY == 0:
             _progress(f"reading auxiliary ({index}/{total}) {path}")
         try:
-            bucket[_file_key(path, cwd)] = path.read_text(encoding="utf-8", errors="replace")
+            source = path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             # Same contract as _collect_files above: one unreadable template or IaC file is a
             # local fault, so it is reported and skipped. Re-raising here used to abort the whole
@@ -419,11 +453,19 @@ def _collect_auxiliary_files(scan_path, exclude_patterns=None, config_excludes=N
             print(f"Warning: skipping unreadable auxiliary file {path}: "
                   f"{type(exc).__name__}: {exc}", file=sys.stderr)
             continue
+        if scope is None:
+            if not is_kubernetes_manifest(source):
+                continue
+            scope = "iac"
+        key = _file_key(path, cwd)
+        bucket[key] = source
+        if bucket is iac:
+            aux_scopes[key] = scope
     if skipped:
         print(f"Warning: skipped {skipped} of {total} auxiliary files; "
               f"{len(templates) + len(iac)} scanned.", file=sys.stderr)
     _PARTIAL["current_file"] = None
-    return templates, iac
+    return templates, iac, aux_scopes
 
 
 def _merge_findings(*finding_groups):
@@ -731,7 +773,7 @@ def table_default_note(hidden) -> str:
             "(pass --min-confidence all to view all findings).")
 
 
-def _apply_config_filters(findings, config, path_excludes, scan_root=None):
+def _apply_config_filters(findings, config, path_excludes, scan_root=None, aux_scopes=None):
     """Apply root `.tcs.yaml` to findings: path exclusions and per-rule path overrides.
 
     `path_excludes` is False when the user named a single file on the command line --
@@ -741,15 +783,23 @@ def _apply_config_filters(findings, config, path_excludes, scan_root=None):
     `scan_root` is the path the user named, as seen from the working directory: collected
     keys carry it as a prefix, and `TcsConfig` needs it to honour an anchored pattern such
     as `docs/**` when the scan is aimed at a subdirectory instead of the repository root.
+
+    `aux_scopes` is the container/CI-IaC discovery map. Per-rule overrides are a *Python* noise
+    policy -- the shipped CWE-78 globs name CI scripts and example trees, where shell-by-design
+    is not injection -- and `**/.github/**` over a workflow YAML would delete the GHA injection
+    rule at its only source. Those documents answer to their own structural falsifiers instead.
+    A global `exclude_paths` entry still never-reads them, and templates are unaffected.
     """
     if config is None:
         return findings
+    security_docs = aux_scopes or {}
     kept = []
     for finding in findings:
         path_key = str(finding.get("file", ""))
         if path_excludes and config.excludes_path(path_key, scan_root):
             continue
-        if config.rule_excluded(str(finding.get("cwe", "")), path_key, scan_root):
+        if path_key not in security_docs and config.rule_excluded(
+                str(finding.get("cwe", "")), path_key, scan_root):
             continue
         kept.append(finding)
     return kept
@@ -1051,18 +1101,18 @@ def _sarif_document(findings, cwd, execution_successful=True):
     }
 
 
-def _scope_breakdown(findings):
+def _scope_breakdown(findings, aux_scopes=None):
     counts = {scope: 0 for scope in SCOPE_ORDER}
     for finding in findings:
-        counts[_scope_of(finding["file"])] += 1
+        counts[_scope_of(finding["file"], aux_scopes)] += 1
     return counts
 
 
 def _print_summary(file_count, duration_ms, findings, file_counts=None,
                    discovered_files=None, fast_path_skipped_files=0,
-                   unparseable_files=0, parse_governor=None):
+                   unparseable_files=0, parse_governor=None, aux_scopes=None):
     counts = {severity: 0 for severity in SEVERITIES}
-    scope_counts = _scope_breakdown(findings)
+    scope_counts = _scope_breakdown(findings, aux_scopes)
     for finding in findings:
         severity = finding["severity"]
         counts[severity if severity in counts else "UNKNOWN"] += 1
@@ -1529,12 +1579,16 @@ def _scan(args):
         skip_non_production = tree_scan and not bool(getattr(args, "include_tests", False))
         _SCOPE_STATS["skipped_dirs"] = 0
         _SCOPE_STATS["skipped_files"] = 0
-        templates, iac = _collect_auxiliary_files(args.path, exclude_patterns, config_excludes,
-                                                  skip_non_production)
+        templates, iac, aux_scopes = _collect_auxiliary_files(
+            args.path, exclude_patterns, config_excludes, skip_non_production)
         if scope not in ("all", "html"):
             templates = {}
-        if scope not in ("all", "docker"):
+        if scope in ("docker", "iac"):
+            iac = {key: source for key, source in iac.items() if aux_scopes.get(key) == scope}
+            aux_scopes = {key: value for key, value in aux_scopes.items() if value == scope}
+        elif scope != "all":
             iac = {}
+            aux_scopes = {}
         _clock.mark("AuxCollect")
         tracker = None
         files = {}
@@ -1586,9 +1640,13 @@ def _scan(args):
             _clock.mark("Parse+Init")
             _clock.mark("Analyze")
             _clock.mark("ASTFindings")
+        aux_file_counts = {"docker": 0, "iac": 0}
+        for aux_scope in aux_scopes.values():
+            aux_file_counts[aux_scope] += 1
         file_counts = {
             "python": len(tracker.modules) if tracker else 0,
-            "docker": len(iac),
+            "docker": aux_file_counts["docker"],
+            "iac": aux_file_counts["iac"],
             "html": len(templates),
         }
         scanned_files = sum(file_counts.values())
@@ -1605,8 +1663,12 @@ def _scan(args):
                 "unparseable": unparseable_files,
             },
             "docker": {
-                "discovered": len(iac),
+                "discovered": aux_file_counts["docker"],
                 "scanned": file_counts["docker"],
+            },
+            "iac": {
+                "discovered": aux_file_counts["iac"],
+                "scanned": file_counts["iac"],
             },
             "html": {
                 "discovered": len(templates),
@@ -1628,10 +1690,15 @@ def _scan(args):
         parse_governor.setdefault("execution_mode", getattr(tracker, "execution_mode", "not_started"))
         parse_governor.setdefault("parallel_fallback_reason",
                                   getattr(tracker, "parallel_fallback_reason", None))
+        # The legacy auditor keeps owning every CWE-1357 row and the Dockerfile CWE-250/CWE-269
+        # pair, byte-identical. The modular scanners add the container and CI/IaC rule families on
+        # top and are handed the legacy rows so one root-user defect is never booked twice.
+        legacy_iac = audit_iac_files(iac, audit_all=getattr(args, "audit_all", False))
         findings = _merge_findings(
             ast_findings,
             audit_templates(templates),
-            audit_iac_files(iac, audit_all=getattr(args, "audit_all", False)),
+            legacy_iac,
+            audit_security_files(iac, legacy_findings=legacy_iac),
         )
         findings = consolidate_findings(findings)
         # Template/IaC auditors report a structural match and no data-flow provenance, which
@@ -1664,7 +1731,7 @@ def _scan(args):
         # Root `.tcs.yaml`: path exclusions and per-rule path overrides from the working
         # directory. Applied after every producer so cross-file and JS rows obey it too.
         findings = _apply_config_filters(findings, config, path_excludes=tree_scan,
-                                         scan_root=_config_root)
+                                         scan_root=_config_root, aux_scopes=aux_scopes)
         findings = _apply_inline_suppressions(findings, {**files, **templates, **iac})
 
         # --diff narrows *reporting* to added/modified lines. The analysis above already
@@ -1737,7 +1804,7 @@ def _scan(args):
             "execution_mode": parse_governor.get("execution_mode", "not_started"),
             "parallel_fallback_reason": parse_governor.get("parallel_fallback_reason"),
             "duration_ms": round(duration_ms, 2),
-            "findings_by_scope": _scope_breakdown(findings),
+            "findings_by_scope": _scope_breakdown(findings, aux_scopes),
             "findings": findings,
         }, indent=2))
         # A scope note belongs on stderr for a machine run: the payload and its keys stay exactly
@@ -1771,7 +1838,7 @@ def _scan(args):
                        discovered_files=total_discovered_files,
                        fast_path_skipped_files=fast_path_skipped_files,
                        unparseable_files=unparseable_files,
-                       parse_governor=parse_governor)
+                       parse_governor=parse_governor, aux_scopes=aux_scopes)
         traces = _cross_trace_report(findings, Path.cwd().resolve())
         if traces:
             print(traces)
@@ -1811,9 +1878,11 @@ def _scan(args):
             if args.sarif:
                 print(f"SARIF File Size:          {sarif_size_mb:.2f} MB {'✓' if sarif_size_mb < 10 else '⚠ EXCEEDS 10 MB'}", file=sys.stderr)
             print(f"Files Discovered:         {total_discovered_files} "
-                  f"(python: {python_discovered}, docker: {len(iac)}, html: {len(templates)})", file=sys.stderr)
+                  f"(python: {python_discovered}, docker: {aux_file_counts['docker']}, "
+                  f"iac: {aux_file_counts['iac']}, html: {len(templates)})", file=sys.stderr)
             print(f"Files Scanned:            {scanned_files} "
-                  f"(python: {file_counts['python']}, docker: {file_counts['docker']}, html: {file_counts['html']})", file=sys.stderr)
+                  f"(python: {file_counts['python']}, docker: {file_counts['docker']}, "
+                  f"iac: {file_counts['iac']}, html: {file_counts['html']})", file=sys.stderr)
             print(f"Zero-Risk Fast-Path Skip: {fast_path_skipped_files} skipped", file=sys.stderr)
             print(f"Unparseable Files:        {unparseable_files} skipped", file=sys.stderr)
             print("="*70, file=sys.stderr)
@@ -1975,7 +2044,7 @@ def _print_compare_scoreboard(tool, tcs_ms, competitor_ms, matched, tcs_only, co
 def _compare(args):
     try:
         exclude_patterns = _parse_exclude_patterns(getattr(args, "exclude", None))
-        templates, iac = _collect_auxiliary_files(args.path, exclude_patterns)
+        templates, iac, _aux_scopes = _collect_auxiliary_files(args.path, exclude_patterns)
 
         try:
             files = _collect_files(args.path, exclude_patterns=exclude_patterns)
@@ -1990,7 +2059,9 @@ def _compare(args):
             ast_findings = _findings_for(tracker, edges)
         else:
             ast_findings = []
-        tcs_findings = _merge_findings(ast_findings, audit_templates(templates), audit_iac_files(iac))
+        legacy_iac = audit_iac_files(iac)
+        tcs_findings = _merge_findings(ast_findings, audit_templates(templates), legacy_iac,
+                                       audit_security_files(iac, legacy_findings=legacy_iac))
         tcs_ms = (time.perf_counter() - started) * 1000
     except (OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -2034,8 +2105,9 @@ def main(argv=None):
     scan_parser.add_argument("--fail-on-critical", action="store_true", help="Only exit 1 on a Critical or High finding (default: any finding exits 1, matching tcs_cli.py)")
     scan_parser.add_argument("--format", choices=("table", "json"), default="table", help="Output format (default: table)")
     scan_parser.add_argument(
-        "--scope", choices=("all", "python", "docker", "html"), default="all",
-        help="Limit analysis to Python code, container/config files, or HTML templates (default: all)",
+        "--scope", choices=("all", "python", "docker", "iac", "html"), default="all",
+        help="Limit analysis to Python code, container images/compose, CI-CD & IaC "
+             "(workflows, Kubernetes, Terraform), or HTML templates (default: all)",
     )
     scan_parser.add_argument(
         "--with-autofix", action="store_true", default=False,

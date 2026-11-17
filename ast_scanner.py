@@ -2247,6 +2247,20 @@ WEB_HANDLER_DECORATOR_SEGMENTS = frozenset({"route", "expose", "errorhandler", "
 # The two arguments a WSGI server hands an application object. Such a callable has no `request`, yet
 # its return value *is* the HTTP body, so CWE-209 treats it as a web handler.
 WSGI_HANDLER_ARGUMENTS = frozenset({"environ", "start_response"})
+# Arguments that make a callable a request handler for the purposes of CWE-209. `_c209_is_web_handler`
+# stays as it was -- it decides which functions the rule *scans*, and widening it would create
+# findings. This wider list is read only to REFUSE: `req` and `resp` are the spellings Salt's and
+# Tornado's handlers use, and `ws`/`websocket` is a socket frame whose dict really does reach a peer.
+CWE209_WEB_CONTEXT_ARGUMENTS = frozenset({
+    "request", "req", "environ", "handler", "ws", "websocket", "response", "resp",
+})
+# Importing one of these makes every dict a handler returns a candidate HTTP body. A client library is
+# deliberately absent: `requests` and `urllib3` fetch, they never serve, so they cannot turn a returned
+# dict into something a remote caller reads.
+CWE209_WEB_FRAMEWORK_ROOTS = frozenset({
+    "flask", "django", "fastapi", "starlette", "tornado", "aiohttp", "bottle", "pyramid", "sanic",
+    "falcon", "werkzeug", "cherrypy",
+})
 # Flask/Werkzeug request containers. CLIENT_INPUT_CONTAINERS is Django-shaped and is shared with the
 # CWE-22/CWE-93 rules, so the Flask spellings live here instead of being bolted onto it.
 FLASK_REQUEST_CONTAINERS = frozenset({
@@ -12935,6 +12949,69 @@ class TaintTracker:
                     return True
         return False
 
+    # The leaves that open a stream on a name in the program's own filesystem namespace. `fopen` is the
+    # spelling Salt's own wrapper uses (`salt.utils.files.fopen`), and `Path(...).open()` is the pathlib
+    # one, so the test is on the last written segment rather than a module whitelist.
+    _C400_LOCAL_OPENER_LEAVES = frozenset({"open", "fopen"})
+    # A receiver named like a network object is not excused by the value behind it: the name is what the
+    # operator wrote about the stream, and `self._memory_file` / `self._content` are methods of an object
+    # whose storage this rule cannot see. Only a plain local name can be excused, so an `ast.Attribute`
+    # receiver never reaches the vocabulary test at all.
+    _C400_NETWORK_RECEIVER_WORDS = (
+        "request", "req", "resp", "response", "content", "body", "stream", "socket",
+        "conn", "urllib", "aiohttp", "result",
+    )
+
+    def _c400_value_is_local_opener(self, value: ast.AST) -> bool:
+        """True when an expression is a call that opens a file on disk.
+
+        `sock.makefile().read()` -- every blessed CWE-400 row in both frozen baselines -- answers False,
+        because `makefile` is not an opener leaf: it derives a stream from an object this file did not
+        open.
+        """
+        if not isinstance(value, ast.Call):
+            return False
+        written = dotted_name(value.func) or ""
+        leaf = written.rsplit(".", 1)[-1]
+        if leaf not in self._C400_LOCAL_OPENER_LEAVES:
+            return False
+        root = written.split(".", 1)[0]
+        return root not in ("urllib", "aiohttp", "httpx", "requests", "socket", "http")
+
+    def _c400_receiver_is_disk_handle(self, receiver: ast.AST, scope_id: str, lineno: int) -> bool:
+        """True when `.read()`'s receiver was bound in this scope to a local file opener.
+
+        The false positive this retires is Salt's own idiom: `fp_ = salt.utils.files.fopen(path)` reads
+        the segment `files`, and `NETWORK_INPUT_KEYWORDS` matches it as a substring, so
+        `_is_untrusted_stream` calls the receiver network-shaped and `fp_.read()` becomes an unbounded
+        read of a file the program chose. The proof is the binding, not the name, so the answer comes
+        from the assignment records: every write to the name that precedes the read must be an opener
+        call, and no write at all answers False.
+        """
+        if not isinstance(receiver, ast.Name) or not scope_id:
+            return False
+        name = receiver.id.lower()
+        if any(word in name for word in self._C400_NETWORK_RECEIVER_WORDS):
+            return False
+        seen = 0
+        current = scope_id
+        walked = set()
+        while current and current not in walked:
+            walked.add(current)
+            for record in self.assignments_by_scope.get((current, receiver.id), []):
+                if getattr(record, "lineno", 0) > lineno:
+                    continue
+                seen += 1
+                if not self._c400_value_is_local_opener(getattr(record, "value_node", None)):
+                    return False
+            if "." in current:
+                current = current.rsplit(".", 1)[0]
+            elif ":function" in current:
+                current = f"{scope_module(current)}:global"
+            else:
+                break
+        return seen > 0
+
     # CWE-22 sanitizers that break the taint chain when wrapping a path expression.
     _CWE22_SANITIZER_NAMES = frozenset({
         "secure_filename", "werkzeug.utils.secure_filename",
@@ -21992,11 +22069,74 @@ class TaintTracker:
             current = getattr(current, "parent", None)
         return False
 
+    # Last segments of the reply factories whose presence inside a returned dict proves the dict is
+    # headed for a client (`{"body": jsonify(...)}`). Checked on the written callee's tail, so
+    # `web.Response` and `flask.jsonify` count the same way the bare names do.
+    _C209_REPLY_LEAVES = frozenset({
+        "Response", "JsonResponse", "jsonify", "make_response", "render", "render_template",
+        "render_template_string", "send_file", "abort", "HttpResponse", "redirect",
+    })
+
+    def _c209_plain_dict_reply_without_web_context(self, value) -> bool:
+        """True when a returned dict literal belongs to nobody's HTTP response.
+
+        The shape this retires is an internal SDK call: `except Exception as exc: return {"success":
+        False, "error": str(exc)}` inside `salt/`, where the caller is another Python process that
+        reads `.get("error")` and no socket carries the text. Detail in such a dict is CWE-532-sized
+        logging noise, not the client-visible stack disclosure CWE-209 names -- and the rule reported
+        it because `_c209_exposed_in_reply` asks only whether the value *is* a container.
+
+        Two facts make a dict a reply, and both are read off the AST: a reply factory anywhere inside
+        it, or web context around the return -- a handler argument, a route decorator, or a web
+        framework imported by the module. Anything else keeps its finding, including a dict this walk
+        cannot place, because a missing parent chain is an unproven shape rather than a safe one.
+        """
+        if not isinstance(value, ast.Dict):
+            return False
+        for sub in ast.walk(value):
+            if isinstance(sub, ast.Call):
+                written = dotted_name(sub.func) or ""
+                if (written in RESPONSE_CONSTRUCTOR_NAMES
+                        or written.rsplit(".", 1)[-1] in self._C209_REPLY_LEAVES):
+                    return False
+        current = getattr(value, "parent", None)
+        for _ in range(60):
+            if current is None:
+                return False
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if TaintTracker._c209_route_decorated(current):
+                    return False
+                arguments = current.args
+                for group in (arguments.posonlyargs, arguments.args, arguments.kwonlyargs):
+                    for argument in group:
+                        if argument.arg in CWE209_WEB_CONTEXT_ARGUMENTS:
+                            return False
+                for extra in (arguments.vararg, arguments.kwarg):
+                    if extra is not None and extra.arg in CWE209_WEB_CONTEXT_ARGUMENTS:
+                        return False
+            if isinstance(current, ast.Module):
+                break
+            current = getattr(current, "parent", None)
+        else:
+            return False
+        for statement in current.body:
+            if isinstance(statement, ast.Import):
+                roots = {(alias.name or "").split(".", 1)[0] for alias in statement.names}
+            elif isinstance(statement, ast.ImportFrom):
+                roots = {(statement.module or "").split(".", 1)[0]}
+            else:
+                continue
+            if roots & CWE209_WEB_FRAMEWORK_ROOTS:
+                return False
+        return True
+
     def _c209_exposed_in_reply(self, value, names, table, use_lineno):
         """True when *value* (or the call it was assigned from) ships exception detail to the client."""
         if value is None:
             return False
         if self._c209_value_is_not_an_http_body(value):
+            return False
+        if self._c209_plain_dict_reply_without_web_context(value):
             return False
         resolved = self._c22_path_expression(value, table, use_lineno)
         if (self._c209_structured_error_envelope_only(value, table, use_lineno)
@@ -23978,10 +24118,47 @@ class TaintTracker:
                     if self._c1_last(func_name) != "set_password":
                         continue
                     if any(isinstance(a, ast.Name) and a.id == param.arg for a in inner.args):
+                        # An optional credential parameter is how a caller says "authenticate some other
+                        # way": `def connect(host, user, password="")` is Salt's key-auth signature, and
+                        # handing the caller's own value to `set_password()` ships no credential at all.
+                        # The finding stands where the function treats the empty string as the secret.
+                        if not self._c521_function_ships_the_credential(node, param.arg):
+                            break
                         add("EMPTY_PASSWORD_DEFAULT", "WEAK_PASSWORD", "CWE-521")
                         break
 
         return out
+
+    def _c521_function_ships_the_credential(self, func: ast.FunctionDef, parameter: str) -> bool:
+        """True when the function itself treats an empty credential as a value it ships.
+
+        Three shapes, all read off this function's own body: the parameter compared against the empty
+        value (a gate that admits a blank password), a blank assignment to a password-named target, and
+        a blank password key inside a dict literal (the shipped config). A parameter that is only
+        forwarded answers False, and CWE-521 then has nothing to say about it.
+        """
+        for sub in ast.walk(func):
+            if isinstance(sub, ast.Compare):
+                sides = [sub.left] + list(sub.comparators)
+                if (any(isinstance(op, (ast.Eq, ast.NotEq, ast.Is, ast.IsNot)) for op in sub.ops)
+                        and any(isinstance(side, ast.Name) and side.id == parameter for side in sides)
+                        and any(isinstance(side, ast.Constant) and side.value in ("", None)
+                                for side in sides)):
+                    return True
+            elif isinstance(sub, (ast.Assign, ast.AnnAssign)):
+                targets = sub.targets if isinstance(sub, ast.Assign) else [sub.target]
+                names = {target.id for target in targets if isinstance(target, ast.Name)}
+                names.update(target.attr for target in targets if isinstance(target, ast.Attribute))
+                if (isinstance(sub.value, ast.Constant) and sub.value.value == ""
+                        and any(CLUSTER1_PASSWORD_NAME_RE.search(name) for name in names)):
+                    return True
+            elif isinstance(sub, ast.Dict):
+                for key, value in zip(sub.keys, sub.values):
+                    if (isinstance(key, ast.Constant) and isinstance(key.value, str)
+                            and isinstance(value, ast.Constant) and value.value == ""
+                            and CLUSTER1_PASSWORD_NAME_RE.search(key.value)):
+                        return True
+        return False
 
     @staticmethod
     def _c1_parameter_defaults(node: ast.FunctionDef) -> list[tuple[ast.arg, ast.expr]]:
@@ -35542,7 +35719,8 @@ class TaintTracker:
             if op == "UNBOUNDED_READ" or (cwe in ("CWE-400", "CWE-776") and isinstance(record.node, ast.Call) and isinstance(record.node.func, ast.Attribute) and record.node.func.attr == "read" and len(record.node.args) == 0):
                 receiver = record.node.func.value
                 recv_taint = self.resolve_expression(receiver, sink, record.scope_id, record.lineno, call_context=record.call_context)
-                if not self._is_untrusted_stream(receiver, record.scope_id, record.lineno, recv_taint):
+                if not self._is_untrusted_stream(receiver, record.scope_id, record.lineno, recv_taint) or \
+                        self._c400_receiver_is_disk_handle(receiver, record.scope_id, record.lineno):
                     if sink in self.sinks:
                         self.sinks.remove(sink)
                     continue

@@ -956,6 +956,111 @@ def _cwe1333_sink_matcher(node: ast.AST, name: str, canon_name: Optional[str] = 
     return bool(candidates & CWE1333_SINKS) or any(c.endswith(".compile") and ("re." in c or "regex." in c) for c in candidates)
 
 
+# The ambiguity grammar below looks for one thing: a group that repeats while its own body already
+# contains a quantifier or an alternation -- `(a+)+`, `(a*)*`, `([a-z]+[0-9]+)+`, `(a|ab)*` -- plus a
+# backreference, which re-expands an earlier match. That is the nesting exponential backtracking
+# needs. `(abc)+`, `(a)?`, `[0-9]+` and `cat|dog+` are linear and stay quiet.
+#
+# It is a single linear pass over the pattern text with a bracket stack, rather than a regex, because
+# a character class has to be skipped as a unit: inside `[a|)]` the `|`, `)` and `+` are literals and
+# counting them would mis-nest every following group.
+_CWE1333_OPEN_CLASS_SKIP = "]^"
+
+
+def _cwe1333_repeats_at(pattern: str, index: int) -> bool:
+    """True when a quantifier that can repeat what precedes it starts at `index`."""
+    while index < len(pattern) and pattern[index] == "?":   # `*?`, `+?` -- laziness is still repetition
+        index += 1
+    if index >= len(pattern):
+        return False
+    char = pattern[index]
+    if char in "*+":
+        return True
+    if char != "{":
+        return False
+    end = pattern.find("}", index)
+    if end < 0:
+        return False
+    bounds = pattern[index + 1:end].split(",")
+    if len(bounds) > 2:
+        return False
+    try:
+        low = int(bounds[0]) if bounds[0] else 0
+        high = int(bounds[1]) if len(bounds) > 1 and bounds[1] else None
+    except ValueError:
+        return False
+    # An open upper bound (`{4,}`, `{,}`) or any bound of 2 repeats; `{1}` and `{0,1}` do not.
+    return high is None or high >= 2 or low >= 2
+
+
+def _cwe1333_pattern_is_ambiguous(pattern: str) -> bool:
+    """Conservatively True for any constant pattern that could backtrack catastrophically."""
+    stack: List[bool] = []
+    index = 0
+    length = len(pattern)
+    while index < length:
+        char = pattern[index]
+        if char == "\\":
+            following = pattern[index + 1] if index + 1 < length else ""
+            if following.isdigit() and following != "0":
+                return True
+            index += 2
+            continue
+        if char == "[":
+            index += 1
+            if index < length and pattern[index] in _CWE1333_OPEN_CLASS_SKIP:
+                index += 1
+            while index < length and pattern[index] != "]":
+                index += 2 if pattern[index] == "\\" else 1
+            index += 1
+            continue
+        if char == "(":
+            stack.append(False)
+            index += 1
+            continue
+        if char == ")":
+            body_repeats = stack.pop() if stack else True
+            index += 1
+            if body_repeats and _cwe1333_repeats_at(pattern, index):
+                return True
+            continue
+        if char == "|":
+            if stack:
+                stack[-1] = True
+            index += 1
+            continue
+        if char in "*+?{":
+            if stack and _cwe1333_repeats_at(pattern, index):
+                stack[-1] = True
+            index += 1
+            continue
+        index += 1
+    return False
+
+
+def _cwe1333_safety_filter(node: ast.Call, sink_name: str) -> bool:
+    """Exempts a compile-time constant pattern that cannot backtrack catastrophically.
+
+    `check_safety` runs every rule's filter against every call, so the sink is matched with the rule's
+    own matcher first: this must never be able to silence a stream read, a redirect or an XML parse.
+    Only an `ast.Constant` str is read at all -- a name, an f-string, a `"|".join(...)` or any other
+    computed value is a pattern this layer cannot see, and unreadable stays loud, which is also why a
+    user-tainted or dynamically built regex keeps its finding.
+
+    The structural analyzer in `ast_scanner` (`_is_redos_vulnerable_pattern`, which parses the pattern
+    with `re._parser`) is the emit layer; this is the registration layer's second proof and is
+    deliberately the coarser of the two, so the two can only ever disagree toward loud.
+    """
+    if not _cwe1333_sink_matcher(node, sink_name, None):
+        return False
+    pattern = next((kw.value for kw in node.keywords if kw.arg in ("pattern", "regex")), None)
+    if pattern is None and node.args:
+        pattern = node.args[0]
+    if not (isinstance(pattern, ast.Constant) and isinstance(pattern.value, str)):
+        return False
+    return not _cwe1333_pattern_is_ambiguous(pattern.value)
+
+
 CWE_1333_RULE = SecurityRule(
     cwe_id="CWE-1333",
     name="RegularExpressionDoS",
@@ -984,7 +1089,7 @@ CWE_1333_RULE = SecurityRule(
         }
     },
     sink_matcher=_cwe1333_sink_matcher,
-    safety_filter=None
+    safety_filter=_cwe1333_safety_filter
 )
 
 # ==============================================================================

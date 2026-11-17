@@ -89,6 +89,14 @@ MIN_GENERIC_ENTROPY = 3.3
 # credential is; a macro reference says where one lives. Neither is a secret, and no length,
 # character-class or entropy threshold can separate them from one -- only shape can.
 PROSE_CHARACTERS = (" ", "\t")
+# A filesystem path says where a credential is kept, not what it is. `private_key = /etc/salt/pki/
+# minion.pem` and `api_key: ~/credentials.json` clear every statistical floor -- a path is long, spans
+# several character classes and is high-entropy by construction -- while shipping no secret at all; the
+# file it names is the artefact an operator protects and rotates.
+CREDENTIAL_PATH_PREFIXES = ("/", "./", "../", "~/")
+CREDENTIAL_PATH_SUFFIXES = (".pem", ".key", ".crt", ".cer", ".p12", ".pfx", ".pub", ".json",
+                            ".yaml", ".yml", ".conf", ".cfg", ".ini", ".env")
+WINDOWS_DRIVE_PATH = re.compile(r"[A-Za-z]:[\\/].*")
 # The closing marker is optional in every pattern below because ASSIGNMENT's unquoted alternative
 # stops before `]`, `}` and `)`: `api_key: [%key:common::config_flow::data::api_key%]` arrives here
 # as `[%key:common::config_flow::data::api_key%`. A reference is a reference either way.
@@ -105,7 +113,7 @@ REFERENCE_WRAPPERS = (
 
 
 def _is_literal_credential(value: str) -> bool:
-    """False when the value is prose or an indirect reference rather than a secret itself.
+    """False when the value is prose, a pointer, or a filesystem path rather than a secret itself.
 
     Gated on the generic-assignment branch only, by design: `-----BEGIN RSA PRIVATE KEY-----`
     carries spaces and `VENDOR_PATTERNS` / `SERVICE_URL` prove their own shapes, so this rule must
@@ -117,6 +125,10 @@ def _is_literal_credential(value: str) -> bool:
     if any(char in value for char in PROSE_CHARACTERS):
         return False
     if any(pattern.fullmatch(value) for pattern in REFERENCE_WRAPPERS):
+        return False
+    if value.startswith(CREDENTIAL_PATH_PREFIXES) or WINDOWS_DRIVE_PATH.fullmatch(value):
+        return False
+    if value.lower().endswith(CREDENTIAL_PATH_SUFFIXES):
         return False
     return True
 

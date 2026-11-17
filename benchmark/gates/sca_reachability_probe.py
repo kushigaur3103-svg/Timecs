@@ -180,18 +180,18 @@ BAD_FILES = {
 SAFE_REQUIREMENTS = module(
     "# every pin at or above its fix",
     "pyyaml==6.0.1",
-    "requests==2.32.3",
-    "urllib3==2.0.7",
-    "django==4.2.11",
-    "jinja2==3.1.4",
+    "requests==2.32.4",
+    "urllib3==2.2.2",
+    "django==4.2.16",
+    "jinja2==3.1.6",
     "cryptography==42.0.4",
     "pillow==10.3.0",
-    "werkzeug==3.0.3",
-    "aiohttp==3.9.4",
+    "werkzeug==3.0.6",
+    "aiohttp==3.10.11",
     "starlette==0.36.2",
     "paramiko==3.4.0",
     "sqlparse==0.5.0",
-    "certifi==2023.7.22",
+    "certifi==2024.7.4",
     "flask==2.3.2",
     "pyjwt==2.4.0",
 )
@@ -214,13 +214,13 @@ SAFE_POETRY_LOCK = module(
     "",
     "[[package]]",
     'name = "certifi"',
-    'version = "2023.7.22"',
+    'version = "2024.7.4"',
 )
 SAFE_PACKAGE_JSON = module(
     "{",
     '  "dependencies": {',
     '    "lodash": "4.17.21",',
-    '    "axios": "1.7.4",',
+    '    "axios": "1.8.2",',
     '    "express": "4.21.0",',
     '    "jsonwebtoken": "9.0.0"',
     "  }",
@@ -232,7 +232,7 @@ SAFE_PACKAGE_LOCK = module(
     '  "packages": {',
     '    "": {"name": "demo"},',
     '    "node_modules/lodash": {"version": "4.17.21"},',
-    '    "node_modules/axios": {"version": "1.7.4"}',
+    '    "node_modules/axios": {"version": "1.8.2"}',
     "  }",
     "}",
 )
@@ -279,10 +279,10 @@ INTERVAL_TWINS = (
      '{"dependencies": {"express": "4.19.1"}}', "package.json"),
     ("pyyaml at 5.4", "pyyaml==5.4\n", "pyyaml==5.3.1\n", "requirements.txt"),
     ("django patched 3.2 branch", "django==3.2.25\n", "django==3.2.24\n", "requirements.txt"),
-    ("django patched 5.0 branch", "django==5.0.3\n", "django==5.0.2\n", "requirements.txt"),
-    ("urllib3 patched 1.x branch", "urllib3==1.26.18\n", "urllib3==1.26.17\n", "requirements.txt"),
+    ("django patched 5.0 branch", "django==5.0.9\n", "django==5.0.2\n", "requirements.txt"),
+    ("urllib3 patched 1.x branch", "urllib3==1.26.19\n", "urllib3==1.26.17\n", "requirements.txt"),
     ("flask below the 2.2 branch", "flask==2.1.0\n", "flask==2.2.4\n", "requirements.txt"),
-    ("aiohttp at both fixes", "aiohttp==3.9.4\n", "aiohttp==3.9.2\n", "requirements.txt"),
+    ("aiohttp at every fix", "aiohttp==3.10.11\n", "aiohttp==3.9.2\n", "requirements.txt"),
     ("npm partial <= refused", '{"dependencies": {"axios": "<=1.6"}}',
      '{"dependencies": {"axios": "1.6.0"}}', "package.json"),
 )
@@ -441,12 +441,13 @@ def check_bad():
         ("requirements.txt", pin(BAD_REQUIREMENTS, "pillow==10.1.0"),
          ["CVE-2023-50447", "CVE-2024-28219"], "10.3.0"),
         ("requirements.txt", pin(BAD_REQUIREMENTS, "jinja2==3.1.2"),
-         ["CVE-2024-22195", "CVE-2024-34064"], "3.1.4"),
+         ["CVE-2024-22195", "CVE-2024-34064", "CVE-2024-56201", "CVE-2025-27516"], "3.1.6"),
         ("requirements.txt", pin(BAD_REQUIREMENTS, "requests==2.30.0"),
-         ["CVE-2023-32681", "CVE-2024-35195"], "2.32.0"),
-        ("package.json", pin(BAD_PACKAGE_JSON, '"axios": "1.6.0"'), ["CVE-2024-39338"], "1.7.4"),
+         ["CVE-2023-32681", "CVE-2024-35195", "CVE-2024-47081"], "2.32.4"),
+        ("package.json", pin(BAD_PACKAGE_JSON, '"axios": "1.6.0"'),
+         ["CVE-2024-39338", "CVE-2025-27152"], "1.8.2"),
         ("package-lock.json", pin(BAD_PACKAGE_LOCK, '"node_modules/axios"'),
-         ["CVE-2024-39338"], "1.7.4"),
+         ["CVE-2024-39338", "CVE-2025-27152"], "1.8.2"),
     )
     for name, line, cves, fixed in expectations:
         item = by_key.get((name, line))
@@ -506,12 +507,26 @@ def check_intervals():
         failures.append(f"pyyaml==5.3 carried {[i['cves'] for i in both]}, expected both advisories")
     elif both[0]["fixed_version"] != "5.4":
         failures.append("the aggregate upgrade target is not the highest fix across advisories")
-    # `introduced` is a real bound: aiohttp 3.8.6 predates the follow_redirects defect, so only the
-    # advisory with no introduction may condemn it. Without the bound this row would carry two CVEs.
+    # `introduced` is a real bound: aiohttp 3.8.6 predates the follow_redirects defect, so that one
+    # advisory must stay out even though three others with no introduction do condemn the release.
     old = sca_scan({"requirements.txt": "aiohttp==3.8.6\n"})
-    if len(old) != 1 or old[0]["cves"] != ["CVE-2024-23829"]:
-        failures.append(f"aiohttp==3.8.6 carried {[i['cves'] for i in old]}, expected only "
-                        "CVE-2024-23829 -- the introduced bound is not being honoured")
+    if len(old) != 1 or "CVE-2024-23334" in old[0]["cves"] or "CVE-2024-23829" not in old[0]["cves"]:
+        failures.append(f"aiohttp==3.8.6 carried {[i['cves'] for i in old]}: the introduced bound "
+                        "let CVE-2024-23334 condemn a release that predates it")
+    # The clean single-advisory form of the same proof: next 13.3.0 predates Server Actions, so
+    # only the cache-poisoning advisory, whose range starts at 13.0.0, may condemn it.
+    early = sca_scan({"package.json": '{"dependencies": {"next": "13.3.0"}}'})
+    if len(early) != 1 or early[0]["cves"] != ["CVE-2024-46982"]:
+        failures.append(f"next 13.3.0 carried {[i['cves'] for i in early]}, expected only "
+                        "CVE-2024-46982 -- the introduced bound is not being honoured")
+    # A branch fix is not the newest fix: ws 7.5.10 patches the 7.x branch and must be quiet even
+    # though 8.17.1 is the headline number for the same CVE.
+    for quiet, loud in (("7.5.10", "7.5.9"), ("6.2.3", "6.2.2"), ("8.17.1", "8.17.0")):
+        spec = '{"dependencies": {"ws": "%s"}}'
+        if sca_scan({"package.json": spec % quiet}):
+            failures.append(f"ws {quiet} is patched on its own branch but was reported")
+        if not sca_scan({"package.json": spec % loud}):
+            failures.append(f"ws {loud} is vulnerable on its own branch but stayed quiet")
     # A tilde that stops below one fix still allows the other defect: partial immunity is not immunity.
     tilde = sca_scan({"package.json": '{"dependencies": {"express": "~4.19.1"}}'})
     if len(tilde) != 1 or tilde[0]["cves"] != ["CVE-2024-43796"]:

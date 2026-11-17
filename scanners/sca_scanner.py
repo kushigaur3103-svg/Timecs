@@ -31,7 +31,8 @@ from .cve_index import (
     parse_version,
 )
 
-__all__ = ["is_manifest_path", "audit_sca_files", "tag_reachability", "CATEGORY"]
+__all__ = ["is_manifest_path", "audit_sca_files", "tag_reachability", "collect_components",
+           "pinned_version_text", "CATEGORY"]
 
 CATEGORY = "SCA_VULNERABLE_DEPENDENCY"
 UNBOUNDED: Tuple[Optional[VersionKey], Optional[VersionKey], bool] = (None, None, True)
@@ -310,8 +311,6 @@ def _requirements(source: str) -> List[Dependency]:
         if not spec:
             continue
         lower, upper, inclusive = _python_bounds(spec)
-        if upper is None:
-            continue
         out.append(("pypi", normalize_package_name(name), spec, start, lower, upper, inclusive))
     return out
 
@@ -380,8 +379,6 @@ def _pyproject(source: str) -> List[Dependency]:
                 if not spec:
                     continue
                 lower, upper, inclusive = _python_bounds(spec)
-                if upper is None:
-                    continue
                 out.append(("pypi", normalize_package_name(match.group(1)), spec,
                             found, lower, upper, inclusive))
         elif table == "tool.poetry.dependencies" and key.lower() != "python":
@@ -399,8 +396,6 @@ def _pyproject(source: str) -> List[Dependency]:
                 if spec is None:
                     continue
             lower, upper, inclusive = _python_bounds(spec)
-            if upper is None:
-                continue
             out.append(("pypi", normalize_package_name(key), spec, lineno, lower, upper, inclusive))
     return out
 
@@ -416,8 +411,6 @@ def _poetry_lock(source: str) -> List[Dependency]:
         if not name or not version:
             return
         lower, upper, inclusive = _exact(version)
-        if upper is None:
-            return
         out.append(("pypi", normalize_package_name(name), version, lineno, lower, upper, inclusive))
 
     for index, raw in enumerate(source.splitlines(), 1):
@@ -463,8 +456,6 @@ def _npm_dependency(name: str, spec: str, lineno: int) -> Optional[Dependency]:
     if not normalized:
         return None
     lower, upper, inclusive = _npm_bounds(spec)
-    if upper is None:
-        return None
     return ("npm", normalized, spec, lineno, lower, upper, inclusive)
 
 
@@ -543,6 +534,8 @@ def _package_lock(source: str) -> List[Dependency]:
     return out
 
 
+# The readers inventory every declared dependency, including a spec with no ceiling. Whether a
+# finding exists is `matching_advisories`' decision alone, so the audit and the SBOM share one parse.
 _PARSERS = {
     "requirements": _requirements,
     "pyproject": _pyproject,
@@ -550,6 +543,45 @@ _PARSERS = {
     "package_json": _package_json,
     "package_lock": _package_lock,
 }
+
+_VERSION_TOKEN = re.compile(
+    r"\d+(?:\.\d+)*(?:[-.]?(?:a|b|c|rc|alpha|beta|pre|preview|dev|post|rev|r)[-.\d]*)?",
+    re.IGNORECASE)
+
+
+def pinned_version_text(spec: str, lower: Optional[VersionKey], upper: Optional[VersionKey],
+                        upper_inclusive: bool) -> Optional[str]:
+    """The one version a spec allows, in its own spelling, or None when it allows a range.
+
+    An SBOM component may carry a version only when the manifest proves exactly one. `^4.17.20`
+    and `~=5.3.1` allow many, so they inventory as version-less coordinates rather than as a
+    guess at whichever release the resolver happened to pick.
+    """
+    if lower is None or upper is None or not upper_inclusive:
+        return None
+    if compare_versions(lower, upper) != 0:
+        return None
+    match = _VERSION_TOKEN.search(spec)
+    return match.group(0) if match else None
+
+
+def collect_components(files: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Every declared dependency in the manifests, vulnerable or not, for the SBOM inventory."""
+    out: List[Dict[str, Any]] = []
+    for file_path in sorted(files):
+        kind = _manifest_kind(file_path)
+        if kind is None:
+            continue
+        for ecosystem, name, spec, lineno, lower, upper, inclusive in _PARSERS[kind](files[file_path]):
+            out.append({
+                "ecosystem": ecosystem,
+                "name": name,
+                "version": pinned_version_text(spec, lower, upper, inclusive),
+                "spec": spec,
+                "file": file_path,
+                "line": max(1, int(lineno)),
+            })
+    return out
 
 
 # ── findings ──────────────────────────────────────────────────────────────

@@ -13,6 +13,10 @@ already booked so one defect is never reported twice.
 advisory index in ``cve_index``, then labelled by an import-reachability proof the caller supplies.
 It is deliberately separate from ``audit_security_files`` because reachability needs the Python
 engine's parsed trees, which only the caller has.
+
+``secret_scanner`` is the Snyk-Code config family: ``.env``, INI, TOML, JSON, YAML and shell
+documents carrying a vendor-prefixed or cryptographic credential. ``sbom`` renders the same
+manifest parse as a CycloneDX 1.5 document, so the bill of materials and the report cannot drift.
 """
 
 from __future__ import annotations
@@ -34,9 +38,12 @@ from .iac_scanner import (
 )
 from .sca_scanner import (
     audit_sca_files,
+    collect_components,
     is_manifest_path,
     tag_reachability,
 )
+from .sbom import build_sbom
+from .secret_scanner import audit_secret_files, is_secret_path
 
 __all__ = [
     "audit_container_files", "audit_iac_security_files", "audit_security_files",
@@ -44,6 +51,8 @@ __all__ = [
     "is_iac_security_path", "is_workflow_yaml_path", "is_terraform_path",
     "is_kubernetes_manifest", "is_aux_security_path",
     "audit_sca_files", "is_manifest_path", "tag_reachability",
+    "collect_components", "build_sbom",
+    "audit_secret_files", "is_secret_path",
 ]
 
 

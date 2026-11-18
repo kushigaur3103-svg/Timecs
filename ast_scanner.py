@@ -3045,6 +3045,128 @@ CWE770_FILE_OPEN_ORIGINS = frozenset({"odoo.tools.file_open", "odoo.tools.misc.f
 # CWE-601: a query key in a relative anchor that carries a further destination. `Location: /x` is
 # same-origin, but `/web/login?redirect=<hole>` hands the choice of host to the next hop.
 CWE601_RELATIVE_CHAIN_KEYS = ("redirect=", "next=", "url=", "return=", "to=")
+# CWE-601: the predicates a framework offers for "may this URL become my next Location?".
+CWE601_REDIRECT_VALIDATOR_NAMES = frozenset({
+    "url_has_allowed_host_and_scheme", "is_safe_url", "is_safe_redirect_url",
+    "validate_redirect_url", "is_relative_url",
+})
+# Project wrappers that call one of those predicates for you. Zulip funnels every `?next=` through
+# `get_safe_redirect_to(url, redirect_host)`, which validates `url` and returns either the validated URL
+# joined onto this realm's own host or the host alone. The validator call therefore sits inside the
+# wrapper rather than beside the redirect, where the shipped same-function proof cannot see it.
+CWE601_SAFE_REDIRECT_WRAPPERS = frozenset({
+    "get_safe_redirect_to", "safe_redirect_to", "validated_redirect_to",
+})
+
+
+def c601_definition_validates_redirect(def_node: ast.AST) -> bool:
+    """True when this file's own function validates a redirect URL and hands that value back.
+
+    The name opens the door and the body proves it: the definition has to call one of
+    ``CWE601_REDIRECT_VALIDATOR_NAMES`` on one of its own parameters, and a ``return`` has to carry that
+    same parameter out. A lookalike named `get_safe_redirect_to` that never validates -- `def
+    get_safe_redirect_to(url): return url` -- keeps every redirect it feeds loud.
+    """
+    if not isinstance(def_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    params = {a.arg for a in list(def_node.args.args)
+              + list(def_node.args.posonlyargs) + list(def_node.args.kwonlyargs)}
+    if not params:
+        return False
+    validated: set = set()
+    for sub in ast.walk(def_node):
+        if not isinstance(sub, ast.Call):
+            continue
+        func = sub.func
+        leaf = func.id if isinstance(func, ast.Name) else (
+            func.attr if isinstance(func, ast.Attribute) else "")
+        if leaf not in CWE601_REDIRECT_VALIDATOR_NAMES:
+            continue
+        for arg in list(sub.args) + [kw.value for kw in sub.keywords]:
+            if isinstance(arg, ast.Name) and arg.id in params:
+                validated.add(arg.id)
+    if not validated:
+        return False
+    for sub in ast.walk(def_node):
+        if not (isinstance(sub, ast.Return) and sub.value is not None):
+            continue
+        if any(isinstance(name, ast.Name) and name.id in validated
+               for name in ast.walk(sub.value)):
+            return True
+    return False
+
+
+def c601_call_is_safe_redirect_wrapper(call: ast.AST, tree: ast.AST) -> bool:
+    """True for `get_safe_redirect_to(next, realm.url)` -- a validating wrapper defined in this file."""
+    if not isinstance(call, ast.Call):
+        return False
+    func = call.func
+    leaf = func.id if isinstance(func, ast.Name) else (
+        func.attr if isinstance(func, ast.Attribute) else "")
+    if leaf not in CWE601_SAFE_REDIRECT_WRAPPERS:
+        return False
+    for stmt in getattr(tree, "body", ()):
+        if (isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and stmt.name == leaf):
+            return c601_definition_validates_redirect(stmt)
+    return False
+# CWE-862 / CWE-352: decorators whose entire job is to stop a request before the view body runs.
+# A decorator name is evidence only together with the module it was imported from -- these are the
+# spellings an enterprise Django project uses, and `zerver.decorator`/`django.*.decorators.*` are the
+# homes that own them. A same-spelled local function, or an import from anywhere else, guards nothing.
+AUTH_ENFORCING_DECORATOR_NAMES = frozenset({
+    "zulip_login_required", "authenticated_rest_api_view", "authenticated_json_view",
+    "authenticated_api_view", "require_realm_admin", "require_server_admin",
+    "human_users_only", "webhook_view",
+})
+CSRF_ENFORCING_DECORATOR_NAMES = frozenset({
+    "csrf_protect", "require_post", "webhook_view", "authenticated_rest_api_view",
+})
+GUARD_DECORATOR_MODULE_HOME = frozenset({
+    "zerver.decorator", "zilencer.auth_decorators",
+    "django.contrib.auth.decorators", "django.contrib.admin.decorators",
+    "django.views.decorators.csrf", "django.views.decorators.http",
+    "flask_login", "flask_wtf.csrf",
+})
+
+
+def guard_decorator_imports(tree: ast.AST) -> frozenset:
+    """Names this module imported from a framework module whose job is authentication or CSRF.
+
+    Memoised on the tree because both CWE-862 and CWE-352 ask the question per candidate view, and the
+    answer is a property of the file's import block.
+    """
+    cached = tree.__dict__.get("_cached_guard_decorator_imports")
+    if cached is None:
+        names = set()
+        for stmt in getattr(tree, "body", ()):
+            if isinstance(stmt, ast.ImportFrom):
+                if (stmt.module or "") in GUARD_DECORATOR_MODULE_HOME:
+                    names.update(alias.asname or alias.name for alias in stmt.names)
+            elif isinstance(stmt, ast.Import):
+                for alias in stmt.names:
+                    if alias.name in GUARD_DECORATOR_MODULE_HOME:
+                        names.add(alias.asname or alias.name.split(".")[0])
+        cached = frozenset(names)
+        tree.__dict__["_cached_guard_decorator_imports"] = cached
+    return cached
+
+
+def view_carries_csrf_guard(node: ast.AST, tree: ast.AST) -> bool:
+    """True when a view's own decorators enforce CSRF (or admit only POST / an authenticated API view).
+
+    `import csrf_exempt` waives the framework check for one view; `@require_post` beside it says what
+    that waiver was for -- a cookie-riding cross-site form cannot satisfy a POST-only, api-key endpoint.
+    Both halves are required: the decorator has to be imported from the module that owns it, so a local
+    function that merely borrows the name guards nothing.
+    """
+    imported = guard_decorator_imports(tree)
+    for dec in getattr(node, "decorator_list", ()):
+        name = dotted_name(dec.func if isinstance(dec, ast.Call) else dec) or ""
+        leaf = name.split(".")[-1]
+        if leaf in CSRF_ENFORCING_DECORATOR_NAMES and leaf in imported:
+            return True
+    return False
 # CWE-611: aliased stdlib/lxml XML entry points (bandit-style `import ... as bad` shapes).
 CLUSTER2_XML_METHODS = {"parse", "parseString", "fromstring", "iterparse", "make_parser",
                         "create_parser", "XMLParser", "expat"}
@@ -3566,6 +3688,38 @@ P3_ECB_CONSTANT_MODES = {"ECB", "MODE_ECB"}
 P3_ECB_SKIP_IF_WEAK_CIPHER = {"DES", "DES.new", "DES3", "DES3.new", "TripleDES", "TripleDES.new", "ARC4"}
 # CWE-73: schemes that reach local or non-HTTP resources through a network-style resource sink.
 P3_UNTRUSTED_SCHEMES = ("file://", "ftp://", "gopher://")
+# CWE-939: the protocols an opener can actually be talked into speaking. A URL whose scheme is written
+# out in full in the source and is none of these -- `zulip://`, `salt://`, an app's own hand-off scheme
+# -- has no transport to be pointed at an arbitrary resource, so "this URL is built at runtime" proves
+# nothing about where it goes. The scheme still has to be complete inside the literal: the first hole in
+# `f"ht{kind}ps://{host}/"` sits inside the scheme, so no prefix is claimed and the row stays loud.
+P3_TRANSPORTABLE_SCHEMES = frozenset({"http", "https", "ftp", "ftps", "sftp", "file", "data"})
+P3_SCHEME_PREFIX_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]{1,31}):")
+
+
+def p3_constant_url_prefix(expr: ast.AST) -> Optional[str]:
+    """The literal text a URL expression is guaranteed to start with, or None when nothing is."""
+    while True:
+        if isinstance(expr, ast.Constant):
+            return expr.value if isinstance(expr.value, str) else None
+        if isinstance(expr, ast.JoinedStr):
+            head = expr.values[0] if expr.values else None
+            if isinstance(head, ast.Constant) and isinstance(head.value, str):
+                return head.value
+            return None
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+            expr = expr.left
+            continue
+        return None
+
+
+def p3_scheme_is_unfetchable(expr: ast.AST) -> bool:
+    """True when the source itself fixes the URL to a scheme no network transport implements."""
+    prefix = p3_constant_url_prefix(expr)
+    if not prefix:
+        return False
+    match = P3_SCHEME_PREFIX_RE.match(prefix)
+    return bool(match) and match.group(1).lower() not in P3_TRANSPORTABLE_SCHEMES
 # CWE-319: urllib's legacy opener objects fetch whatever scheme is spelled in their URL
 # argument. `URLopener().open("http://…")` is a plaintext network read, so it must never be
 # classified as a filesystem access, and only http/ftp are the cleartext cases the rule set
@@ -12988,6 +13142,41 @@ class TaintTracker:
     # Django's own route table lookups. `reverse_lazy` is not a different function -- it is `reverse`
     # deferred to import time, which is why class attributes and URLs.py files spell it that way.
     CWE601_REVERSE_BUILDERS = frozenset({"reverse", "reverse_lazy"})
+
+    def _c601_anchored_internal_template(self, expr: ast.AST, reads_client) -> bool:
+        """True for an f-string whose literal anchor keeps the Location on this origin.
+
+        A Location that begins with exactly one '/' is resolved by the browser against the current host,
+        so the authority is written before the first hole appears -- and everything behind a literal '?'
+        or '#' is the query or the fragment, where no characters can start an authority. Holes in the
+        path are a different matter: `f"/users/{x}"` with client data could still open a path segment,
+        so those still have to carry no client input at all, which is the proof the '+'-built relative
+        destinations are held to (see the chained-anchor contracts in
+        tests/test_finding_attribution_csrf_authz_redirect.py). A chained-redirect parameter (`?next=`)
+        is refused here for the same reason the '%'-format branch of that rule refuses it: this line's
+        own redirect is same-origin, the one the next view makes from that parameter is not, and
+        silencing the pair would hide the real sink.
+        """
+        if not isinstance(expr, ast.JoinedStr) or not expr.values:
+            return False
+        head = expr.values[0]
+        if not (isinstance(head, ast.Constant) and isinstance(head.value, str)):
+            return False
+        anchor = head.value
+        if (not anchor.startswith("/") or anchor.startswith("//")
+                or "://" in anchor or "\0" in anchor or len(anchor) < 2
+                or anchor[1] == "/" or any(k in anchor for k in CWE601_RELATIVE_CHAIN_KEYS)):
+            return False
+        behind_query_or_fragment = any(mark in anchor for mark in ("?", "#"))
+        for part in expr.values[1:]:
+            if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                if any(mark in part.value for mark in ("?", "#")):
+                    behind_query_or_fragment = True
+                continue
+            if isinstance(part, ast.FormattedValue) and not behind_query_or_fragment:
+                if reads_client(part.value):
+                    return False
+        return True
 
     def _c601_reverse_builds_an_internal_path(self, call: ast.Call,
                                               args_read_client_input) -> bool:
@@ -25006,8 +25195,14 @@ class TaintTracker:
                 # 4. Source-line emissions for CWE-601 / CWE-918 untrusted flows.
                 for (scope, name), assign_node in taint_vars.items():
                     scope_validators = validated.get(scope, set())
+                    value_node = getattr(assign_node, "value", None)
                     if name in consumed_redirect.get(scope, set()) and \
-                            "redirect" not in scope_validators:
+                            "redirect" not in scope_validators and \
+                            not c601_call_is_safe_redirect_wrapper(value_node, tree):
+                        # The assignment is only a source while nothing between it and the redirect
+                        # checks the value. `redirect_to = get_safe_redirect_to(next, realm.url)` does
+                        # check it -- in this file, in code this rule can read -- so charging the
+                        # assignment reports the same validated value a second time.
                         _add(assign_node, "UNTRUSTED_REDIRECT_SOURCE", "OPEN_REDIRECT", "CWE-601")
                     if name in consumed_ssrf.get(scope, set()) and \
                             "ssrf" not in scope_validators and \
@@ -25657,10 +25852,12 @@ class TaintTracker:
 
                     # ---- CWE-352: @csrf_exempt views ----
                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        csrf_guarded = view_carries_csrf_guard(node, tree)
                         for decorator in node.decorator_list:
                             dec_chain = _segments(decorator.func) if isinstance(decorator, ast.Call) \
                                 else _segments(decorator)
                             if dec_chain and dec_chain[-1] == CLUSTER3_CSRF_EXEMPT_SEG \
+                                    and not csrf_guarded \
                                     and not self._csrf_is_json_api_noise(mod_name, dec_chain):
                                 _add(decorator, "CSRF_EXEMPT_VIEW", "CSRF_MISSING_PROTECTION",
                                      "CWE-352")
@@ -25879,7 +26076,7 @@ class TaintTracker:
                                         and isinstance(default.value, str):
                                     url_value = default.value
                                     break
-                        if url_value is None:
+                        if url_value is None and not p3_scheme_is_unfetchable(url_expr):
                             _add(node, "DYNAMIC_URLLIB_FETCH", "PROTOCOL_RESOURCE_ACCESS",
                                  "CWE-939")
 
@@ -26413,7 +26610,13 @@ class TaintTracker:
                 dec_name = dotted_name(dec_expr) or ""
                 if dec_name in FRAMEWORK_AUTH_DECORATORS:
                     return True
-                return dec_name.split(".")[-1] in guard_decorator_names
+                leaf = dec_name.split(".")[-1]
+                if leaf in guard_decorator_names:
+                    return True
+                # The mandated enterprise vocabulary, held to the same standard as everything else in
+                # this function: the name alone guards nothing, the module it was imported from does.
+                return (leaf in AUTH_ENFORCING_DECORATOR_NAMES
+                        and leaf in guard_decorator_imports(tree))
 
             # Both walks below only ever answer the CWE-862 guard questions, so they run on the first
             # CWE-862 candidate call in this module rather than on every module up front. A module
@@ -27031,6 +27234,13 @@ class TaintTracker:
                                     if any(m in CWE3A_STATE_CHANGING_METHODS for m in m_vals):
                                         has_route_post_or_put = True
 
+                    # A view that answers only POST, or that authenticates through the framework's own
+                    # API decorator, carries a guard with it; `csrf_protect` says so outright. The
+                    # exemption of a view that has one of these is a deliberate opt-in for a request a
+                    # cookie cannot ride, not a missing protection.
+                    if not has_csrf_protect_dec:
+                        has_csrf_protect_dec = view_carries_csrf_guard(node, tree)
+
                     # CWE-352 mutual exclusion: a bare `@csrf_exempt` view is reported once, at its
                     # decorator, by the Cluster 3 CSRF_EXEMPT_VIEW rule. Both rules gate on
                     # `_csrf_is_json_api_noise`, and for that decorator Cluster 3 passes
@@ -27041,6 +27251,7 @@ class TaintTracker:
                     # views still have to be reported from here.
                     if has_csrf_exempt_dec:
                         if not cluster3_owns_exempt \
+                                and not has_csrf_protect_dec \
                                 and (has_route_post_or_put or _view_accepts_state_change(node)) \
                                 and not self._csrf_is_json_api_noise(mod_name):
                             # @csrf_exempt removes the only guard a state-changing request meets. When
@@ -33920,6 +34131,16 @@ class TaintTracker:
                 return False
             return all(not _expr_reads_client_input(part, scope_id, lineno) for part in rest)
 
+        def _anchored_internal_template(expr: ast.AST, scope_id: str, lineno: int) -> bool:
+            """The phase-8 binding of the anchored-template proof: this scope's client-input oracle."""
+            return self._c601_anchored_internal_template(
+                expr, lambda value: _expr_reads_client_input(value, scope_id, lineno))
+
+        def _safe_redirect_wrapper_call(call: ast.Call, scope_id: str) -> bool:
+            """True for `get_safe_redirect_to(next, realm.url)` -- this file's own validating wrapper."""
+            tree = self.modules.get(scope_module(scope_id))
+            return tree is not None and c601_call_is_safe_redirect_wrapper(call, tree)
+
         def _urlfor_builds_an_internal_route(call: ast.Call, scope_id: str, lineno: int) -> bool:
             """Resolve every `url_for` argument here, where the scope's records live, then ask."""
             values = [*call.args, *(keyword.value for keyword in call.keywords)]
@@ -33947,6 +34168,10 @@ class TaintTracker:
             if _is_safe_route_expr(target, scope_id, lineno):
                 return True
             if _same_origin_relative_target(target, scope_id, lineno):
+                return True
+            if _anchored_internal_template(target, scope_id, lineno):
+                return True
+            if isinstance(target, ast.Call) and _safe_redirect_wrapper_call(target, scope_id):
                 return True
             if isinstance(target, ast.Name):
                 existing_sink = self._sink_node_at(

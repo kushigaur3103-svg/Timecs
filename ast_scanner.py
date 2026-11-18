@@ -12949,10 +12949,28 @@ class TaintTracker:
                     return True
         return False
 
+    def _c601_urlfor_builds_an_internal_route(self, call: ast.Call,
+                                              args_read_client_input) -> bool:
+        """True when `url_for(...)` can only build a route of this application.
+
+        Both halves of the destination are attacker-reachable, so both are refused here. The endpoint
+        selects the path, and a path built from a literal name in this application's own url map
+        cannot leave the origin -- `redirect(url_for('Airflow.index'))` is a menu navigation, not an
+        open redirect, while `url_for(endpoint)` hands the choice of route to whatever filled
+        `endpoint`. The remaining arguments select the query, so `args_read_client_input`, computed by
+        the caller where the scope's assignment records live, must be empty of client data. The caller
+        resolves every argument, so this predicate only has to refuse what it can see.
+        """
+        endpoint = call.args[0] if call.args else None
+        if not (isinstance(endpoint, ast.Constant) and isinstance(endpoint.value, str)):
+            return False
+        return not any(args_read_client_input)
+
     # The leaves that open a stream on a name in the program's own filesystem namespace. `fopen` is the
-    # spelling Salt's own wrapper uses (`salt.utils.files.fopen`), and `Path(...).open()` is the pathlib
+    # spelling Salt's own wrapper uses (`salt.utils.files.fopen`), `flopen`/`safe_open`/`atomic_open` are
+    # its lock, permission-checked and rename-on-close siblings, and `Path(...).open()` is the pathlib
     # one, so the test is on the last written segment rather than a module whitelist.
-    _C400_LOCAL_OPENER_LEAVES = frozenset({"open", "fopen"})
+    _C400_LOCAL_OPENER_LEAVES = frozenset({"open", "fopen", "flopen", "safe_open", "atomic_open"})
     # A receiver named like a network object is not excused by the value behind it: the name is what the
     # operator wrote about the stream, and `self._memory_file` / `self._content` are methods of an object
     # whose storage this rule cannot see. Only a plain local name can be excused, so an `ast.Attribute`
@@ -24206,6 +24224,16 @@ class TaintTracker:
             return isinstance(base, ast.Name) and base.id in ("self", "cls")
         if not isinstance(receiver, ast.Name):
             return False
+        if receiver.id.startswith("__") and receiver.id.endswith("__") and len(receiver.id) > 4:
+            # Salt's loader hands every module `__opts__` -- the already-parsed minion config -- and it
+            # is never a table the module itself builds. When this file never writes the name,
+            # `__opts__.get("passwd", "")` reads a key the deployment may simply not have set, which is
+            # not a credential this product ships. A file that does write the name keeps reporting: the
+            # empty default is then its own choice. The write is looked up per *module*, not per scope,
+            # because the enclosing read is reported at module scope while the write often sits inside
+            # the function around it -- `names_by_module` answers both in one lookup.
+            written = self.assignments_by_scope.names_by_module.get(scope_module(scope_id), ())
+            return receiver.id not in written
         owner = self._c521_enclosing_callable(node)
         if owner is None:
             return False
@@ -33700,7 +33728,7 @@ class TaintTracker:
                 current = getattr(current, "parent", None)
             return False
 
-        def _is_safe_route_expr(expr: ast.AST) -> bool:
+        def _is_safe_route_expr(expr: ast.AST, scope_id: str, lineno: int) -> bool:
             if expr is None:
                 return True
             if isinstance(expr, ast.Constant):
@@ -33711,14 +33739,21 @@ class TaintTracker:
             if isinstance(expr, ast.Call):
                 dname = dotted_name(expr.func) or ""
                 short = dname.rsplit(".", 1)[-1]
-                if short in {"get_full_path", "url_for"} or dname in {"request.get_full_path", "flask.url_for"}:
+                if short == "get_full_path":
                     return True
+                if short == "url_for" or dname == "flask.url_for":
+                    # `url_for` only builds an internal route when this file wrote the endpoint and
+                    # no argument comes from the client; a client-named endpoint is an open redirect
+                    # wearing a route-builder's shape.
+                    return _urlfor_builds_an_internal_route(expr, scope_id, lineno)
                 if short in redirect_validators or dname in redirect_validators:
                     return True
             if isinstance(expr, ast.JoinedStr):
-                return all(_is_safe_route_expr(part.value) for part in expr.values if isinstance(part, ast.FormattedValue))
+                return all(_is_safe_route_expr(part.value, scope_id, lineno)
+                           for part in expr.values if isinstance(part, ast.FormattedValue))
             if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
-                return _is_safe_route_expr(expr.left) and _is_safe_route_expr(expr.right)
+                return (_is_safe_route_expr(expr.left, scope_id, lineno)
+                        and _is_safe_route_expr(expr.right, scope_id, lineno))
             return False
 
         def _func_arg_names(scope_id: str) -> set[str]:
@@ -33841,6 +33876,12 @@ class TaintTracker:
                 return False
             return all(not _expr_reads_client_input(part, scope_id, lineno) for part in rest)
 
+        def _urlfor_builds_an_internal_route(call: ast.Call, scope_id: str, lineno: int) -> bool:
+            """Resolve every `url_for` argument here, where the scope's records live, then ask."""
+            values = [*call.args, *(keyword.value for keyword in call.keywords)]
+            return self._c601_urlfor_builds_an_internal_route(
+                call, [_expr_reads_client_input(value, scope_id, lineno) for value in values])
+
         def _redirect_is_safe(call: ast.Call, target: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
             if target is None:
                 return False
@@ -33853,7 +33894,7 @@ class TaintTracker:
                 # Fully literal, immutable destination: nothing client-supplied is inside it,
                 # because _static_value only resolves when every component is a constant.
                 return True
-            if _is_safe_route_expr(target):
+            if _is_safe_route_expr(target, scope_id, lineno):
                 return True
             if _same_origin_relative_target(target, scope_id, lineno):
                 return True
@@ -33915,6 +33956,11 @@ class TaintTracker:
                 ):
                     return True
                 if any(name in {"url_for", "request.get_full_path"} or name.endswith(".url_for") for name in names):
+                    # `get_full_path` is this request's own path and query -- relative, so no host can
+                    # be injected -- while `url_for` is only internal when the endpoint and every
+                    # argument come from this application rather than the client.
+                    if any(name == "url_for" or name.endswith(".url_for") for name in names):
+                        return _urlfor_builds_an_internal_route(target, scope_id, lineno)
                     return True
             if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
                 record = _assigned_value(target.value.id, scope_id, lineno)

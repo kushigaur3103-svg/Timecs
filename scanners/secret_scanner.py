@@ -80,6 +80,21 @@ ASSIGNMENT = re.compile(
 
 PLACEHOLDER_WORDS = ("example", "changeme", "placeholder", "dummy", "test", "sample",
                      "your_", "xxxx", "123456", "password", "secret")
+# Four tokens that say what a value is *for* instead of carrying one. Kept apart from
+# PLACEHOLDER_WORDS so this reader's newer refusal can be measured without moving the older one.
+NON_SECRET_PLACEHOLDER_TOKENS = ("temporary_key", "replace_me", "not_found", "not_a_real_key")
+# `user:user@localhost` proves a developer default rather than a deployed credential: the secret and
+# its own username are the same dictionary word, and the host is this machine, so no deployment can
+# be relying on it. Airflow ships exactly this pair in `default_airflow.cfg`, `default_test.cfg` and
+# the documentation template `config.yml`, all three of which describe a broker URL rather than
+# configure one.
+LOCAL_SERVICE_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1"})
+# A document whose own name declares it a test fixture or the shipped default of a product. Only the
+# generic-assignment branch consults this: a vendor token, a PEM block or a service URL proves itself
+# by shape and cannot be silenced by the name of the file it sits in.
+NON_PRODUCTION_CONFIG_SUFFIXES = ("_test.cfg", "_test.ini", "_test.conf")
+NON_PRODUCTION_CONFIG_PREFIXES = ("test_", "default_test.")
+NON_PRODUCTION_CONFIG_EXTENSIONS = (".cfg", ".ini", ".conf", ".yml", ".yaml", ".env", ".properties")
 NULL_LITERALS = frozenset({"null", "none", "true", "false", "~", "nil", "undefined"})
 INTERPOLATION = re.compile(r"\$(?:\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*)")
 COMMIT_SHA = re.compile(r"[0-9a-fA-F]{40}")
@@ -131,6 +146,53 @@ def _is_literal_credential(value: str) -> bool:
     if value.lower().endswith(CREDENTIAL_PATH_SUFFIXES):
         return False
     return True
+
+
+def _service_host(authority: str) -> str:
+    """The bare host of an already-split `host` or `host:port`, IPv6 included."""
+    host = authority.lower()
+    if host.startswith("["):
+        return host[1:].split("]", 1)[0]
+    head, separator, tail = host.rpartition(":")
+    if separator and tail.isdigit():
+        return head
+    return host
+
+
+def _service_credential_is_dev_default(url: str) -> bool:
+    """True for `scheme://user:user@localhost/db`: the password is the username, on this machine.
+
+    `sqla+mysql://airflow:airflow@localhost:3306/airflow` is a worked example of a broker URL, not a
+    credential a deployment relies on -- and a deployment that really does run it that way is guarding
+    the word `airflow`, which is not a secret worth rotating. `postgres://app:S3cr3tP4ss@db.internal
+    /prod` fails both halves, so a production service URL cannot be silenced here.
+    """
+    _scheme, separator, rest = url.partition("://")
+    if not separator:
+        return False
+    authority = rest.split("/", 1)[0]
+    userinfo, at, host = authority.rpartition("@")
+    if not at:
+        return False
+    user, colon, password = userinfo.partition(":")
+    if not colon or user != password:
+        return False
+    return _service_host(host) in LOCAL_SERVICE_HOSTS
+
+
+def _is_non_production_document(path: str) -> bool:
+    """True when a config document's own name says it is a test fixture or a shipped default.
+
+    Scoped to the generic-assignment branch by the caller: those are the hits identified by the key
+    name alone, which is exactly where a template's `api_key = REPLACE_ME_NOW` can impersonate a
+    credential. A value that proves its own shape is never reached by this rule.
+    """
+    name = str(path).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if name.endswith(NON_PRODUCTION_CONFIG_SUFFIXES):
+        return True
+    if name.startswith(NON_PRODUCTION_CONFIG_PREFIXES):
+        return name.endswith(NON_PRODUCTION_CONFIG_EXTENSIONS)
+    return False
 
 
 def is_secret_path(path: str) -> bool:
@@ -187,6 +249,8 @@ def is_refused(value: str, named: bool = False) -> bool:
         return True
     if any(word in lowered for word in PLACEHOLDER_WORDS):
         return True
+    if any(token in lowered for token in NON_SECRET_PLACEHOLDER_TOKENS):
+        return True
     if not named and len(text) == 40 and COMMIT_SHA.fullmatch(text):
         return True
     return False
@@ -218,9 +282,12 @@ def _iter_hits(source: str) -> Iterator[Tuple[int, str, str, str, str]]:
             if match and not is_refused(match.group(0), named=True):
                 yield lineno, label, severity, _redact(match.group(0)), "vendor"
         for match in SERVICE_URL.finditer(line):
-            if not is_refused(match.group(1), named=True):
-                yield (lineno, "Service URL With Embedded Password", "HIGH",
-                       _redact(match.group(1)), "service_url")
+            if is_refused(match.group(1), named=True):
+                continue
+            if _service_credential_is_dev_default(match.group(0)):
+                continue
+            yield (lineno, "Service URL With Embedded Password", "HIGH",
+                   _redact(match.group(1)), "service_url")
         for match in ASSIGNMENT.finditer(line):
             name = _sensitive_name(match.group("key"))
             if name is None:
@@ -247,6 +314,13 @@ def audit_secret_files(files: Dict[str, str]) -> List[Dict[str, Any]]:
             continue
         seen = set()
         for lineno, label, severity, redacted, kind in _iter_hits(files[file_path]):
+            # A document that names itself a test fixture or the shipped default carries no deployed
+            # credential, and the key name is the *only* thing that identified a generic hit -- so
+            # `api_key = REPLACE_WITH_YOUR_KEY` in `service_test.cfg` is the one place the document's
+            # own name is evidence. Vendor tokens and service URLs prove their shape and never reach
+            # this clause.
+            if kind == "generic" and _is_non_production_document(file_path):
+                continue
             # A line can satisfy two shapes at once -- a service URL whose password is also a
             # sensitive assignment. One credential is one finding, so the first shape wins.
             key = (lineno, label)

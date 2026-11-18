@@ -39,6 +39,24 @@ KNOWN_SANITIZERS = {
     "int", "float", "bool", "len", "escape", "quote", "sha256", "md5"
 }
 
+# `KNOWN_SINKS` keys on the leaf name of the callee, and four JSON parsers share that leaf with
+# `pickle.loads`: json, orjson, ujson, simplejson. A JSON parser builds dicts, lists, strings and
+# numbers -- it constructs no arbitrary class and executes nothing the payload chose -- so it carries
+# no CWE-502 obligation. Zulip paid for the collision twice over: `zerver/lib/queue.py` and
+# `zerver/lib/send_email.py` were reported as unsafe deserialization on `orjson.loads(...)`.
+JSON_PARSER_MODULES = frozenset({"json", "orjson", "ujson", "simplejson"})
+JSON_LEAF_SINKS = frozenset({"loads", "load"})
+
+# A unit-test assertion compares two values; it is not a place where data is handed to something
+# dangerous. Left unmarked, a helper shaped like `ZulipTestCaseMixin.assertEqual(self, first, second)`
+# that touches `subprocess.check_output` internally lifts a CWE-78 contract onto `first`, and every
+# test that passes data in becomes a cross-file finding.
+TEST_ASSERTION_METHODS = frozenset({
+    "assertEqual", "assertNotEqual", "assertIn", "assertNotIn", "assertIs", "assertIsNot",
+    "assertTrue", "assertFalse", "assertRaises", "assertAlmostEqual", "assertGreater",
+    "assertDictContainsSubset", "raises",
+})
+
 
 def _has_static_decorator(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     """True for a @staticmethod, whose first parameter is a real argument, not a receiver."""
@@ -157,6 +175,12 @@ class FunctionSummarizer:
         if any(san in name.lower() for san in KNOWN_SANITIZERS):
             summary.is_sanitizer = True
 
+        # A test assertion compares two values, so it owns no sink obligation and returns no tainted
+        # value. Declaring the contract empty -- rather than pruning its callers -- is what stops an
+        # assertion helper from becoming a cross-file taint hop.
+        if node.name in TEST_ASSERTION_METHODS:
+            return summary
+
         # Intra-function variable flow tracking
         # Maps local_var -> set of param indices it was derived from
         alias_map: dict[str, set[int]] = {p: {i} for i, p in enumerate(params)}
@@ -206,6 +230,10 @@ class FunctionSummarizer:
                         call_name = sub.func.attr
 
                     cwe = KNOWN_SINKS.get(call_name)
+                    if cwe == "CWE-502" and call_name in JSON_LEAF_SINKS:
+                        # Same leaf, different guarantee: a JSON parser builds values, not objects.
+                        if self._parses_json_only(sub.func, mod_name):
+                            continue
                     if cwe:
                         for position, arg in enumerate(sub.args):
                             # DB-API semantics: execute(operation, parameters) interpolates
@@ -238,6 +266,30 @@ class FunctionSummarizer:
                 summary.is_sanitizer = True
 
         return summary
+
+    def _parses_json_only(self, func: ast.AST, mod_name: str) -> bool:
+        """True when this `loads`/`load` callee is a JSON parser, whichever name it was imported under.
+
+        The leaf name cannot answer that on its own -- `pickle.loads` and `orjson.loads` are spelled
+        identically from here -- so the receiver is resolved through the file's own import bindings,
+        which covers `import orjson as oj`. Anything unresolvable stays a sink: the rule refuses only
+        what it can name.
+        """
+        module_index = self.indexer.modules.get(mod_name)
+        bindings = getattr(module_index, "imports", None)
+        if not bindings:
+            return False
+        if isinstance(func, ast.Attribute):
+            receiver = func.value
+            local = receiver.id if isinstance(receiver, ast.Name) else ""
+            binding = bindings.get(local)
+            return binding is not None and binding.source_module in JSON_PARSER_MODULES
+        if isinstance(func, ast.Name):
+            binding = bindings.get(func.id)
+            return (binding is not None
+                    and binding.source_module in JSON_PARSER_MODULES
+                    and binding.imported_name in JSON_LEAF_SINKS)
+        return False
 
     @staticmethod
     def _callee_name(node: ast.AST) -> Optional[str]:

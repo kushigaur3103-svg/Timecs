@@ -605,12 +605,17 @@ class CrossFileTaintEngine:
     """
 
     def __init__(self, root_dir: str | Path,
-                 reuse_trees: Optional[dict] = None):
+                 reuse_trees: Optional[dict] = None,
+                 prune_non_production: bool = True):
         self.root_dir = Path(root_dir).resolve()
         # Scanner-parsed (source, tree) snapshots keyed by resolved absolute path string;
         # the indexer re-verifies each against disk before reuse (see GlobalSymbolIndex.build).
         self.reuse_trees = reuse_trees
-        self.indexer = GlobalSymbolIndex(self.root_dir)
+        # Scope parity with the single-file walker, whose default prunes `tests/`, `testutils/`,
+        # `fixtures/`, `examples/`, `samples/` and `debug/`. A chain whose caller lives in that
+        # surface is test tooling driving the product, not product surface, and it is not a finding.
+        self.indexer = GlobalSymbolIndex(self.root_dir,
+                                        prune_non_production=prune_non_production)
         self.summarizer: Optional[FunctionSummarizer] = None
         self.contracts: dict[tuple[str, str], FunctionSummary] = {}
         # Per-module compact symbol table: signatures, call sites, receivers, decorators, bases.

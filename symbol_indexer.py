@@ -40,6 +40,44 @@ except Exception:  # pragma: no cover - environment dependent
 # for a pool. Only fan out once the duplicated pass is long enough to be worth the spawn.
 PARALLEL_READ_MIN_FILES = 2000
 
+# The non-production surface, mirroring `cli.NON_PRODUCTION_DIRS` and the `test_*.py` / `*_test.py`
+# name shapes. Mirrored rather than imported because `cli` imports the scanner, which imports this
+# package's siblings: a cross-file engine must not need the CLI to decide its own scope.
+#
+# This set is not decoration. Zulip is the proof: the single-file walker pruned 173 test files, the
+# index here walked all 2,049, and the two scopes disagreed loudly -- 25 cross-file CWE-78 chains
+# were reported out of `zerver/tests/test_*.py`, through a test assertion helper, into
+# `subprocess.check_output`. A chain that starts inside test tooling describes how a test drives the
+# product, not what the product exposes to an attacker.
+NON_PRODUCTION_DIRS = frozenset({"tests", "test", "__tests__", "testutils",
+                                 "fixtures", "examples", "example", "samples", "debug"})
+NON_PRODUCTION_SUFFIXES = ("_test.py",)
+NON_PRODUCTION_PREFIXES = ("test_",)
+
+
+def is_non_production_path(path: Path, root: Path) -> bool:
+    """True when the default single-file walker would never have reached this file.
+
+    Only segments *below* the scan root are consulted, which reproduces the walker's two escapes for
+    free: naming a directory as the scan root (`cli.py scan tests/`) keeps everything inside it, and
+    naming one file keeps that file, because `relative_to` then holds nothing that can match.
+    """
+    if root.name in NON_PRODUCTION_DIRS:
+        # The caller aimed this engine at the test surface on purpose; nothing under it is foreign.
+        return False
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return False
+    parts = relative.parts
+    if not parts:
+        return False
+    if any(part in NON_PRODUCTION_DIRS for part in parts[:-1]):
+        return True
+    name = parts[-1]
+    return any(name.startswith(prefix) for prefix in NON_PRODUCTION_PREFIXES) or \
+        any(name.endswith(suffix) for suffix in NON_PRODUCTION_SUFFIXES)
+
 
 def _read_and_parse_one(path: str) -> dict:
     """Read + parse one file into the worker entry shape; never raises."""
@@ -82,8 +120,12 @@ class ModuleIndex:
 class GlobalSymbolIndex:
     """Project-wide AST symbol table and import graph resolver."""
 
-    def __init__(self, root_dir: str | Path):
+    def __init__(self, root_dir: str | Path, prune_non_production: bool = True):
         self.root_dir = Path(root_dir).resolve()
+        # Scope parity with the single-file walker. `--include-tests` still reaches the engine
+        # through `reuse_trees`: a file the scanner already parsed is in scope whatever its name,
+        # so the flag works without `cli.py` passing anything here.
+        self.prune_non_production = prune_non_production
         self.modules: dict[str, ModuleIndex] = {}
         self.file_to_module: dict[Path, str] = {}
         self.module_to_file: dict[str, Path] = {}
@@ -138,6 +180,10 @@ class GlobalSymbolIndex:
                     # Skip common virtual environments and cache directories
                     parts = full_p.parts
                     if any(x in parts for x in (".venv", "venv", "env", "__pycache__", ".git")):
+                        continue
+                    if (self.prune_non_production
+                            and is_non_production_path(full_p, self.root_dir)
+                            and not (reuse_trees and str(full_p) in reuse_trees)):
                         continue
                     py_files.append(full_p)
 

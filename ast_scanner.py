@@ -7819,6 +7819,25 @@ class TaintTracker:
         stem, dirs = self._module_stem_and_dirs(mod_name_or_path)
         return stem in HTTP_TRANSPORT_MODULE_STEMS and any(d in HTTP_CLIENT_PACKAGE_DIRS for d in dirs)
 
+    NUMBERED_MIGRATION_PATH_RE = re.compile(r"(?:^|/)migrations/\d{4}_[^/]*\.py$")
+
+    def _file_is_numbered_django_migration(self, file_path: str) -> bool:
+        """True for a file Django wrote for itself: `*/migrations/<4 digits>_<name>.py`.
+
+        Django stamps one of these per schema change and never runs its body again except through
+        the migrator, on a database the operator chose. The SQL inside is history recorded in code:
+        `RunSQL`/`cursor.execute` statements are fixed by the commit that added the file, and an
+        `md5` there is a data-version tag, not a password hash. Zulip paid 15+ CWE-89/CWE-328 rows
+        for that, and every one of them sat in `zerver/migrations/0235_*.py`.
+
+        Only the four-digit prefix qualifies. A hand-written file in `migrations/` keeps every rule,
+        because `0235_add_field.py` is generated and `helpers.py` in the same folder is not.
+        """
+        if not file_path:
+            return False
+        return bool(self.NUMBERED_MIGRATION_PATH_RE.search(
+            file_path.replace("\\", "/").lower()))
+
     CWE117_BUILTIN_SEALED_NAMES = frozenset({"len", "int", "float", "bool", "ord"})
     # Argument-free `time.<name>()` getters whose return CPython forces to a builtin float. The
     # membership test is on the method, the receiver test stays `"time"` at the call site, and a
@@ -12960,6 +12979,26 @@ class TaintTracker:
         `endpoint`. The remaining arguments select the query, so `args_read_client_input`, computed by
         the caller where the scope's assignment records live, must be empty of client data. The caller
         resolves every argument, so this predicate only has to refuse what it can see.
+        """
+        endpoint = call.args[0] if call.args else None
+        if not (isinstance(endpoint, ast.Constant) and isinstance(endpoint.value, str)):
+            return False
+        return not any(args_read_client_input)
+
+    # Django's own route table lookups. `reverse_lazy` is not a different function -- it is `reverse`
+    # deferred to import time, which is why class attributes and URLs.py files spell it that way.
+    CWE601_REVERSE_BUILDERS = frozenset({"reverse", "reverse_lazy"})
+
+    def _c601_reverse_builds_an_internal_path(self, call: ast.Call,
+                                              args_read_client_input) -> bool:
+        """True when `reverse(...)` can only name a path this project already declared.
+
+        Django resolves the first argument against the application's own URL table and fills that
+        rule's placeholders with the rest, so `reverse('home', args=[self.pk])` writes a path this
+        program chose and a client cannot steer. The two ways that proof breaks are the same two
+        `url_for` has: a view name that is not a literal, and an argument somebody outside the
+        program supplied -- `reverse(request.GET['view'])` picks the destination, and
+        `reverse('home', args=[next_page])` puts client text inside the path itself.
         """
         endpoint = call.args[0] if call.args else None
         if not (isinstance(endpoint, ast.Constant) and isinstance(endpoint.value, str)):
@@ -33746,6 +33785,11 @@ class TaintTracker:
                     # no argument comes from the client; a client-named endpoint is an open redirect
                     # wearing a route-builder's shape.
                     return _urlfor_builds_an_internal_route(expr, scope_id, lineno)
+                if short in self.CWE601_REVERSE_BUILDERS or dname in {
+                        "django.urls.reverse", "django.urls.reverse_lazy"}:
+                    # Django's route table is this project's own, so the same two questions decide
+                    # it: is the view name a literal, and does any argument carry client text?
+                    return _reverse_builds_an_internal_path(expr, scope_id, lineno)
                 if short in redirect_validators or dname in redirect_validators:
                     return True
             if isinstance(expr, ast.JoinedStr):
@@ -33882,6 +33926,12 @@ class TaintTracker:
             return self._c601_urlfor_builds_an_internal_route(
                 call, [_expr_reads_client_input(value, scope_id, lineno) for value in values])
 
+        def _reverse_builds_an_internal_path(call: ast.Call, scope_id: str, lineno: int) -> bool:
+            """Same resolution duty for Django's `reverse`/`reverse_lazy` route lookups."""
+            values = [*call.args, *(keyword.value for keyword in call.keywords)]
+            return self._c601_reverse_builds_an_internal_path(
+                call, [_expr_reads_client_input(value, scope_id, lineno) for value in values])
+
         def _redirect_is_safe(call: ast.Call, target: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
             if target is None:
                 return False
@@ -33955,12 +34005,18 @@ class TaintTracker:
                     for name in names
                 ):
                     return True
-                if any(name in {"url_for", "request.get_full_path"} or name.endswith(".url_for") for name in names):
+                if any(name in {"url_for", "request.get_full_path"}
+                       or name.endswith(".url_for")
+                       or name.rsplit(".", 1)[-1] in self.CWE601_REVERSE_BUILDERS
+                       for name in names):
                     # `get_full_path` is this request's own path and query -- relative, so no host can
                     # be injected -- while `url_for` is only internal when the endpoint and every
                     # argument come from this application rather than the client.
                     if any(name == "url_for" or name.endswith(".url_for") for name in names):
                         return _urlfor_builds_an_internal_route(target, scope_id, lineno)
+                    if any(name.rsplit(".", 1)[-1] in self.CWE601_REVERSE_BUILDERS
+                           for name in names):
+                        return _reverse_builds_an_internal_path(target, scope_id, lineno)
                     return True
             if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
                 record = _assigned_value(target.value.id, scope_id, lineno)
@@ -35499,6 +35555,15 @@ class TaintTracker:
         for record in self.sink_records:
             sink = record.security_node
             cwe = sink.metadata.get("cwe")
+            if cwe in ("CWE-89", "CWE-328") and self._file_is_numbered_django_migration(
+                    sink.location.file):
+                # Recorded schema history, not live surface: see _file_is_numbered_django_migration.
+                # This sits ahead of every synthetic-source short-circuit below so no collector can
+                # route around it, and it retires the sink -- not just the edge -- so nothing later
+                # re-adopts it. Any other CWE in the same file keeps its row untouched.
+                if sink in self.sinks:
+                    self.sinks.remove(sink)
+                continue
             target_expr = None
             if isinstance(record.node, ast.Return):
                 target_expr = record.node.value

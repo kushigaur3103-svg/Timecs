@@ -195,6 +195,37 @@ def _is_non_production_document(path: str) -> bool:
     return False
 
 
+API_SPEC_NAME_MARKS = ("openapi", "swagger")
+API_SPEC_VERSION_HEAD_BYTES = 512
+API_SPEC_PATH_SCAN_BYTES = 65536
+API_SPEC_VERSION_RE = re.compile(r"^(?:openapi|swagger)\s*:", re.MULTILINE)
+API_SPEC_PATHS_RE = re.compile(r"^paths\s*:", re.MULTILINE)
+
+
+def _is_api_specification_document(path: str, text: str) -> bool:
+    """True for an OpenAPI/Swagger contract -- a description of an API, not a deployment of one.
+
+    Zulip's whole public surface is written twice: once in code and once in
+    `zerver/openapi/zulip.yaml`, which spells out every parameter, every example payload and every
+    sample credential a client might send. Those strings are documentation that ships to the world
+    on purpose, and the point of writing them is that they are not secrets. Five CWE-798 rows came
+    from key names alone.
+
+    Two independent ways to know it: the file's own name, or the two keys only a specification
+    carries -- a version declaration in the first lines and a top-level `paths:` map. The cheap
+    checks are bounded (`API_SPEC_*` below) so a large config file is never re-scanned for shape.
+    """
+    name = str(path).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if name.endswith((".yml", ".yaml", ".json")) and any(mark in name for mark in API_SPEC_NAME_MARKS):
+        return True
+    if not text:
+        return False
+    head = text[:API_SPEC_VERSION_HEAD_BYTES]
+    if not API_SPEC_VERSION_RE.search(head):
+        return False
+    return bool(API_SPEC_PATHS_RE.search(text[:API_SPEC_PATH_SCAN_BYTES]))
+
+
 def is_secret_path(path: str) -> bool:
     """True for a config/env/shell document this reader owns, by name alone."""
     name = str(path).replace("\\", "/").rsplit("/", 1)[-1].lower()
@@ -313,13 +344,18 @@ def audit_secret_files(files: Dict[str, str]) -> List[Dict[str, Any]]:
         if not is_secret_path(file_path):
             continue
         seen = set()
+        # Both refusals are about the *document*, so they are answered once per file, not once per
+        # hit: a name that says test fixture, and a shape that says API specification.
+        generic_candidate_refused = (_is_non_production_document(file_path)
+                                     or _is_api_specification_document(file_path,
+                                                                       files[file_path]))
         for lineno, label, severity, redacted, kind in _iter_hits(files[file_path]):
             # A document that names itself a test fixture or the shipped default carries no deployed
             # credential, and the key name is the *only* thing that identified a generic hit -- so
             # `api_key = REPLACE_WITH_YOUR_KEY` in `service_test.cfg` is the one place the document's
             # own name is evidence. Vendor tokens and service URLs prove their shape and never reach
             # this clause.
-            if kind == "generic" and _is_non_production_document(file_path):
+            if kind == "generic" and generic_candidate_refused:
                 continue
             # A line can satisfy two shapes at once -- a service URL whose password is also a
             # sensitive assignment. One credential is one finding, so the first shape wins.

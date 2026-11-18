@@ -759,8 +759,11 @@ LAWS = (
              and 'self.assignments_by_scope.get((module_scope'
              not in inspect.getsource(T._c521_lookup_default_is_absent_marker)),
     ('G5 the document-name rule reaches only the generic branch',
-     lambda: 'kind == "generic" and _is_non_production_document(file_path)'
-             in inspect.getsource(secret_scanner.audit_secret_files)),
+     lambda: 'kind == "generic" and generic_candidate_refused'
+             in inspect.getsource(secret_scanner.audit_secret_files)
+             and 'generic_candidate_refused = (_is_non_production_document(file_path)'
+             in inspect.getsource(secret_scanner.audit_secret_files)
+             and '_is_non_production_document' not in inspect.getsource(secret_scanner._iter_hits)),
     ('G5 the dev-default proof needs the username and the host',
      lambda: 'user != password' in inspect.getsource(secret_scanner._service_credential_is_dev_default)
              and '_service_host(host) in LOCAL_SERVICE_HOSTS'

@@ -10,7 +10,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import uvicorn
 from dotenv import load_dotenv
-from passlib.context import CryptContext
+import bcrypt
 from datetime import datetime, timezone, timedelta
 from fpdf import FPDF
 
@@ -442,7 +442,19 @@ def safe_calculate_days_active(created_val) -> int:
 
 templates = Jinja2Templates(directory="templates")
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+def hash_password(plain_password: str) -> str:
+    pw_bytes = (plain_password or "").encode("utf-8")[:72]
+    return bcrypt.hashpw(pw_bytes, bcrypt.gensalt()).decode("utf-8")
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    if not plain_password or not hashed_password:
+        return False
+    pw_bytes = (plain_password.encode("utf-8") if isinstance(plain_password, str) else plain_password)[:72]
+    try:
+        hash_bytes = hashed_password.encode("utf-8") if isinstance(hashed_password, str) else hashed_password
+        return bcrypt.checkpw(pw_bytes, hash_bytes)
+    except (ValueError, TypeError):
+        return False
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "fallback_dev_key_only_change_in_prod")
 
 class AuthPayload(BaseModel):
@@ -532,7 +544,7 @@ async def signup(payload: AuthPayload):
             raise HTTPException(status_code=400, detail="Operator ID already registered. Please sign in instead.")
             
         safe_password = payload.password[:72]
-        password_hash = pwd_context.hash(safe_password)
+        password_hash = hash_password(safe_password)
         new_api_key = "tcs_" + secrets.token_hex(16)
         trial_end = datetime.now(timezone.utc) + timedelta(days=14)
         
@@ -585,7 +597,7 @@ async def login(payload: AuthPayload):
         if not user:
             # Auto-provision user on login so Render ephemeral container resets never block access
             safe_password = payload.password[:72]
-            password_hash = pwd_context.hash(safe_password)
+            password_hash = hash_password(safe_password)
             new_api_key = "tcs_" + secrets.token_hex(16)
             trial_end = datetime.now(timezone.utc) + timedelta(days=14)
             user = User(
@@ -599,7 +611,7 @@ async def login(payload: AuthPayload):
             db.add(user)
             db.commit()
             db.refresh(user)
-        elif not pwd_context.verify(payload.password[:72], user.password_hash):
+        elif not verify_password(payload.password, user.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password.")
     finally:
         db.close()

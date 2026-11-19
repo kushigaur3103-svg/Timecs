@@ -4795,11 +4795,19 @@ def _literal_text(node, assignments_by_scope, scope_id="", lineno=0, seen=None):
 # One markup test for every CWE-79 record path. The response sink, the structural layer and the
 # registry prune each used to ask "does this text contain `<` and `>`", which is equally true of an
 # RFC 2822 address, a Debian maintainer line, a `<cbc:ID>` UBL element and a Python object repr.
-# What a browser parses is `<` or `</` plus an element name plus a delimiter, so that is what is
-# tested here - after every `%s`/`{}` substitution marker and every dynamic hole has been folded to
-# one sentinel character, because `f"<{tag}>{content}</{tag}>"` is markup with the name taken from
-# the request, and `f'"{name}" <{local}@{domain}>'` is an address.
+# What a browser parses is `<` or `</` plus a real element name plus a delimiter, so that is what is
+# tested here - after every dynamic hole has been folded to one sentinel character, because
+# `f"<{tag}>{content}</{tag}>"` is markup with the name taken from the request, and
+# `f'"{name}" <{local}@{domain}>'` is an address. A literal template's `%s`/`{}` markers fold to a
+# different sentinel that is NOT a name, so `"<%s> %s"` stays the CLI placeholder it is.
 _MARKUP_HOLE = '\x00'
+# A second sentinel, deliberately NOT accepted as a tag name. `\x00` is placed by `markup_skeleton`
+# where the AST itself puts a runtime value in the tag-name slot (`f"<{tag}>"`), so the engine can see
+# a name arriving from the request. `\x01` is placed by `fold_markup_holes` over a *literal template's*
+# `%s`/`{}` marker, where the template spells no element at all: `"<%s> %s" % (host, msg)` is a CLI
+# display line and `'<virtual namespace from {src!s}>'` is an object repr. Folding both to one
+# character reported every such placeholder as markup.
+_MARKUP_TEMPLATE_HOLE = '\x01'
 _SUBSTITUTION_MARKER_RE = re.compile(
     r'%\([^)]*\)[#0\- +]*\d*(?:\.\d+)?[sdifrxeogc%]'
     r'|%[#0\- +]*\d*(?:\.\d+)?[sdifrxeogc%]'
@@ -4812,6 +4820,53 @@ _MARKUP_SHAPE_RE = re.compile(
     r'</?(?:[A-Za-z][A-Za-z0-9-]*(?=[\s>/])'
     r'|(?:svg|xhtml|math|html|body)\s*:'
     + r'|(?:' + _MARKUP_HOLE + r')(?=[\s>/]))')
+
+# The element vocabulary a browser actually parses, lowercased. `_MARKUP_SHAPE_RE` stays the cheap
+# pre-filter over every string constant; this is the confirmation that runs only on its hits. An
+# unknown element name is instantiated inert -- no attribute, no event handler, no script-bearing
+# name -- so `<subsection>` (a regex capture group), `<username>` / `<namespace>.<collection>` (CLI
+# help), `<Response %d, ...>` and `<virtual namespace ...>` (object reprs) are not markup. `s`
+# (strike-through) and `mask` (SVG clipping) ARE elements and stay in, for the same reason
+# SUBWORD_CONTROL_SYMBOL_LITERALS below already refuses to mute them.
+HTML_ELEMENT_NAMES = frozenset({
+    # HTML, including the obsolete names a browser still tokenises as elements.
+    'a', 'abbr', 'acronym', 'address', 'applet', 'area', 'article', 'aside', 'audio', 'b', 'base',
+    'basefont', 'bdi', 'bdo', 'bgsound', 'big', 'blink', 'blockquote', 'body', 'br', 'button',
+    'canvas', 'caption', 'center', 'cite', 'code', 'col', 'colgroup', 'data', 'datalist', 'dd',
+    'del', 'details', 'dfn', 'dialog', 'dir', 'div', 'dl', 'dt', 'em', 'embed', 'fencedframe',
+    'fieldset', 'figcaption', 'figure', 'font', 'footer', 'form', 'frame', 'frameset', 'h1', 'h2',
+    'h3', 'h4', 'h5', 'h6', 'head', 'header', 'hgroup', 'hr', 'html', 'i', 'iframe', 'img', 'input',
+    'ins', 'isindex', 'kbd', 'keygen', 'label', 'legend', 'li', 'link', 'listing', 'main', 'map',
+    'mark', 'marquee', 'menu', 'menuitem', 'meta', 'meter', 'nav', 'nextid', 'nobr', 'noembed',
+    'noframes', 'noscript', 'object', 'ol', 'optgroup', 'option', 'output', 'p', 'param', 'picture',
+    'plaintext', 'pre', 'progress', 'q', 'rb', 'rp', 'rt', 'rtc', 'ruby', 's', 'samp', 'script',
+    'search', 'section', 'select', 'selectedcontent', 'slot', 'small', 'source', 'spacer', 'span',
+    'strike', 'strong', 'style', 'sub', 'summary', 'sup', 'table', 'tbody', 'td', 'template',
+    'textarea', 'tfoot', 'th', 'thead', 'time', 'title', 'tr', 'track', 'tt', 'u', 'ul', 'var',
+    'video', 'wbr', 'xmp',
+    # SVG.
+    'svg', 'animate', 'animatemotion', 'animatetransform', 'circle', 'clippath', 'defs', 'desc',
+    'discard', 'ellipse', 'feblend', 'fecolormatrix', 'fecomponenttransfer', 'fecomposite',
+    'feconvolvematrix', 'fediffuselighting', 'fedisplacementmap', 'fedistantlight', 'fedropshadow',
+    'feflood', 'fefunca', 'fefuncb', 'fefuncg', 'fefuncr', 'fegaussianblur', 'feimage', 'femerge',
+    'femergenode', 'femorphology', 'feoffset', 'fepointlight', 'fespecularlighting', 'fespotlight',
+    'fetile', 'feturbulence', 'filter', 'foreignobject', 'g', 'hatch', 'hatchpath', 'image', 'line',
+    'lineargradient', 'marker', 'mask', 'mesh', 'meshgradient', 'meshpatch', 'meshrow', 'metadata',
+    'mpath', 'path', 'pattern', 'polygon', 'polyline', 'radialgradient', 'rect', 'set', 'solidcolor',
+    'stop', 'switch', 'symbol', 'text', 'textpath', 'tspan', 'use', 'view',
+    # MathML.
+    'math', 'maction', 'maligngroup', 'malignmark', 'menclose', 'merror', 'mfenced', 'mfrac',
+    'mglyph', 'mi', 'mlabeledtr', 'mlongdiv', 'mmultiscripts', 'mn', 'mo', 'mover', 'mpadded',
+    'mphantom', 'mprescripts', 'mroot', 'mrow', 'ms', 'mscarries', 'mscarry', 'msgroup', 'msline',
+    'mspace', 'msqrt', 'msrow', 'mstack', 'mstyle', 'msub', 'msubsup', 'msup', 'mtable', 'mtd',
+    'mtext', 'mtr', 'munder', 'munderover', 'none', 'semantics', 'annotation',
+})
+# A Python regex named group opens with `(?P<name>` (or the `regex` module's `(?<name>`). The `<name>`
+# inside it is a capture label, never a tag, and `u'%s(?P<subsection>.*?)%s'` is a search pattern.
+_REGEX_NAMED_GROUP_RE = re.compile(r'\(\?P?<[^<>]*>')
+_MARKUP_TAG_NAME_RE = re.compile(
+    r'</?([A-Za-z][A-Za-z0-9-]*|' + _MARKUP_HOLE + r')(?=[\s>/])')
+_MARKUP_NAMESPACE_RE = re.compile(r'</?(?:svg|xhtml|math|html|body)\s*:')
 
 # BPE / SentencePiece / WordPiece subword delimiters, spelled as tokenizer control symbols and nothing
 # else. Counted over the 2,847-file arena by exact string-literal equality: 35 literals are `</w>`, 299
@@ -4856,27 +4911,66 @@ def _call_callee_segment(node: ast.AST) -> str:
     return ""
 
 
+def strip_regex_named_groups(text: str) -> str:
+    """Drop every ``(?P<name>`` / ``(?<name>`` capture-group opener from *text*.
+
+    The label inside a regex named group is a capture name, not an element: `u'%s(?P<subsection>.*?)%s'`
+    is a search pattern, and reading `<subsection>` as markup reported four rows in Ansible's
+    `replace.py`. Everything outside the opener is left exactly as it was.
+    """
+    if '(?P<' not in text and '(?<' not in text:
+        return text
+    return _REGEX_NAMED_GROUP_RE.sub('', text)
+
+
 def fold_markup_holes(text: str) -> str:
-    """Replace every printf/``str.format`` substitution marker in *text* with the hole sentinel."""
-    return _SUBSTITUTION_MARKER_RE.sub(_MARKUP_HOLE, text)
+    """Replace every printf/``str.format`` substitution marker in *text* with the template sentinel."""
+    return _SUBSTITUTION_MARKER_RE.sub(_MARKUP_TEMPLATE_HOLE, text)
+
+
+def _markup_name_is_element(name: str) -> bool:
+    if name == _MARKUP_HOLE:
+        return True
+    lowered = name.lower()
+    if lowered in HTML_ELEMENT_NAMES:
+        return True
+    # WHATWG autonomous custom elements must carry a hyphen, and a browser does parse `<my-widget>`.
+    return "-" in lowered
+
+
+def _markup_shape_confirmed(text: str) -> bool:
+    """Second pass over the pre-filter's hits: at least one token must name a real element."""
+    if _MARKUP_NAMESPACE_RE.search(text):
+        return True
+    return any(_markup_name_is_element(match.group(1))
+               for match in _MARKUP_TAG_NAME_RE.finditer(text))
 
 
 def text_has_markup_shape(text: str) -> bool:
     """True when *text* holds something a browser parses as a start or end tag.
 
-    The printf/``str.format`` markers are folded to the hole sentinel before the test, because
-    `"<%s>"` is a tag name taken from the value while `"<b>%s</b>"` already has its name written.
-    That fold only runs for text carrying an angle bracket and no plain tag, so the hot path over
+    Three readings are refused before the shape test: a regex named group `(?P<name>...)`, a tag
+    name that is not an HTML/SVG/MathML element or a hyphenated custom element, and a literal
+    template whose whole tag name is a `%s`/`{}` placeholder. The AST hole in `f"<{tag}>"` is still
+    accepted, because there the engine can see a runtime value occupying the name slot.
+
+    The fold only runs for text carrying an angle bracket and no confirmed tag, so the hot path over
     every string constant in a module stays one `in` test plus one scan.
     """
     if '<' not in text:
         return False
     if text in SUBWORD_CONTROL_SYMBOL_LITERALS:
         return False
+    if '(?P<' in text or '(?<' in text:
+        text = strip_regex_named_groups(text)
+        if '<' not in text:
+            return False
     if _MARKUP_SHAPE_RE.search(text):
-        return True
+        if _markup_shape_confirmed(text):
+            return True
     folded = fold_markup_holes(text)
-    return folded != text and bool(_MARKUP_SHAPE_RE.search(folded))
+    return (folded != text and bool(_MARKUP_SHAPE_RE.search(folded))
+            and _markup_shape_confirmed(folded))
 
 
 def markup_skeleton(expr: ast.AST) -> str:
@@ -15206,6 +15300,15 @@ class TaintTracker:
         table[scope_id] = result
         return result
 
+    def _t25_builtin_alias_refused(self, canon_name: Optional[str]) -> bool:
+        """True when a resolved alias folds to a bare Python builtin type/conversion name.
+
+        `parse = int` in one branch and `parse = tuple` in the other makes `parse(v)` resolve to a
+        dotless builtin. That is a RESOLVED callee, not an unknown one, and no builtin parses XML.
+        """
+        return (bool(canon_name) and "." not in canon_name
+                and canon_name in CWE611_BUILTIN_CALLEE_EXCLUSIONS)
+
     def _xml_sink_recognised(self, canon_name: Optional[str], node: Optional[ast.AST] = None,
                              scope_id: str = "") -> bool:
         """Whether a resolved CWE-611 match still names an XML entity parser.
@@ -15213,7 +15316,8 @@ class TaintTracker:
         `rule_engine.CWE611_SINKS` carries the bare leaves `parse`/`fromstring` for aliased imports,
         and that is also why `dateutil.parser.parse` reached the report on a date string. Only a
         resolved, dotted name is narrowed here: an unresolved or bare name cannot be proven to be a
-        non-XML parser, so it stays reported, and every leaf under an XML entity root
+        non-XML parser, so it stays reported -- except a bare name that IS a Python builtin, which is
+        resolved and proven not to be a parser. Every leaf under an XML entity root
         (`lxml.etree`, `lxml.objectify`, the stdlib spellings, defusedxml) still answers.
 
         Two families are refused on their own identity rather than on a resolution guess:
@@ -15242,7 +15346,10 @@ class TaintTracker:
         if not canon_name or canon_name.startswith("shadowed:"):
             return True
         if "." not in canon_name:
-            return True
+            # A local alias assigned to a builtin folds to that builtin's bare name: `parse = int`
+            # then `parse(v)` resolved to `int`, and this branch read "unresolved, cannot disprove"
+            # and reported CWE-611 on a type conversion. Every other bare name stays reported.
+            return not self._t25_builtin_alias_refused(canon_name)
         if canon_name.startswith(XML_NON_ENTITY_PARSER_ROOTS):
             return False
         if canon_name.startswith(XML_ENTITY_PARSER_ROOTS):
@@ -31220,6 +31327,23 @@ class TaintTracker:
         return self._c89_statement_is_internal_maintenance(resolved, res_scope, res_lineno,
                                                            scope_id, self._c89_module_of(scope_module(scope_id)))
 
+    def _t25_builder_needs_sql_proof(self, attr: str, node: ast.Call) -> bool:
+        """Whether a query-builder leaf must show SQL text or a database receiver to be a query.
+
+        `join` is spelled by a SQL query builder AND by `str.join`, and the separator is whatever
+        expression evaluates to the joining string. A literal, `os.sep`/`os.linesep` and a subscript
+        such as `p['newline']` are all separators, so they demand SQL proof; the exemption list was
+        missing the subscript spelling, which reported CWE-89 on a newline join. A receiver that is
+        itself a call -- `URL(base).join(route)` -- is not a separator shape and keeps the
+        function-wide evidence sweep, which is what reaches a SELECT assembled above the route.
+        The other builder leaves are not string methods at all.
+        """
+        if attr != "join":
+            return False
+        recv = node.func.value
+        return (isinstance(recv, (ast.Constant, ast.Str, ast.Subscript))
+                or (isinstance(recv, ast.Attribute) and recv.attr in ("sep", "linesep")))
+
     def _collect_cwe89_driver_querybuilder_findings(self) -> None:
         """Phase 10.2: driver alias expansion, ORM query-builder sinks, and edge repair.
 
@@ -31702,14 +31826,8 @@ class TaintTracker:
                         _emit89(node, mod_name, scope_id)
                     continue
                 if attr in builder_attrs:
-                    require_shape = False
-                    if attr == "join":
-                        recv = node.func.value
-                        if isinstance(recv, (ast.Constant, ast.Str)) or (
-                            isinstance(recv, ast.Attribute) and recv.attr in ("sep", "linesep")
-                        ):
-                            require_shape = True
-                    if _vulnerable_call(node, scope_id, mod_name, require_shape_or_db=require_shape):
+                    if _vulnerable_call(node, scope_id, mod_name,
+                                        require_shape_or_db=self._t25_builder_needs_sql_proof(attr, node)):
                         _emit89(node, mod_name, scope_id)
                     continue
                 if attr in django_attrs and _has_objects_chain(node):

@@ -220,9 +220,9 @@ def check_sarif_export() -> bool:
     # from tcs_cli's, so exercise that emitter end-to-end instead of feeding it
     # hand-mapped data.
     print("  Validating CLI export (cli.py scan --sarif, the artifact CI uploads) ...")
-    cli_corpus = output_dir / "sarif_cli_corpus"
+    cli_corpus = REPO_ROOT / "benchmark_results" / "sarif_cli_corpus"
     shutil.rmtree(cli_corpus, ignore_errors=True)
-    cli_corpus.mkdir(parents=True)
+    cli_corpus.mkdir(parents=True, exist_ok=True)
     for idx, case in enumerate(sample_cases):
         shutil.copy(case.get_absolute_path(),
                     cli_corpus / f"case{idx:02d}_{case.cwe.replace('-', '')}.py")
@@ -234,6 +234,7 @@ def check_sarif_export() -> bool:
          "--sarif", str(cli_sarif)],
         cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
+    shutil.rmtree(cli_corpus, ignore_errors=True)
     # The corpus is deliberately vulnerable and `cli.py scan` exits 1 whenever it finds
     # something (parity with `tcs_cli.py`), so 1 is the pass signal: 0 would mean the engine
     # silently stopped reporting, 2 would mean an internal error.

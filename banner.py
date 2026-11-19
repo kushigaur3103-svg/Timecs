@@ -27,7 +27,7 @@ __all__ = ["VERSION", "BANNER", "SUBTITLE", "badge", "color_enabled", "supports_
            "print_banner", "print_phase", "print_step", "print_worker", "print_completion",
            "print_warning", "print_error"]
 
-VERSION = "2.0.0"
+VERSION = "3.0.1"
 
 # Six letters, five rows, one space between glyphs: 46 columns at its widest.
 BANNER = (

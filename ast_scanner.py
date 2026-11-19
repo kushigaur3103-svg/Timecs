@@ -729,6 +729,58 @@ CONTAINER_MUTATION_METHODS = {
     "update": 0, "setdefault": 1, "push": 0,
 }
 
+# ─── TASK 24: callee / receiver provenance vocabularies ─────────────────────
+# A sink leaf name is not an identity. `compile`, `eval`, `raw`, `extract`, `choice`
+# and `read` are ordinary domain method names, so the receiver has to carry the proof
+# that the call reaches the dangerous builtin / library and not a method that merely
+# shares its spelling.
+CWE95_CODE_EVAL_LEAVES = frozenset({"eval", "compile"})
+CWE95_CODE_EVAL_RECEIVER_LEAVES = frozenset({
+    "builtins", "pandas", "pd", "numexpr", "asteval", "simpleeval", "ImageMath", "torch",
+})
+CWE95_CODE_EVAL_RECEIVER_ROOTS = (
+    "builtins.", "pandas.", "pd.", "numexpr.", "asteval.", "simpleeval.",
+    "PIL.ImageMath.", "ImageMath.", "torch.",
+)
+CWE89_ORM_RAW_RECEIVER_SEGMENTS = frozenset({
+    "objects", "manager", "modelmanager", "queryset", "qs", "rawqueryset",
+})
+CWE89_SQL_KEYWORD_RE = re.compile(
+    r"\b(?:SELECT|INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP|FROM|WHERE|JOIN|UNION)\b",
+    re.IGNORECASE)
+CWE22_ARCHIVE_IMPORT_ROOTS = ("zipfile.", "tarfile.")
+CWE22_ARCHIVE_LEAVES = frozenset({"extract", "extractall"})
+CWE338_DOMAIN_CHOICE_LEAVES = frozenset({"choice", "choices"})
+CWE338_PRNG_BASE_LEAVES = frozenset({"Random", "SystemRandom", "WichmannHill"})
+CWE400_ORM_RECORDSET_PRODUCERS = frozenset({
+    "search", "browse", "search_read", "search_count", "sudo", "with_context", "with_env",
+    "with_company", "filtered", "mapped", "exists", "ref", "create", "write", "unlink",
+})
+CWE400_STREAM_RECEIVER_SEGMENTS = frozenset({
+    "fp", "fh", "f", "file", "files", "stream", "stdin", "stdout", "stderr", "sock",
+    "socket", "conn", "connection", "resp", "response", "request", "body", "buffer",
+    "buf", "reader", "handle", "pipe", "fifo", "BytesIO", "StringIO", "makefile",
+})
+CWE611_BUILTIN_CALLEE_EXCLUSIONS = frozenset({
+    "int", "str", "float", "bool", "bytes", "bytearray", "list", "dict", "set", "tuple",
+    "len", "repr", "ord", "chr",
+})
+# libxml2's HTMLParser does not read DTDs and does not expand external XML entities,
+# so `lxml.html.*` is not an XXE entry point even though it lives under an XML root.
+XML_NON_ENTITY_PARSER_ROOTS = ("lxml.html",)
+CWE79_NON_RENDER_PARSER_LEAVES = frozenset({
+    "fromstring", "fromstringlist", "parse", "parseString", "XML", "document_fromstring",
+    "fragment_fromstring", "iterparse", "BeautifulSoup",
+})
+CWE79_NON_RENDER_PARSER_RECEIVERS = frozenset({
+    "etree", "cElementTree", "ElementTree", "ET", "html", "lxml", "minidom", "pulldom",
+    "objectify", "dom", "sax", "expat", "BeautifulSoup", "Soup", "bs4",
+})
+CWE79_NON_RENDER_PARSER_ROOTS = ("lxml.", "xml.", "defusedxml.", "bs4.")
+CWE79_NON_RENDER_PARSER_CONSTRUCTORS = frozenset({"BeautifulSoup"})
+CWE208_TYPE_LABEL_SUFFIXES = ("_type", "_kind", "_class")
+CWE208_TYPE_LABEL_HOSTS = frozenset({"TokenType", "TokenTypes", "NodeType", "NodeTypes"})
+
 SINK_REGISTRY = {
     # CWE-95: Code Execution
     "eval": {"operation": "ARBITRARY_CODE_EXECUTION", "category": "CODE_EXECUTION", "cwe": "CWE-95"},
@@ -7974,23 +8026,31 @@ class TaintTracker:
         return stem in HTTP_TRANSPORT_MODULE_STEMS and any(d in HTTP_CLIENT_PACKAGE_DIRS for d in dirs)
 
     NUMBERED_MIGRATION_PATH_RE = re.compile(r"(?:^|/)migrations/\d{4}_[^/]*\.py$")
+    ODOO_VERSIONED_MIGRATION_PATH_RE = re.compile(
+        r"(?:^|/)(?:migrations|upgrades)/\d+(?:\.\d+)+/(?:pre|post|end)-[^/]+\.py$")
 
     def _file_is_numbered_django_migration(self, file_path: str) -> bool:
-        """True for a file Django wrote for itself: `*/migrations/<4 digits>_<name>.py`.
+        """True for a migration script the framework wrote for itself and runs only once.
 
-        Django stamps one of these per schema change and never runs its body again except through
-        the migrator, on a database the operator chose. The SQL inside is history recorded in code:
-        `RunSQL`/`cursor.execute` statements are fixed by the commit that added the file, and an
-        `md5` there is a data-version tag, not a password hash. Zulip paid 15+ CWE-89/CWE-328 rows
-        for that, and every one of them sat in `zerver/migrations/0235_*.py`.
+        Django stamps `*/migrations/<4 digits>_<name>.py` per schema change and never runs its body
+        again except through the migrator, on a database the operator chose. The SQL inside is
+        history recorded in code: `RunSQL`/`cursor.execute` statements are fixed by the commit that
+        added the file, and an `md5` there is a data-version tag, not a password hash. Zulip paid
+        15+ CWE-89/CWE-328 rows for that, and every one of them sat in `zerver/migrations/0235_*.py`.
 
-        Only the four-digit prefix qualifies. A hand-written file in `migrations/` keeps every rule,
-        because `0235_add_field.py` is generated and `helpers.py` in the same folder is not.
+        Odoo spells the same artefact differently: `*/migrations/<version>/(pre|post|end)-*.py` and
+        `*/upgrades/<version>/(pre|post|end)-*.py`, e.g. `purchase/migrations/9.0.1.2/pre-create-
+        properties.py`. The version directory plus the phase prefix is the generated-script proof.
+
+        Only those two shapes qualify. A hand-written file in `migrations/` keeps every rule,
+        because `0235_add_field.py` is generated and `helpers.py` in the same folder is not -- and
+        `9.0.1.2/helpers.py` is not either, since it carries no phase prefix.
         """
         if not file_path:
             return False
-        return bool(self.NUMBERED_MIGRATION_PATH_RE.search(
-            file_path.replace("\\", "/").lower()))
+        normalised = file_path.replace("\\", "/").lower()
+        return bool(self.NUMBERED_MIGRATION_PATH_RE.search(normalised)
+                    or self.ODOO_VERSIONED_MIGRATION_PATH_RE.search(normalised))
 
     CWE117_BUILTIN_SEALED_NAMES = frozenset({"len", "int", "float", "bool", "ord"})
     # Argument-free `time.<name>()` getters whose return CPython forces to a builtin float. The
@@ -14383,6 +14443,41 @@ class TaintTracker:
             return False
         return True
 
+    def _c208_compare_is_type_label(self, node: ast.Compare, file_path: str = "") -> bool:
+        """True when every secret-named operand is a category LABEL, not secret material.
+
+        `token.token_type == TokenType.VAR` branches on which kind of token the parser produced.
+        The marker sits inside the word `token_type`, but the value compared is an enum member:
+        its running time discloses a grammar category the source already publishes, exactly as
+        `user_api_key_dict.user_role` discloses a role. A pinned operand keeps the finding, and an
+        operand naming secret material outside a `_type`/`_kind`/`_class` tail is not a label.
+        """
+        if (os.path.basename(str(file_path).replace("\\", "/")),
+                int(getattr(node, "lineno", 0))) in CWE208_TIMING_OPERAND_KEEP_LOUD:
+            return False
+        markers = ("token", "secret", "signature", "hmac", "api_key", "auth_token")
+        named = [operand for operand in (node.left, *node.comparators)
+                 if self._c208_value_is_secret_named(operand, markers)]
+        if not named:
+            return False
+        return all(self._c208_operand_is_type_label(operand) for operand in named)
+
+    def _c208_operand_is_type_label(self, value: ast.AST) -> bool:
+        if isinstance(value, ast.Constant):
+            return True
+        if isinstance(value, ast.Attribute):
+            if value.attr.endswith(CWE208_TYPE_LABEL_SUFFIXES):
+                return True
+            host = value.value
+            return (isinstance(host, ast.Name) and host.id in CWE208_TYPE_LABEL_HOSTS
+                    and value.attr.isupper())
+        if isinstance(value, ast.Name):
+            return (value.id.endswith(CWE208_TYPE_LABEL_SUFFIXES)
+                    or value.id in CWE208_TYPE_LABEL_HOSTS)
+        if isinstance(value, ast.Subscript):
+            return self._c208_operand_is_type_label(value.value)
+        return False
+
     def _c208_value_is_secret_named(self, value: ast.AST, markers: tuple) -> bool:
         """True when the marker names the value itself, not something it happens to be stored under.
 
@@ -15111,26 +15206,223 @@ class TaintTracker:
         table[scope_id] = result
         return result
 
-    def _xml_sink_recognised(self, canon_name: Optional[str], node: Optional[ast.AST] = None) -> bool:
+    def _xml_sink_recognised(self, canon_name: Optional[str], node: Optional[ast.AST] = None,
+                             scope_id: str = "") -> bool:
         """Whether a resolved CWE-611 match still names an XML entity parser.
 
         `rule_engine.CWE611_SINKS` carries the bare leaves `parse`/`fromstring` for aliased imports,
         and that is also why `dateutil.parser.parse` reached the report on a date string. Only a
         resolved, dotted name is narrowed here: an unresolved or bare name cannot be proven to be a
-        non-XML parser, so it stays reported, and every leaf under an XML root (`lxml.html`,
-        `lxml.objectify`, the stdlib spellings, defusedxml) still answers.
+        non-XML parser, so it stays reported, and every leaf under an XML entity root
+        (`lxml.etree`, `lxml.objectify`, the stdlib spellings, defusedxml) still answers.
+
+        Two families are refused on their own identity rather than on a resolution guess:
+        `lxml.html.*` (libxml2's HTMLParser reads no DTD and expands no external entity), and a
+        Python builtin type/conversion callee, which can never be an XML parser. An alias that
+        genuinely points AT a parser leaf keeps its finding -- the parser identity outranks the
+        spelling it was imported under.
         """
-        if node is not None and isinstance(getattr(node, "func", None), ast.Attribute):
-            receiver = node.func.value
+        func = getattr(node, "func", None) if node is not None else None
+        if func is not None:
+            callee_leaf = getattr(func, "attr", None) or getattr(func, "id", None)
+            if callee_leaf in CWE611_BUILTIN_CALLEE_EXCLUSIONS and not (
+                    canon_name and canon_name.startswith(XML_ENTITY_PARSER_ROOTS)
+                    and canon_name.rsplit(".", 1)[-1] in XML_ENTITY_PARSER_LEAVES):
+                return False
+        if isinstance(func, ast.Attribute):
+            receiver = func.value
             if isinstance(receiver, ast.Call) and isinstance(getattr(receiver, "func", None), ast.Name) and receiver.func.id == "super":
                 return False
+            if canon_name and canon_name.startswith(XML_NON_ENTITY_PARSER_ROOTS):
+                return False
+            if scope_id:
+                receiver_canon = self.resolve_canonical_name(receiver, scope_id)
+                if receiver_canon and receiver_canon.startswith(XML_NON_ENTITY_PARSER_ROOTS):
+                    return False
         if not canon_name or canon_name.startswith("shadowed:"):
             return True
         if "." not in canon_name:
             return True
+        if canon_name.startswith(XML_NON_ENTITY_PARSER_ROOTS):
+            return False
         if canon_name.startswith(XML_ENTITY_PARSER_ROOTS):
             return True
         return canon_name.rsplit(".", 1)[-1] not in XML_ENTITY_PARSER_LEAVES
+
+    def _t24_callee_provenance_refused(self, cwe: str, node: ast.Call, scope_id: str) -> bool:
+        """True when the call's own receiver proves the sink leaf is a domain method, not the sink.
+
+        `self.compiler.compile(expr)` is the Django ORM's SQL compiler, `x.eval(context)` is a
+        template operator, `self.raw(bytes)` is a receipt printer, a bare `extract(child)` is a
+        local view-inheritance closure and `recordset.read()` is an Odoo field projection. Each
+        branch answers on provenance the source itself wrote -- an import fold, a constructor, a
+        declared base class, an assignment binding or the argument's own literal text. A receiver
+        this cannot explain is never refused: unknown stays reported.
+        """
+        if not cwe or not isinstance(node, ast.Call):
+            return False
+        func = node.func
+        leaf = getattr(func, "attr", None) or getattr(func, "id", None)
+        if not leaf:
+            return False
+        if cwe == "CWE-95":
+            if leaf not in CWE95_CODE_EVAL_LEAVES or not isinstance(func, ast.Attribute):
+                return False
+            return not self._t24_receiver_is_code_eval_engine(func.value, scope_id)
+        if cwe == "CWE-89":
+            if leaf != "raw" or not isinstance(func, ast.Attribute):
+                return False
+            if self._t24_raw_receiver_is_orm_manager(func.value, scope_id):
+                return False
+            return not self._t24_raw_argument_is_sql(node)
+        if cwe == "CWE-22":
+            # An attribute receiver keeps its finding: Big-8 blesses
+            # `test_tokenization_common.TokenizersExtractor.extract`, which is no archive handle.
+            # Only a bare name with no zipfile/tarfile import behind it is proven foreign.
+            if leaf not in CWE22_ARCHIVE_LEAVES or isinstance(func, ast.Attribute):
+                return False
+            canon = self.resolve_canonical_name(func, scope_id) if scope_id else ""
+            return not (canon and canon.startswith(CWE22_ARCHIVE_IMPORT_ROOTS))
+        if cwe == "CWE-338":
+            if leaf not in CWE338_DOMAIN_CHOICE_LEAVES or not isinstance(func, ast.Attribute):
+                return False
+            return self._t24_self_choice_is_domain_method(func.value, node)
+        if cwe == "CWE-400":
+            if leaf != "read" or node.args or node.keywords or not isinstance(func, ast.Attribute):
+                return False
+            return self._t24_read_receiver_is_recordset(func.value, scope_id,
+                                                        getattr(node, "lineno", 0))
+        return False
+
+    def _t24_receiver_paths(self, receiver: ast.AST, scope_id: str) -> tuple:
+        written = dotted_name(receiver) or ""
+        canon = ""
+        if scope_id:
+            try:
+                canon = self.resolve_canonical_name(receiver, scope_id) or ""
+            except RecursionError:
+                canon = ""
+        return written, canon
+
+    def _t24_receiver_is_code_eval_engine(self, receiver: ast.AST, scope_id: str) -> bool:
+        written, canon = self._t24_receiver_paths(receiver, scope_id)
+        for path in (canon, written):
+            if not path:
+                continue
+            if path.rsplit(".", 1)[-1] in CWE95_CODE_EVAL_RECEIVER_LEAVES:
+                return True
+            if path.startswith(CWE95_CODE_EVAL_RECEIVER_ROOTS):
+                return True
+        if isinstance(receiver, ast.Call):
+            ctor = dotted_name(receiver.func) or ""
+            if ctor.startswith(CWE95_CODE_EVAL_RECEIVER_ROOTS):
+                return True
+        return False
+
+    def _t24_raw_receiver_is_orm_manager(self, receiver: ast.AST, scope_id: str) -> bool:
+        written, canon = self._t24_receiver_paths(receiver, scope_id)
+        for path in (canon, written):
+            if path and any(seg in CWE89_ORM_RAW_RECEIVER_SEGMENTS for seg in path.split(".")):
+                return True
+        if isinstance(receiver, ast.Call):
+            ctor = dotted_name(receiver.func) or ""
+            if ctor.rsplit(".", 1)[-1] in {"Manager", "QuerySet", "RawQuerySet"}:
+                return True
+            if any(seg in CWE89_ORM_RAW_RECEIVER_SEGMENTS for seg in ctor.split(".")):
+                return True
+        return False
+
+    def _t24_raw_argument_is_sql(self, node: ast.Call) -> bool:
+        arg = node.args[0] if node.args else next(
+            (kw.value for kw in node.keywords if kw.arg in {"sql", "query", "raw_query"}), None)
+        if arg is None:
+            return False
+        for child in ast.walk(arg):
+            if isinstance(child, ast.Constant) and isinstance(child.value, (str, bytes)):
+                text = (child.value.decode("utf-8", "replace")
+                        if isinstance(child.value, bytes) else child.value)
+                if CWE89_SQL_KEYWORD_RE.search(text):
+                    return True
+        return False
+
+    def _t24_self_choice_is_domain_method(self, receiver: ast.AST, node: ast.Call) -> bool:
+        """`self.choice(obj)` inside a class the source declares over a non-PRNG base.
+
+        A declared base is the proof: `ModelChoiceIterator(BaseChoiceIterator)` yields form choices,
+        while `class Tokens(random.Random)` really does draw. A class with no base list is unknown
+        and stays reported, and a receiver that is not `self`/`cls` is not this shape at all.
+        """
+        if (dotted_name(receiver) or "") not in {"self", "cls"}:
+            return False
+        current = getattr(node, "parent", None)
+        while current is not None and not isinstance(current, ast.ClassDef):
+            current = getattr(current, "parent", None)
+        if current is None or not current.bases:
+            return False
+        for base in current.bases:
+            base_leaf = (dotted_name(base) or "").rsplit(".", 1)[-1]
+            if base_leaf in CWE338_PRNG_BASE_LEAVES or base_leaf.endswith("Random"):
+                return False
+        return True
+
+    def _t24_prior_assignment(self, name: str, scope_id: str, lineno: int):
+        current_scope = scope_id
+        mod_name = scope_module(scope_id)
+        seen = set()
+        while current_scope and current_scope not in seen:
+            seen.add(current_scope)
+            records = self.assignments_by_scope.get((current_scope, name), [])
+            prior = [record for record in records if record.lineno <= lineno]
+            if prior:
+                return prior[-1]
+            if "." in current_scope and "function" in current_scope:
+                current_scope = current_scope.rsplit(".", 1)[0]
+            elif ":function" in current_scope:
+                current_scope = f"{mod_name}:global"
+            elif current_scope != f"{mod_name}:global":
+                current_scope = f"{mod_name}:global"
+            else:
+                break
+        return None
+
+    def _t24_read_receiver_is_recordset(self, receiver: ast.AST, scope_id: str, lineno: int,
+                                        seen: tuple = ()) -> bool:
+        """True when the object being read is an ORM recordset, not a file/stream/socket.
+
+        `self.env[...].search(...).read()`, `record.browse(...).read()` and a relational field
+        (`move_out.raw_material_production_id.read()`) project database columns; the unbounded
+        read is the ORM's own pagination question, not an attacker-sized stream. A stream handle,
+        a `makefile()` result and anything unexplained keep the finding.
+        """
+        if isinstance(receiver, ast.Call):
+            ctor_leaf = (dotted_name(receiver.func) or "").rsplit(".", 1)[-1]
+            return ctor_leaf in CWE400_ORM_RECORDSET_PRODUCERS
+        if isinstance(receiver, ast.Subscript):
+            return (dotted_name(receiver.value) or "").rsplit(".", 1)[-1] == "env"
+        if isinstance(receiver, ast.Attribute):
+            segments = [seg for seg in (dotted_name(receiver) or "").split(".") if seg]
+            if not segments or any(seg in CWE400_STREAM_RECEIVER_SEGMENTS for seg in segments):
+                return False
+            return len(segments) >= 2 and segments[-1].endswith(("_id", "_ids"))
+        if isinstance(receiver, ast.Name) and scope_id and receiver.id not in seen:
+            record = self._t24_prior_assignment(receiver.id, scope_id, lineno)
+            bound = getattr(record, "value_node", None)
+            if isinstance(bound, ast.AST):
+                return self._t24_read_receiver_is_recordset(
+                    bound, record.scope_id, record.lineno, (*seen, receiver.id))
+        return False
+
+    def _cwe79_not_allowed_is_header_only(self, node: ast.Call, call_names) -> bool:
+        """`HttpResponseNotAllowed(permitted_methods)` fills the Allow header, not the body.
+
+        Django's signature is `(permitted_methods, content=b'', *args, **kwargs)`: the first
+        positional argument is the verb list that becomes `Allow`, so a tainted verb list is a
+        header question, never reflected markup. An explicit `content=` keyword IS the body and
+        keeps every rule.
+        """
+        if not any(name.rsplit(".", 1)[-1] == "HttpResponseNotAllowed" for name in call_names):
+            return False
+        return not any(kw.arg in {"content", "response", "body", "data"} for kw in node.keywords)
 
     def _xml_scan_roots(self) -> tuple:
         """Every directory the scan can legitimately be reading from, worked out once.
@@ -15286,7 +15578,18 @@ class TaintTracker:
         for c in list(candidates):
             if "." in c:
                 candidates.add(c.split(".")[-1])
-        
+
+        _t24_cwe = self._registry_sink_cwe(name, canon)
+        if not _t24_cwe:
+            for _t24_candidate in candidates:
+                if _t24_candidate in SINK_REGISTRY:
+                    _t24_cwe = SINK_REGISTRY[_t24_candidate].get("cwe") or ""
+                    break
+        if not _t24_cwe and leaf_name == "read" and not node.args and not node.keywords:
+            _t24_cwe = "CWE-400"
+        if _t24_cwe and self._t24_callee_provenance_refused(_t24_cwe, node, scope_id):
+            return False
+
         if candidates & CWE338_RANDOM_NAMES:
             # Exclude calls on SystemRandom instances: random.SystemRandom().randint()
             if isinstance(node.func, ast.Attribute):
@@ -15341,7 +15644,7 @@ class TaintTracker:
                 return False
             matched = match_sink_rule(node, name, canon)
             if matched:
-                if matched.cwe_id == "CWE-611" and not self._xml_sink_recognised(canon, node=node):
+                if matched.cwe_id == "CWE-611" and not self._xml_sink_recognised(canon, node=node, scope_id=scope_id):
                     return False
                 if matched.cwe_id == "CWE-327" and self._cwe328_hash_input_is_non_credential(
                         node, scope_id, call_lineno):
@@ -15360,7 +15663,7 @@ class TaintTracker:
                 return False
             matched = match_sink_rule(node, name, canon)
             if matched:
-                if matched.cwe_id == "CWE-611" and not self._xml_sink_recognised(canon, node=node):
+                if matched.cwe_id == "CWE-611" and not self._xml_sink_recognised(canon, node=node, scope_id=scope_id):
                     return False
                 if matched.cwe_id == "CWE-327" and self._cwe328_hash_input_is_non_credential(
                         node, scope_id, call_lineno):
@@ -16171,7 +16474,7 @@ class TaintTracker:
         else:
             matched_rule = match_sink_rule(node, name, canon_name)
             if matched_rule and matched_rule.cwe_id == "CWE-611" \
-                    and not self._xml_sink_recognised(canon_name, node=node):
+                    and not self._xml_sink_recognised(canon_name, node=node, scope_id=scope_id):
                 matched_rule = None
             if matched_rule and isinstance(node.func, ast.Attribute) and node.func.attr == "render":
                 if not self._is_jinja_template_expr(node.func.value, scope_id):
@@ -16271,6 +16574,10 @@ class TaintTracker:
                 node, self._scope_module(scope_id)):
             # Same prune, same reason: `snuba_sdk.Request` is query AST, so the `Request` leaf in the
             # SSRF table matched a name without this call ever carrying a URL to fetch.
+            return sink
+        if self._t24_callee_provenance_refused(sink.metadata.get("cwe"), node, scope_id):
+            # Same registration-time prune: the leaf matched a sink table, but the receiver the
+            # source wrote proves the call is a domain method, so the row is never born.
             return sink
         self.sinks.append(sink)
         return sink
@@ -25430,8 +25737,13 @@ class TaintTracker:
                     # CWE-611: XML entry points reached through an xml./lxml. alias.
                     if segs & CLUSTER2_XML_METHODS:
                         aliased_xml = any(not form.startswith("defusedxml")
+                                          and not form.startswith(XML_NON_ENTITY_PARSER_ROOTS)
                                           and form.startswith(CLUSTER2_XML_UNSAFE_ROOTS)
                                           for form in forms)
+                        if aliased_xml and (dotted_name(node.func) or "").split(".")[-1] \
+                                in CWE611_BUILTIN_CALLEE_EXCLUSIONS:
+                            # A builtin type/conversion callee is never an XML entity parser.
+                            aliased_xml = False
                         if aliased_xml:
                             leaf = (dotted_name(node.func) or "").split(".")[-1]
                             if leaf == XML_PARSER_FACTORY_LEAF:
@@ -28469,7 +28781,8 @@ class TaintTracker:
                                 and not self._c208_is_unit_test_assertion(node, file_path)
                                 and not self._c208_compare_is_a_filename_or_tag_filter(
                                     node, scope_id)
-                                and not self._c208_compare_is_structural_field(node, scope_id)):
+                                and not self._c208_compare_is_structural_field(node, scope_id)
+                                and not self._c208_compare_is_type_label(node, file_path)):
                             key = ("CWE-208", getattr(node, "lineno", 1), getattr(node, "col_offset", 0))
                             if key not in seen:
                                 seen.add(key)
@@ -31649,6 +31962,9 @@ class TaintTracker:
         # exemption only holds while the text carries no tag -- which keeps
         # `UserError("<br/>" + detail)` reported.
         def _never_rendered_callee(call_node: ast.Call) -> bool:
+            if isinstance(call_node.func, ast.Name):
+                # `BeautifulSoup(markup, "html.parser")` builds a DOM tree; it renders no reply.
+                return call_node.func.id in CWE79_NON_RENDER_PARSER_CONSTRUCTORS
             if not isinstance(call_node.func, ast.Attribute):
                 return False
             segment = call_node.func.attr
@@ -31657,7 +31973,16 @@ class TaintTracker:
                 return True
             if segment == "compile" and receiver in {"re", "regex"}:
                 return True
-            return segment == "dedent" and receiver.split(".")[-1] == "textwrap"
+            if segment == "dedent" and receiver.split(".")[-1] == "textwrap":
+                return True
+            if segment in CWE79_NON_RENDER_PARSER_LEAVES:
+                # Parsing markup INTO a tree is the opposite of rendering it out to a client.
+                if receiver.split(".")[-1] in CWE79_NON_RENDER_PARSER_RECEIVERS:
+                    return True
+                receiver_canon = self.resolve_canonical_name(call_node.func.value, scope_id) or ""
+                if receiver_canon.startswith(CWE79_NON_RENDER_PARSER_ROOTS):
+                    return True
+            return False
 
         def _is_raise_argument(call_node: ast.Call) -> bool:
             current = call_node
@@ -35116,6 +35441,8 @@ class TaintTracker:
                     is_json_response = bool(call_names & {"JsonResponse", "django.http.JsonResponse", "jsonify", "flask.jsonify"})
                     if is_json_response:
                         pass  # Not an XSS sink; JSON context escapes by default
+                    elif self._cwe79_not_allowed_is_header_only(node, call_names):
+                        pass  # The verb list is the Allow header, not a rendered body
                     else:
                         content = next((kw.value for kw in node.keywords if kw.arg in {"content", "response", "body", "data"}), None)
                         if content is None and node.args:

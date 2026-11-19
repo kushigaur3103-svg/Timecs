@@ -1283,6 +1283,17 @@ def _http_response_dynamic_body(node: ast.AST, name: str, canon_name: Optional[s
             continue
         if candidate.endswith("JsonResponse") or "Redirect" in short:
             continue
+        if short == "HttpResponseNotAllowed":
+            # Django's signature is `(permitted_methods, content=b'', *args, **kwargs)`: the first
+            # positional argument is the verb list that becomes the Allow header, so it is not a
+            # body at all. Only the second positional or an explicit body keyword carries markup.
+            body = next((kw.value for kw in node.keywords
+                         if kw.arg in {"content", "data", "response", "body"}), None)
+            if body is None and len(node.args) > 1:
+                body = node.args[1]
+            if body is None:
+                return False
+            return not _is_literal_text(body)
         body = next((kw.value for kw in node.keywords if kw.arg in {"content", "data"}), None)
         if body is None and node.args:
             body = node.args[0]

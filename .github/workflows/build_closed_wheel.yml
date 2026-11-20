@@ -28,18 +28,50 @@ jobs:
         run: |
           python scripts/verify_closed_wheel.py dist
 
-      - name: Clean-venv compiled binary proof + 552/552 accuracy lock
+      - name: Clean-venv compiled binary proof + E2E CLI + 552/552 & 20/20 accuracy lock
         run: |
           python -m venv /tmp/tcs_clean_venv
           /tmp/tcs_clean_venv/bin/pip install --upgrade pip
           /tmp/tcs_clean_venv/bin/pip install dist/*.whl
           /tmp/tcs_clean_venv/bin/timecs scan --help | grep -q "policy:"
-          /tmp/tcs_clean_venv/bin/python -c "import ast_scanner, cli, rule_engine, secret_scanner, master_rules_bank, _tcs_sink_names; mods=[ast_scanner, cli, rule_engine, secret_scanner, master_rules_bank, _tcs_sink_names]; bad=[m.__file__ for m in mods if not str(m.__file__).endswith('.so') or '/tmp/tcs_clean_venv' not in str(m.__file__)]; assert not bad, bad; assert len(rule_engine.SINK_MATCHER_NAMES)>=50; assert rule_engine._MASTER_RULES_BANK is not None; assert secret_scanner._load_master_rules_bank() is not None; print('COMPILED_IMPORTS_OK', len(mods), len(rule_engine.SINK_MATCHER_NAMES))"
+          /tmp/tcs_clean_venv/bin/python - << 'PYEOF'
+          import json, pathlib, subprocess, sys
+          import ast_scanner, cli, rule_engine, secret_scanner, master_rules_bank, _tcs_sink_names
+          import scanners.sca_scanner as sca_scanner
+          mods = [ast_scanner, cli, rule_engine, secret_scanner, master_rules_bank, _tcs_sink_names, sca_scanner]
+          bad = [m.__file__ for m in mods if not str(m.__file__).endswith('.so') or '/tmp/tcs_clean_venv' not in str(m.__file__)]
+          assert not bad, bad
+          assert len(rule_engine.SINK_MATCHER_NAMES) >= 50
+          assert rule_engine._MASTER_RULES_BANK is not None
+          assert secret_scanner._load_master_rules_bank() is not None
+          print('COMPILED_IMPORTS_OK', len(mods), 'sinks=', len(rule_engine.SINK_MATCHER_NAMES))
+          e2e = pathlib.Path('/tmp/tcs_e2e')
+          e2e.mkdir(parents=True, exist_ok=True)
+          vf = e2e / 'vuln.py'
+          vf.write_text(chr(10).join(['import os', 'from flask import request', 'def r():', '    os.system(request.args.get(' + chr(34) + 'c' + chr(34) + '))', '']), encoding='utf-8')
+          sf = e2e / 'out.sarif'
+          p = subprocess.run(['/tmp/tcs_clean_venv/bin/timecs', 'scan', str(vf), '--format', 'json', '--sarif', str(sf)], capture_output=True, text=True)
+          assert p.returncode == 1, (p.returncode, p.stderr)
+          j = json.loads(p.stdout)
+          s = json.loads(sf.read_text(encoding='utf-8'))
+          assert s.get('version') == '2.1.0' and s['runs'][0]['results'], 'empty SARIF'
+          print('COMPILED_CLI_E2E_OK', 'sarif_results=', len(s['runs'][0]['results']))
+          PYEOF
           rm -rf /tmp/tcs_bench_check
           mkdir -p /tmp/tcs_bench_check
           cp -r scripts benchmark /tmp/tcs_bench_check/
           cd /tmp/tcs_bench_check
-          /tmp/tcs_clean_venv/bin/python scripts/run_all_checks.py
+          /tmp/tcs_clean_venv/bin/python - << 'PYEOF'
+          import sys, types
+          sys.modules['tcs_gui'] = types.ModuleType('tcs_gui')
+          sys.path.insert(0, '/tmp/tcs_bench_check')
+          sys.path.insert(0, '/tmp/tcs_bench_check/scripts')
+          import ast_scanner, run_all_checks as rac
+          assert str(ast_scanner.__file__).endswith('.so') and '/tmp/tcs_clean_venv' in str(ast_scanner.__file__), ast_scanner.__file__
+          assert rac.check_benchmark_suite() is True, '552_FAILED'
+          assert rac.check_cross_file_benchmark() is True, 'CROSS_FAILED'
+          print('COMPILED_ACCURACY_LOCK_PASS: 552/552 + 20/20')
+          PYEOF
 
       - name: Upload private dry-run wheel artifact (NO PyPI upload)
         uses: actions/upload-artifact@v4

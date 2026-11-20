@@ -6,36 +6,19 @@ build-backend = "setuptools.build_meta"
 name = "timecs"
 version = "3.0.2"
 description = "Deterministic AST Security Scanner, Proof Graph Engine & Automated Remediation Framework"
-readme = "README.md"
+readme = "INSTRUCTIONS_OF_TIMECS.md"
 requires-python = ">=3.10"
-license = "MIT"
+license = "LicenseRef-Proprietary"
 dependencies = [
-    "fastapi",
-    "uvicorn[standard]",
-    "gunicorn>=22.0.0; sys_platform != 'win32'",
-    "requests>=2.32.3",
-    "urllib3>=2.2.2",
-    "jinja2>=3.1.5",
-    "python-dotenv",
     "pyyaml>=6.0",
-    "bcrypt>=4.0.1,<5.0.0",
-    "PyJWT>=2.8.0",
-    "fpdf2>=2.7.9",
-    "SQLAlchemy",
-    "psycopg2-binary",
-    "google-generativeai",
-    "openai",
-    "cohere",
-    "celery",
-    "redis",
-    "pydantic",
-    "packaging",
-    "python-multipart",
     "psutil>=5.9",
     "tree-sitter>=0.23",
     "tree-sitter-python>=0.21",
     "tomli; python_version < '3.11'",
 ]
+
+[project.optional-dependencies]
+js = ["tree-sitter-javascript", "tree-sitter-typescript"]
 
 [project.scripts]
 timecs = "cli:main"
@@ -43,64 +26,9 @@ timecode = "cli:main"
 tcsec = "cli:main"
 
 [tool.setuptools]
-py-modules = [
-    "app",
-    "ast_scanner",
-    "banner",
-    "ci_reporter",
-    "cli",
-    "config_loader",
-    "cross_file_engine",
-    "delivery_models",
-    "delivery_repository",
-    "diff_scan",
-    "durable_delivery_sink",
-    "event_bus",
-    "event_publisher",
-    "event_taxonomy",
-    "function_summarizer",
-    "html_auditor",
-    "iac_auditor",
-    "in_app_adapter",
-    "js_scanner",
-    "manifest_parser",
-    "master_rules_bank",
-    "notification_models",
-    "notification_policy",
-    "notification_repository",
-    "notification_routes",
-    "notification_service",
-    "osv_client",
-    "rule_engine",
-    "sarif_adapter",
-    "sarif_exporter",
-    "secret_filters",
-    "secret_scanner",
-    "sqlite_delivery_repository",
-    "sqlite_notification_repository",
-    "ssrf_guard",
-    "staged_scanner",
-    "suppression_resolver",
-    "symbol_indexer",
-    "tcs_cli",
-    "tcs_config",
-    "tcs_gui",
-    "version_matcher",
-    "webhook_adapter",
-    "webhook_client",
-    "webhook_formatters",
-]
-packages = [
-    "remediation",
-    "sca_reachability",
-    "scanners",
-    "tcs",
-    "tcs.analysis",
-]
-
-[tool.setuptools.package-data]
-"*" = ["*.html", "*.yml", "*.yaml", "*.json"]
+py-modules = ["ast_scanner","banner","ci_reporter","cli","cross_file_engine","diff_scan","function_summarizer","html_auditor","iac_auditor","js_scanner","master_rules_bank","rule_engine","sarif_adapter","sarif_exporter","secret_scanner","suppression_resolver","symbol_indexer","tcs_config"]
+packages = ["remediation","scanners","tcs","tcs.analysis"]
 
 [tool.pytest.ini_options]
 testpaths = ["scratch"]
-norecursedirs = [".git", ".venv", "build", "dist", "node_modules", "__pycache__", ".*"]
+norecursedirs = [".git",".venv","build","dist","node_modules","__pycache__",".*"]

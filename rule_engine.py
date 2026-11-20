@@ -21,6 +21,12 @@ def _load_master_rules_bank():
     path = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "master_rules_bank.py"
     )
+    if not os.path.isfile(path):
+        try:
+            import importlib
+            return importlib.import_module("master_rules_bank")
+        except Exception:
+            return None
     try:
         spec = importlib.util.spec_from_file_location("_tcs_master_rules_bank", path)
         if spec is None or spec.loader is None:
@@ -1512,7 +1518,11 @@ def _harvest_sink_matcher_names() -> frozenset:
             names.add(value)
             names.add(parts[-1])
 
-    tree = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
+    src_path = pathlib.Path(__file__)
+    if src_path.suffix != ".py":
+        import _tcs_sink_names
+        return frozenset(_tcs_sink_names.SINK_MATCHER_NAMES)
+    tree = ast.parse(src_path.read_text(encoding="utf-8"))
 
     # 1. Literals inside every sink matcher body (target_names, attr checks, ...).
     for fn in ast.walk(tree):

@@ -818,7 +818,7 @@ def _scan_batch_in_child(files: List[str], base_dir: str) -> Optional[List[Dict[
 
     try:
         proc = subprocess.run(
-            [sys.executable, os.path.abspath(__file__), "--tcs-js-worker"],
+            ([sys.executable, os.path.abspath(__file__), "--tcs-js-worker"] if os.path.abspath(__file__).endswith(".py") else [sys.executable, "-c", "import sys, js_scanner; sys.exit(js_scanner._worker_main())"]),
             input=json.dumps({"files": files, "base_dir": base_dir}),
             cwd=os.getcwd(), capture_output=True, text=True,
             encoding="utf-8", errors="replace",

@@ -1,0 +1,49 @@
+name: Build Closed-Source Wheel (Dry-Run)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  linux-closed-wheel-dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout private repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip "setuptools>=77" wheel "cython>=3.0" pyyaml psutil tree-sitter tree-sitter-python
+
+      - name: Build closed-source Cython binary wheel
+        run: |
+          python scripts/build_closed_wheel.py --out-dir dist
+
+      - name: Run Zero-Leak Gate on built wheel
+        run: |
+          python scripts/verify_closed_wheel.py dist
+
+      - name: Clean-venv compiled binary proof + 552/552 accuracy lock
+        run: |
+          python -m venv /tmp/tcs_clean_venv
+          /tmp/tcs_clean_venv/bin/pip install --upgrade pip
+          /tmp/tcs_clean_venv/bin/pip install dist/*.whl
+          /tmp/tcs_clean_venv/bin/timecs scan --help | grep -q "policy:"
+          /tmp/tcs_clean_venv/bin/python -c "import ast_scanner, cli, rule_engine, secret_scanner, master_rules_bank, _tcs_sink_names; mods=[ast_scanner, cli, rule_engine, secret_scanner, master_rules_bank, _tcs_sink_names]; bad=[m.__file__ for m in mods if not str(m.__file__).endswith('.so') or '/tmp/tcs_clean_venv' not in str(m.__file__)]; assert not bad, bad; assert len(rule_engine.SINK_MATCHER_NAMES)>=50; assert rule_engine._MASTER_RULES_BANK is not None; assert secret_scanner._load_master_rules_bank() is not None; print('COMPILED_IMPORTS_OK', len(mods), len(rule_engine.SINK_MATCHER_NAMES))"
+          rm -rf /tmp/tcs_bench_check
+          mkdir -p /tmp/tcs_bench_check
+          cp -r scripts benchmark /tmp/tcs_bench_check/
+          cd /tmp/tcs_bench_check
+          /tmp/tcs_clean_venv/bin/python scripts/run_all_checks.py
+
+      - name: Upload private dry-run wheel artifact (NO PyPI upload)
+        uses: actions/upload-artifact@v4
+        with:
+          name: timecs-closed-wheel-linux-dryrun
+          path: dist/*.whl
+          retention-days: 7

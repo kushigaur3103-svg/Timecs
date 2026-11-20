@@ -71,11 +71,11 @@ def main():
             "        shutil.copy2("+chr(39)+"_tcs_data/rules_catalog.json"+chr(39)+", dd)",
             "ea = ["+chr(39)+"/O1"+chr(39)+"] if os.name == "+chr(39)+"nt"+chr(39)+" else ["+chr(39)+"-O1"+chr(39)+"]",
             "exts = [Extension(n, [s], extra_compile_args=ea) for n, s in TARGETS]",
-            "setup(cmdclass={"+chr(39)+"build_py"+chr(39)+": ClosedBuildPy}, ext_modules=cythonize(exts, compiler_directives={"+chr(39)+"language_level"+chr(39)+": "+chr(39)+"3"+chr(39)+", "+chr(39)+"binding"+chr(39)+": True, "+chr(39)+"always_allow_keywords"+chr(39)+": True}, nthreads=1, quiet=False)))",
+            "setup(cmdclass={"+chr(39)+"build_py"+chr(39)+": ClosedBuildPy}, ext_modules=cythonize(exts, compiler_directives={"+chr(39)+"language_level"+chr(39)+": "+chr(39)+"3"+chr(39)+", "+chr(39)+"binding"+chr(39)+": True, "+chr(39)+"always_allow_keywords"+chr(39)+": True}, nthreads=1, quiet=False))",
         ]
         (st / "setup.py").write_text(chr(10).join(sl) + chr(10), encoding="utf-8", newline=chr(10))
         print("[build] compiling", len(targets), "Cython modules...")
-        subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation", "--wheel-dir", str(out_dir), str(st)], check=True)
+        subprocess.run([sys.executable, "-m", "pip", "wheel", "-v", "--no-deps", "--no-build-isolation", "--wheel-dir", str(out_dir), str(st)], check=True)
     print("[build] done:", [w.name for w in sorted(out_dir.glob("*.whl"))])
     return 0
 if __name__ == "__main__": raise SystemExit(main())

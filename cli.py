@@ -2609,7 +2609,7 @@ def _compare(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="cli.py", description="Standalone TimeCodeSecurity scanner")
     commands = parser.add_subparsers(dest="command", required=True)
-    scan_parser = commands.add_parser("scan", help="Scan a Python file or directory")
+    scan_parser = commands.add_parser("scan", help="Scan a Python file or directory", epilog="Persistent policy: save defaults under a policy: block in root .tcs.yaml (CLI flags always override).")
     scan_parser.add_argument("path", type=Path, help="Python file or directory to scan")
     scan_parser.add_argument("--sarif", metavar="OUTPUT_PATH", help="Write findings as SARIF 2.1.0 JSON")
     scan_parser.add_argument("--sbom", metavar="OUTPUT_PATH",
@@ -2643,8 +2643,8 @@ def main(argv=None):
         "--min-confidence", choices=("all", "low", "medium", "high"), default=None,
         help="Only show findings at or above this confidence level: high = an explicit "
              "source->sink flow, medium = pattern/structural match, low = heuristic comparison. "
-             "`all` shows every finding. Default: the human-readable table starts at high, every "
-             "machine format starts at all. Detection is unchanged",
+             "`all` shows every finding. Default: clean-default starts at high across terminal, "
+             "JSON and SARIF; naming a level lifts clean-default report floors. Detection is unchanged",
     )
     scan_parser.add_argument(
         "--include-js", dest="include_js", action="store_true", default=False,
@@ -2661,7 +2661,7 @@ def main(argv=None):
     )
     scan_parser.add_argument(
         "--include-tests", action="store_true",
-        help="Scan tests/, test/, __tests__/, examples/, example/ and samples/ too. Directory walks "
+        help="Scan non-production trees (tests/, docs/, demos/, examples/, samples/, cookbook/, benchmarks/, tutorials/, migrations/) and test/demo filenames (test_*.py, *_test.py, conftest.py, demo_*.py, *_mock.py) too, and lift clean-default report floors. Directory walks "
              "prune those trees before descending by default, which is where fixtures and samples "
              "live -- and also where a hardcoded secret is classically committed, so use this flag "
              "for a full-coverage sweep. A file or directory named on the command line is always "
@@ -2692,8 +2692,8 @@ def main(argv=None):
     )
     scan_parser.add_argument(
         "--include-unreachable", action="store_true", default=False,
-        help="Show dormant dependency advisories (reachability UNREACHABLE_MANIFEST_ONLY) that the "
-             "clean default report holds back across terminal, JSON and SARIF",
+        help="Lift the dormant dependency reachability block (UNREACHABLE_MANIFEST_ONLY) in clean-default "
+             "mode. Confidence floor stays high; pass --min-confidence low or --all for LOW-confidence dormant advisories",
     )
     scan_parser.add_argument(
         "--include-vendor", action="store_true", default=False,
@@ -2704,7 +2704,7 @@ def main(argv=None):
     scan_parser.add_argument(
         "--min-severity", choices=("low", "medium", "high", "critical"), default=None,
         help="Only show findings at or above this severity. Default: the clean default report starts "
-             "at medium (LOW held back); naming a level switches to custom mode. Detection is unchanged",
+             "at medium (LOW held back); naming a level keeps clean-default active for other dimensions. Detection is unchanged",
     )
     scan_parser.add_argument(
         "--all", action="store_true", default=False,

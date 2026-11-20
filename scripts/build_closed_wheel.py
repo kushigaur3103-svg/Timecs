@@ -71,7 +71,7 @@ def main():
             "        shutil.copy2("+chr(39)+"_tcs_data/rules_catalog.json"+chr(39)+", dd)",
             "ea = ["+chr(39)+"/O1"+chr(39)+"] if os.name == "+chr(39)+"nt"+chr(39)+" else ["+chr(39)+"-O1"+chr(39)+"]",
             "exts = [Extension(n, [s], extra_compile_args=ea) for n, s in TARGETS]",
-            "setup(cmdclass={"+chr(39)+"build_py"+chr(39)+": ClosedBuildPy}, ext_modules=cythonize(exts, compiler_directives={"+chr(39)+"language_level"+chr(39)+": "+chr(39)+"3"+chr(39)+", "+chr(39)+"binding"+chr(39)+": True, "+chr(39)+"always_allow_keywords"+chr(39)+": True}, nthreads=max(1, min(4, os.cpu_count() or 2))))",
+            "setup(cmdclass={"+chr(39)+"build_py"+chr(39)+": ClosedBuildPy}, ext_modules=cythonize(exts, compiler_directives={"+chr(39)+"language_level"+chr(39)+": "+chr(39)+"3"+chr(39)+", "+chr(39)+"binding"+chr(39)+": True, "+chr(39)+"always_allow_keywords"+chr(39)+": True}, nthreads=1, quiet=False)))",
         ]
         (st / "setup.py").write_text(chr(10).join(sl) + chr(10), encoding="utf-8", newline=chr(10))
         print("[build] compiling", len(targets), "Cython modules...")

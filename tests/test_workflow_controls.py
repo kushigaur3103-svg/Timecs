@@ -124,7 +124,7 @@ def test_confirmed_flow_is_high_and_timing_compare_is_low(tmp_path):
         "import hashlib\ndigest = hashlib.md5(b'x')\n\n"
         "def check(token, expected):\n    return token == expected\n",
         encoding="utf-8")
-    labels = {(item["cwe"], item["confidence"]) for item in _scan(tmp_path)["findings"]}
+    labels = {(item["cwe"], item["confidence"]) for item in _scan(tmp_path, extra=("--all",))["findings"]}
     assert ("CWE-328", "HIGH") in labels
     assert ("CWE-208", "LOW") in labels
 
@@ -170,7 +170,7 @@ def test_config_applies_path_and_rule_excludes(tmp_path):
     (tmp_path / "src" / "demo" / "util.py").write_text(_MD5, encoding="utf-8")
     (tmp_path / "src" / "util.py").write_text(_MD5, encoding="utf-8")
     with _chdir(tmp_path):
-        payload = _scan(tmp_path)
+        payload = _scan(tmp_path, extra=("--all",))
     assert {(item["file"], item["line"], item["cwe"]) for item in payload["findings"]} == {
         ("src/app.py", 6, "CWE-78"), ("src/util.py", 3, "CWE-328")}
 
@@ -198,7 +198,7 @@ def test_config_excludes_apply_below_a_named_subdirectory(tmp_path):
     (arena / "tests" / "test_app.py").write_text(_COMMAND_SINK, encoding="utf-8")
     (arena / "src" / "demo" / "util.py").write_text(_MD5, encoding="utf-8")
     (arena / "src" / "util.py").write_text(_MD5, encoding="utf-8")
-    nested = _scan(tmp_path, "arena")
+    nested = _scan(tmp_path, "arena", extra=("--all",))
     assert {(item["file"], item["line"], item["cwe"]) for item in nested["findings"]} == {
         ("arena/src/app.py", 6, "CWE-78"), ("arena/src/util.py", 3, "CWE-328")}
 
@@ -376,9 +376,9 @@ def _chdir(path):
         os.chdir(previous)
 
 
-def _scan(root, target="."):
+def _scan(root, target=".", extra=()):
     out = io.StringIO()
     with _chdir(root), contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-        cli.main(["scan", target, "--format", "json", "--workers", "1"])
+        cli.main(["scan", target, "--format", "json", "--workers", "1", *extra])
     text = out.getvalue()
     return json.loads(text[text.find("{"):])

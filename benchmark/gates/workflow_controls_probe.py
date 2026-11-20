@@ -316,7 +316,9 @@ def check_confidence() -> list:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         (root / "conf.py").write_text(CONFIDENCE_SRC, encoding="utf-8")
-        default = _run_cli(["scan", ".", "--format", "json", "--workers", "1"], root)
+        # --all: this tier pins the confidence LABELS the engine emits (weak hash HIGH, timing LOW),
+        # a full-audit question the clean default report holds back. Every assertion below is unchanged.
+        default = _run_cli(["scan", ".", "--format", "json", "--workers", "1", "--all"], root)
         labels = {(finding["cwe"], finding["confidence"]) for finding in default["findings"]}
         if ("CWE-328", "HIGH") not in labels:
             failures.append(f"weak hash is not HIGH: {sorted(labels)}")
@@ -721,7 +723,9 @@ def check_shipped_c22_scaffold_exclude() -> list:
         # A second rule inside the excluded tree: a rule exclusion that behaved like a file skip
         # quietens this too.
         (root / "src/transformers/commands/util.py").write_text(CONFIG_MD5, encoding="utf-8")
-        got = _keys(_run_cli(["scan", ".", "--format", "json", "--workers", "1"], root))
+        # --all: the CWE-328 half of this tier is a hygiene-tier row the clean default report holds
+        # back; full-audit restores it so the rule-exclusion (not a whole-file skip) is what is tested.
+        got = _keys(_run_cli(["scan", ".", "--format", "json", "--workers", "1", "--all"], root))
     scaffold = ("src/transformers/commands/build.py", "src/transformers/benchmark/bench.py")
     for path in scaffold:
         if any(cwe == "CWE-22" and file_key == path for file_key, _line, cwe in got):
@@ -969,7 +973,9 @@ def check_c338_models_tree_shipped() -> list:
             handle.write(CARRIER_SOURCE)
         with open(os.path.join(directory, ".tcs.yaml"), "w", encoding="utf-8") as handle:
             handle.write(_policy_text(config))
-        listed = _run_cli(["scan", ".", "--format", "json", "--workers", "1"], directory)
+        # --all: CWE-328 (hygiene) and CWE-338 (MEDIUM confidence) are held back by the clean default
+        # report; full-audit restores them so this tier measures the rule exclusion, not the report floor.
+        listed = _run_cli(["scan", ".", "--format", "json", "--workers", "1", "--all"], directory)
     by_file: dict = {}
     for row in listed["findings"]:
         by_file.setdefault(str(row["file"]).replace("\\", "/"), set()).add((row["line"], row["cwe"]))

@@ -37,6 +37,7 @@ from scanners import (
 )
 from rule_engine import get_rule
 from suppression_resolver import resolve_line_suppressions
+import tcs_config
 from tcs_config import load_config
 from remediation.patch_engine import RemediationEngine
 from sarif_adapter import bound_sarif_document
@@ -90,7 +91,8 @@ IGNORED_DIRS = {".git", ".venv", "venv", "__pycache__", "node_modules", "build",
 NON_PRODUCTION_DIRS = frozenset({"tests", "test", "__tests__", "testutils",
                                  "fixtures", "examples", "example", "samples", "debug"})
 # What the current scan pruned, so the report can say so instead of looking like a clean tree.
-_SCOPE_STATS = {"skipped_dirs": 0, "skipped_files": 0}
+_SCOPE_STATS = {"skipped_dirs": 0, "skipped_files": 0, "skipped_filenames": 0,
+                "vendor_dirs": 0, "vendor_files": 0}
 
 # Jinja interpolation tokens in a *path*, as opposed to its content: Salt formulae ship files like
 # `templates/{{module_name}}.py`, and that name alone guarantees `ast.parse` raises SyntaxError.
@@ -115,6 +117,139 @@ CONFIDENCE_ORDER = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
 # at a dangerous operation: CWE-208 reports `token == expected`, where both operands are
 # already local values, so the shape alone cannot prove an attacker reaches it.
 LOW_CONFIDENCE_SINK_TYPES = frozenset({"TIMING_ATTACK"})
+
+# ── Clean default output policy ────────────────────────────────────────────────────────────────
+# A discovery-and-report layer, never a detection decision: the engine still emits every finding it
+# emitted before, and `--all` (or any single opt-in flag) restores the complete set across the terminal
+# table, JSON and SARIF alike. In clean-default mode the report holds back four kinds of row -- hygiene
+# /audit-tier CWEs, LOW severity, LOW/MEDIUM confidence, and dormant manifest-only SCA advisories --
+# while keeping HIGH-confidence CRITICAL/HIGH findings and the exploitable-MEDIUM allowlist below.
+SEVERITY_ORDER = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+# Hygiene (CSRF / subresource integrity / cookie configuration) and the noisy MEDIUM audit tier: real
+# but low-signal in a default report, held back until --include-hygiene / --all asks for them.
+HYGIENE_AUDIT_CWES = frozenset({
+    "CWE-352", "CWE-353", "CWE-829",
+    "CWE-614", "CWE-1004", "CWE-1275",
+    "CWE-770", "CWE-200", "CWE-328", "CWE-276", "CWE-330", "CWE-1188",
+})
+# Exploitable findings that survive every default floor: open redirect, XML entity expansion, disabled
+# template autoescape, insecure cipher mode, and any REACHABLE dependency advisory.
+EXPLOITABLE_MEDIUM_CWES = frozenset({"CWE-601", "CWE-776", "CWE-116", "CWE-327"})
+SCA_CATEGORY = "SCA_VULNERABLE_DEPENDENCY"
+UNREACHABLE_SCA = "UNREACHABLE_MANIFEST_ONLY"
+CLEAN_DEFAULT_MIN_SEVERITY = "MEDIUM"
+CLEAN_DEFAULT_MIN_CONFIDENCE = "HIGH"
+# Extra non-production directories a default walk prunes. Kept separate from NON_PRODUCTION_DIRS so the
+# engine's cross-file vocabulary mirror stays exact (zulip gate c1 pins cli == symbol_indexer); this is
+# a CLI discovery choice only. scripts/, ci_cd/, packaging/ and setup.py are deliberately NOT here.
+EXTRA_NON_PRODUCTION_DIRS = frozenset({"cookbook", "docs", "doc", "demos", "demo",
+                                       "benchmarks", "tutorials", "migrations"})
+# Third-party vendored / auto-generated trees, opt back in with --include-vendor.
+VENDOR_DIRS = frozenset({"vendor", "_vendor", "third_party"})
+# Non-production filenames skipped inside an otherwise-production tree, and the auto-generated protobuf
+# suffix. A file named on the command line is never skipped -- only a directory walk applies these.
+NON_PRODUCTION_FILENAMES = ("test_*.py", "*_test.py", "*_tests.py", "conftest.py",
+                            "demo_*.py", "*_demo.py", "*_mock.py")
+VENDOR_FILENAMES = ("*_pb2.py",)
+
+# ── Persistent policy in the existing root `.tcs.yaml` ───────────────────────────────────────────
+# Snyk-style: the same optional `.tcs.yaml` that carries `exclude_paths`/`rules` may also carry a
+# `policy:` block naming the report options below. cli.py owns that block; tcs_config owns the
+# exclusions. The strict loader is taught to accept (and ignore) `policy` so one file carries both
+# without editing tcs_config -- every other unknown top-level key is still rejected loudly. Explicit
+# CLI flags always win; with no `.tcs.yaml` (or no policy block) behaviour is byte-identical to before.
+YAML_POLICY_BOOL_KEYS = ("all", "include_hygiene", "include_tests", "include_vendor",
+                         "include_unreachable")
+YAML_POLICY_SEVERITY_VALUES = ("low", "medium", "high", "critical")
+YAML_POLICY_CONFIDENCE_VALUES = ("low", "medium", "high", "all")
+YAML_POLICY_KEYS = frozenset(YAML_POLICY_BOOL_KEYS) | {"min_severity", "min_confidence"}
+# argparse defaults: an attribute sitting at its default was NOT named on the command line, so a
+# `.tcs.yaml` value may fill it. A non-default value is an explicit CLI flag and always overrides.
+_POLICY_ARG_DEFAULTS = {"all": False, "include_hygiene": False, "include_tests": False,
+                        "include_vendor": False, "include_unreachable": False, "audit_all": False,
+                        "min_severity": None, "min_confidence": None}
+# tcs_config._ALLOWED_TOP_LEVEL natively allows "policy" in tcs_config.py.
+
+
+def _read_yaml_policy(directory=None):
+    """The validated `policy:` block from the working directory's `.tcs.yaml`, or {} when absent.
+
+    Reads the same file `load_config` reads. A malformed block raises ValueError -- a policy the user
+    wrote but the scanner silently ignored would misreport coverage, the same harm as a missed finding.
+    """
+    base = Path(directory) if directory is not None else Path.cwd()
+    path = base / tcs_config.CONFIG_FILENAME
+    if not path.is_file():
+        return {}
+    try:
+        import yaml
+    except ImportError as exc:
+        raise ValueError(f"{tcs_config.CONFIG_FILENAME} present but PyYAML is not installed") from exc
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Invalid {tcs_config.CONFIG_FILENAME}: {exc}") from exc
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Invalid {tcs_config.CONFIG_FILENAME}: top level must be a mapping")
+    block = data.get("policy")
+    if block is None:
+        return {}
+    if not isinstance(block, dict):
+        raise ValueError(f"Invalid {tcs_config.CONFIG_FILENAME}: policy must be a mapping")
+    unknown = sorted(set(block) - YAML_POLICY_KEYS)
+    if unknown:
+        raise ValueError(f"Invalid {tcs_config.CONFIG_FILENAME}: unknown policy key(s) {unknown}")
+    out = {}
+    for key in YAML_POLICY_BOOL_KEYS:
+        if key in block:
+            if not isinstance(block[key], bool):
+                raise ValueError(f"Invalid {tcs_config.CONFIG_FILENAME}: policy.{key} must be true/false")
+            out[key] = block[key]
+    if "min_severity" in block:
+        value = str(block["min_severity"]).lower()
+        if value not in YAML_POLICY_SEVERITY_VALUES:
+            raise ValueError(f"Invalid {tcs_config.CONFIG_FILENAME}: policy.min_severity must be one of "
+                             f"{list(YAML_POLICY_SEVERITY_VALUES)}")
+        out["min_severity"] = value
+    if "min_confidence" in block:
+        value = str(block["min_confidence"]).lower()
+        if value not in YAML_POLICY_CONFIDENCE_VALUES:
+            raise ValueError(f"Invalid {tcs_config.CONFIG_FILENAME}: policy.min_confidence must be one of "
+                             f"{list(YAML_POLICY_CONFIDENCE_VALUES)}")
+        out["min_confidence"] = value
+    return out
+
+
+def _apply_yaml_policy(args):
+    """Fill policy attributes the CLI did NOT name from `.tcs.yaml`, recording the active source keys.
+
+    Precedence: an explicit CLI flag (a non-default value) always wins. `all: true` from the file
+    expands like `--all` but still yields to any sub-flag the CLI named explicitly.
+    """
+    args._yaml_policy_keys = ()
+    policy = _read_yaml_policy()
+    if not policy:
+        return
+    explicit = {key for key, default in _POLICY_ARG_DEFAULTS.items()
+                if getattr(args, key, default) != default}
+    applied = []
+    if policy.get("all") is True and "all" not in explicit:
+        args.all = True
+        applied.append("all")
+        for attr, value in (("include_hygiene", True), ("include_tests", True),
+                            ("include_vendor", True), ("include_unreachable", True),
+                            ("min_severity", "low"), ("min_confidence", "low")):
+            if attr not in explicit:
+                setattr(args, attr, value)
+        args._yaml_policy_keys = tuple(applied)
+        return
+    for key in YAML_POLICY_BOOL_KEYS + ("min_severity", "min_confidence"):
+        if key in policy and key not in explicit and policy[key]:
+            setattr(args, key, policy[key])
+            applied.append(key)
+    args._yaml_policy_keys = tuple(applied)
 
 
 def _scope_of(path, aux_scopes=None):
@@ -312,10 +447,15 @@ def _iter_tree_files(root, prune_dirs=None, count_pruned=False):
         for name in sorted(dirnames):
             if name in skip:
                 if count_pruned and name not in IGNORED_DIRS:
-                    _SCOPE_STATS["skipped_dirs"] += 1
-                    _SCOPE_STATS["skipped_files"] += sum(
+                    held = sum(
                         1 for _root, _dirs, _files in os.walk(os.path.join(dirpath, name))
                         for _name in _files if _name.lower().endswith(".py"))
+                    if name in VENDOR_DIRS:
+                        _SCOPE_STATS["vendor_dirs"] += 1
+                        _SCOPE_STATS["vendor_files"] += held
+                    else:
+                        _SCOPE_STATS["skipped_dirs"] += 1
+                        _SCOPE_STATS["skipped_files"] += held
                 continue
             if os.path.islink(os.path.join(dirpath, name)):
                 continue
@@ -329,7 +469,7 @@ def _iter_tree_files(root, prune_dirs=None, count_pruned=False):
 
 
 def _collect_files(scan_path, exclude_patterns=None, config_excludes=None,
-                   skip_non_production=False):
+                   skip_non_production=False, skip_vendor=False):
     """Collect Python files from scan path, optionally excluding by glob patterns.
 
     Args:
@@ -349,19 +489,21 @@ def _collect_files(scan_path, exclude_patterns=None, config_excludes=None,
     if not scan_path.exists():
         raise FileNotFoundError(f"Path does not exist: {scan_path}")
     is_tree = scan_path.is_dir()
-    prune = (IGNORED_DIRS | NON_PRODUCTION_DIRS) if skip_non_production else None
+    prune = _discovery_prune_set(skip_non_production, skip_vendor)
     if scan_path.is_file():
         if scan_path.suffix.lower() != ".py":
             raise ValueError(f"Expected a Python file: {scan_path}")
         paths = [scan_path]
     elif is_tree:
         paths = sorted(
-            path for path in _iter_tree_files(scan_path, prune, skip_non_production)
+            path for path in _iter_tree_files(scan_path, prune,
+                                              skip_non_production or skip_vendor)
             if path.suffix.lower() == ".py"
             and not any(part in IGNORED_DIRS for part in path.parts)
             and not _is_excluded(path, scan_path, exclude_patterns)
             and not (config_excludes and config_excludes(_file_key(path, cwd)))
         )
+        paths = _skip_nonprod_filenames(paths, skip_non_production, skip_vendor)
     else:
         raise ValueError(f"Path is not a regular file or directory: {scan_path}")
 
@@ -416,7 +558,7 @@ AUX_YAML_SUFFIXES = (".yml", ".yaml")
 
 
 def _collect_auxiliary_files(scan_path, exclude_patterns=None, config_excludes=None,
-                             skip_non_production=False):
+                             skip_non_production=False, skip_vendor=False):
     """Collect non-Python artefacts in one walk.
 
     Returns ``(templates, security documents, manifests, secret documents, scope map)``.
@@ -436,7 +578,7 @@ def _collect_auxiliary_files(scan_path, exclude_patterns=None, config_excludes=N
     if not scan_path.exists():
         raise FileNotFoundError(f"Path does not exist: {scan_path}")
 
-    prune = (IGNORED_DIRS | NON_PRODUCTION_DIRS) if skip_non_production else None
+    prune = _discovery_prune_set(skip_non_production, skip_vendor)
     if scan_path.is_file():
         paths = [scan_path]
     elif scan_path.is_dir():
@@ -814,6 +956,189 @@ def _split_by_table_default(findings):
     return visible, hidden
 
 
+def _is_nonprod_filename(name):
+    return any(fnmatch.fnmatch(name, pattern) for pattern in NON_PRODUCTION_FILENAMES)
+
+
+def _is_vendor_filename(name):
+    return any(fnmatch.fnmatch(name, pattern) for pattern in VENDOR_FILENAMES)
+
+
+def _discovery_prune_set(skip_non_production, skip_vendor):
+    """The directory prune set for one walk: ignored trees, plus the opt-out scopes asked for."""
+    if not (skip_non_production or skip_vendor):
+        return None
+    prune = set(IGNORED_DIRS)
+    if skip_non_production:
+        prune |= NON_PRODUCTION_DIRS | EXTRA_NON_PRODUCTION_DIRS
+    if skip_vendor:
+        prune |= VENDOR_DIRS
+    return prune
+
+
+def _skip_nonprod_filenames(paths, skip_non_production, skip_vendor):
+    """Drop test/demo and generated-protobuf filenames from a walk, counting what was held back."""
+    kept = []
+    for path in paths:
+        if skip_non_production and _is_nonprod_filename(path.name):
+            _SCOPE_STATS["skipped_filenames"] += 1
+        elif skip_vendor and _is_vendor_filename(path.name):
+            _SCOPE_STATS["vendor_files"] += 1
+        else:
+            kept.append(path)
+    return kept
+
+
+def _filter_by_severity(findings, minimum):
+    """Hide findings below `minimum` severity from the report; detection itself is untouched."""
+    if not minimum:
+        return findings
+    floor = SEVERITY_ORDER[minimum.upper()]
+    return [finding for finding in findings
+            if SEVERITY_ORDER.get(str(finding.get("severity", "")).upper(), 0) >= floor]
+
+
+def _is_sca_finding(finding):
+    return finding.get("category") == SCA_CATEGORY or "reachability" in finding
+
+
+def _is_unreachable_sca(finding):
+    return _is_sca_finding(finding) and finding.get("reachability") == UNREACHABLE_SCA
+
+
+def _is_reachable_sca(finding):
+    return _is_sca_finding(finding) and finding.get("reachability") == "REACHABLE"
+
+
+def _clean_default_keep(finding, hold_hygiene=True, hold_unreachable=True,
+                        min_severity=CLEAN_DEFAULT_MIN_SEVERITY,
+                        min_confidence=CLEAN_DEFAULT_MIN_CONFIDENCE):
+    """True when a finding survives the clean-default report floor. Detection is never consulted.
+
+    The four dimensions are parameterised so one composable opt-in flag lifts only its own block
+    while the rest stay held. The exploitable-MEDIUM allowlist and reachable SCA must still clear the
+    confidence floor: a structural (LOW/MEDIUM confidence) open redirect, cipher-mode row or reachable
+    advisory is not a confirmed exploit, so it is held back exactly like any other unconfirmed row.
+    """
+    cwe = str(finding.get("cwe", ""))
+    severity = str(finding.get("severity", "")).upper()
+    confidence = str(finding.get("confidence") or "MEDIUM").upper()
+    sev_floor = SEVERITY_ORDER[str(min_severity).upper()]
+    conf_floor = CONFIDENCE_ORDER[str(min_confidence).upper()]
+    conf_ok = CONFIDENCE_ORDER.get(confidence, 2) >= conf_floor
+    if hold_unreachable and _is_unreachable_sca(finding):
+        return False
+    if conf_ok and sev_floor <= SEVERITY_ORDER["HIGH"] and (
+            cwe in EXPLOITABLE_MEDIUM_CWES or _is_reachable_sca(finding)):
+        return True
+    if hold_hygiene and cwe in HYGIENE_AUDIT_CWES:
+        return False
+    if SEVERITY_ORDER.get(severity, 0) < sev_floor:
+        return False
+    if not conf_ok:
+        return False
+    return True
+
+
+def _apply_clean_default(findings, args=None):
+    """Split the emission set into (kept, held-back) under the clean-default report policy.
+
+    Composable opt-in flags lift only their own dimension: --include-hygiene shows hygiene rows,
+    --include-unreachable shows dormant SCA, --min-severity moves the severity floor. The HIGH
+    confidence floor stays put unless a full-lift flag (--min-confidence/--all/...) switched mode.
+    """
+    hold_hygiene = not bool(getattr(args, "include_hygiene", False))
+    hold_unreachable = not bool(getattr(args, "include_unreachable", False))
+    min_severity = getattr(args, "min_severity", None) or CLEAN_DEFAULT_MIN_SEVERITY
+    kept, held = [], []
+    for finding in findings:
+        (kept if _clean_default_keep(finding, hold_hygiene=hold_hygiene,
+                                     hold_unreachable=hold_unreachable,
+                                     min_severity=min_severity,
+                                     min_confidence=CLEAN_DEFAULT_MIN_CONFIDENCE) else held).append(finding)
+    return kept, held
+
+
+def _output_policy_mode(args):
+    """clean-default, custom (a full-lift flag), or full-audit (--all).
+
+    Only the full-lift flags -- --include-tests, --audit-all, --min-confidence -- bypass the
+    clean-default floor entirely, which is what keeps scan_child / aa_parity / big8 /
+    confidence_label / sca_reachability byte-identical. The composable flags -- --include-hygiene,
+    --include-unreachable, --include-vendor, --min-severity -- keep clean-default ACTIVE and lift
+    only their own dimension, so they remain in clean-default mode.
+    """
+    if getattr(args, "all", False):
+        return "full-audit"
+    if any((getattr(args, "include_tests", False),
+            getattr(args, "audit_all", False),
+            getattr(args, "min_confidence", None) is not None)):
+        return "custom"
+    return "clean-default"
+
+
+def _policy_banner(args):
+    """The one-line `[INF] policy -> ...` announcement printed at scan start (ASCII only).
+
+    Names exactly which floors and blocks are holding rows back and which are showing them, so a
+    composable flag or a `.tcs.yaml` policy never silently widens or narrows the report. When the
+    active options came from `.tcs.yaml`, the source is named so the reader knows why.
+    """
+    mode = _output_policy_mode(args)
+    source = getattr(args, "_yaml_policy_keys", ()) or ()
+    suffix = (" (source=.tcs.yaml: %s)" % ", ".join(source)) if source else ""
+    if mode == "full-audit":
+        detail = ("full-audit (--all): every finding -- hygiene, dormant SCA, all severities "
+                  "and confidences shown")
+    elif mode == "custom":
+        parts = []
+        if getattr(args, "min_confidence", None):
+            parts.append("min-confidence=%s" % args.min_confidence)
+        if getattr(args, "min_severity", None):
+            parts.append("min-severity=%s" % args.min_severity)
+        for flag, label in (("include_tests", "include-tests"), ("audit_all", "audit-all")):
+            if getattr(args, flag, False):
+                parts.append(label)
+        detail = ("custom (%s): clean-default floors lifted, only the named floors apply"
+                  % ", ".join(parts))
+    else:
+        hold_hygiene = not bool(getattr(args, "include_hygiene", False))
+        hold_unreachable = not bool(getattr(args, "include_unreachable", False))
+        sev = (getattr(args, "min_severity", None) or CLEAN_DEFAULT_MIN_SEVERITY).lower()
+        blocks, shown = [], []
+        (blocks if hold_hygiene else shown).append("hygiene")
+        (blocks if hold_unreachable else shown).append("dormant-SCA")
+        detail = ("clean-default: floors min-severity=%s/min-confidence=high; holding back %s"
+                  % (sev, "+".join(blocks) if blocks else "no extra blocks"))
+        if shown:
+            detail += "; showing %s" % "+".join(shown)
+        detail += ("; keeping HIGH-confidence CRITICAL/HIGH + exploitable MEDIUM"
+                   " (pass --all for the full audit)")
+        if getattr(args, "include_vendor", False):
+            detail += "; include-vendor"
+    return "policy -> %s%s" % (detail, suffix)
+
+
+def clean_default_note(held) -> str:
+    """One line naming what the clean-default report policy held back, so a short report is honest."""
+    if not held:
+        return ""
+    noun = "finding" if len(held) == 1 else "findings"
+    return (f"Note: Held back {len(held)} hygiene/low-severity/low-confidence/dormant-SCA {noun} "
+            f"by the clean default policy; pass --all to show all.")
+
+
+def vendor_scope_note() -> str:
+    """Name the vendored/generated trees a directory walk held back, and the way back in."""
+    dirs = _SCOPE_STATS["vendor_dirs"]
+    files = _SCOPE_STATS["vendor_files"]
+    if not dirs and not files:
+        return ""
+    return (f"Note: Held back {files} python file(s) in {dirs} vendored/generated "
+            f"director{'y' if dirs == 1 else 'ies'} (vendor/, _vendor/, third_party/, *_pb2.py); "
+            f"pass --include-vendor to scan them.")
+
+
 def non_production_scope_note() -> str:
     """Name the scope a directory walk narrowed by default.
 
@@ -824,12 +1149,15 @@ def non_production_scope_note() -> str:
     note never appears for `scan tests/`.
     """
     dirs = _SCOPE_STATS["skipped_dirs"]
-    if not dirs:
+    names = _SCOPE_STATS["skipped_filenames"]
+    if not dirs and not names:
         return ""
-    files = _SCOPE_STATS["skipped_files"]
+    files = _SCOPE_STATS["skipped_files"] + names
     return (f"Note: Held back {files} python file(s) in {dirs} non-production "
             f"director{'y' if dirs == 1 else 'ies'} (tests/, testutils/, fixtures/, "
-            f"examples/, samples/, debug/); pass --include-tests to scan them.")
+            f"examples/, samples/, debug/, docs/, demos/, benchmarks/, migrations/, "
+            f"cookbook/, tutorials/) and test_*/demo_*/conftest filenames; "
+            f"pass --include-tests to scan them.")
 
 
 def table_default_note(hidden) -> str:
@@ -1643,7 +1971,10 @@ def _scan(args):
     ux = _ux_enabled(args)
     if ux:
         banner.print_banner(args.path, scope=scope, workers=workers, stream=sys.stderr)
-    
+    # The output policy is announced on every scan, TTY or not, so a reader always knows whether
+    # clean-default, custom or full-audit mode produced the report. stderr keeps stdout a data pipe.
+    banner.badge("INF", _policy_banner(args), stream=sys.stderr)
+
     try:
         line_ranges = _parse_line_ranges(getattr(args, "lines", None))
         exclude_patterns = _parse_exclude_patterns(getattr(args, "exclude", None))
@@ -1658,14 +1989,17 @@ def _scan(args):
             if config is not None else None
         )
         tree_scan = args.path.is_dir()
-        # Pruning non-production trees is the default for a directory walk; `--include-tests` opts
-        # back in, and `--skip-non-production` is accepted but no longer changes anything. Only a
-        # walk prunes: a file or directory named on the command line is analysed in full.
-        skip_non_production = tree_scan and not bool(getattr(args, "include_tests", False))
-        _SCOPE_STATS["skipped_dirs"] = 0
-        _SCOPE_STATS["skipped_files"] = 0
+        # Pruning non-production trees is the default for a directory walk; `--include-tests` (or
+        # `--all`) opts back in, and `--skip-non-production` is accepted but no longer changes anything.
+        # Only a walk prunes: a file or directory named on the command line is analysed in full.
+        skip_non_production = tree_scan and not bool(getattr(args, "include_tests", False)) \
+            and not bool(getattr(args, "all", False))
+        skip_vendor = tree_scan and not bool(getattr(args, "include_vendor", False)) \
+            and not bool(getattr(args, "all", False))
+        for _stat in _SCOPE_STATS:
+            _SCOPE_STATS[_stat] = 0
         templates, iac, manifests, secrets, aux_scopes = _collect_auxiliary_files(
-            args.path, exclude_patterns, config_excludes, skip_non_production)
+            args.path, exclude_patterns, config_excludes, skip_non_production, skip_vendor)
         if scope not in ("all", "html"):
             templates = {}
         if scope not in ("all", "sca"):
@@ -1685,7 +2019,8 @@ def _scan(args):
             try:
                 files = _collect_files(args.path, exclude_patterns=exclude_patterns,
                                        config_excludes=config_excludes,
-                                       skip_non_production=skip_non_production)
+                                       skip_non_production=skip_non_production,
+                                       skip_vendor=skip_vendor)
             except ValueError:
                 if not templates and not iac and not manifests and not secrets:
                     raise
@@ -1864,17 +2199,25 @@ def _scan(args):
             findings = _scope_findings_to_diff(
                 findings, changed_line_intervals(_diff_repo_root, diff_ref), _diff_repo_root)
 
-        # Display-only confidence filter; the engine's emission set is already final.
+        # Display-only output policy; the engine's emission set is already final. The explicit
+        # --min-confidence floor stays the single confidence call site; the clean-default policy is a
+        # separate report layer that runs only when no opt-in flag asked for a wider or narrower view.
         requested_minimum = getattr(args, "min_confidence", None)
         confidence_minimum = None if requested_minimum in (None, "all") else requested_minimum
         findings = _filter_by_confidence(findings, confidence_minimum)
-        # The default high floor belongs to the table alone, and only when nobody named a level: an
-        # explicit `all` is a request to see everything, in the table too. `findings` stays the
-        # complete emission set either way, so JSON, SARIF, the autofix pass and the exit code never
-        # see a floor nobody asked for, and `confidence_filter` keeps reporting null for a machine run.
+        policy_mode = _output_policy_mode(args)
+        held_back = []
+        if policy_mode == "clean-default":
+            findings, held_back = _apply_clean_default(findings, args)
+        else:
+            findings = _filter_by_severity(findings, getattr(args, "min_severity", None))
+        # In clean-default and full-audit modes the table shows exactly what JSON and SARIF show, so the
+        # three formats agree. The legacy high table floor survives only in custom mode, where a caller
+        # opted into a wider emission set but named no confidence level for the human-readable table.
         hidden_rows = []
         display_rows = findings
-        if requested_minimum is None and getattr(args, "format", "table") == "table":
+        if (policy_mode == "custom" and requested_minimum is None
+                and getattr(args, "format", "table") == "table"):
             display_rows, hidden_rows = _split_by_table_default(findings)
         _PARTIAL["findings"] = findings
 
@@ -1918,6 +2261,8 @@ def _scan(args):
             "line_filter": [list(r) for r in line_ranges] if line_ranges else None,
             "diff_ref": diff_ref,
             "confidence_filter": confidence_minimum,
+            "output_policy": policy_mode,
+            "held_back_findings": len(held_back),
             "total_discovered_files": total_discovered_files,
             "scanned_files": scanned_files,
             "scanned_files_by_scope": file_counts,
@@ -1936,20 +2281,29 @@ def _scan(args):
         scope_note = non_production_scope_note()
         if scope_note:
             print(scope_note, file=sys.stderr)
+        policy_note = clean_default_note(held_back)
+        if policy_note:
+            print(policy_note, file=sys.stderr)
+        vendor_note = vendor_scope_note()
+        if vendor_note:
+            print(vendor_note, file=sys.stderr)
     else:
         if display_rows:
             print(_ascii_table(display_rows))
         elif hidden_rows:
             print(f"[+] No findings at the default {TABLE_DEFAULT_CONFIDENCE.upper()} confidence "
                   f"floor; {len(hidden_rows)} row(s) are held back, listed in the note below.")
+        elif held_back:
+            print(f"[+] No findings at the clean default policy floor; {len(held_back)} row(s) are "
+                  f"held back, listed in the note below (pass --all to show all).")
         else:
-            if _SCOPE_STATS["skipped_files"]:
+            if _SCOPE_STATS["skipped_files"] or _SCOPE_STATS["skipped_filenames"]:
                 # Nothing was reported, but the walk did not read everything: "Clean scan!" over a
                 # tree whose tests/ and examples/ were pruned would be the most misleading line
                 # this tool can print.
+                held_files = _SCOPE_STATS["skipped_files"] + _SCOPE_STATS["skipped_filenames"]
                 print(f"[+] No findings in the {scanned_files} file(s) that were read; "
-                      f"{_SCOPE_STATS['skipped_files']} non-production file(s) were held back "
-                      f"-- see the note below.")
+                      f"{held_files} non-production file(s) were held back -- see the note below.")
             else:
                 print("[+] No vulnerabilities found. Clean scan!")
         note = table_default_note(hidden_rows)
@@ -1958,6 +2312,12 @@ def _scan(args):
         scope_note = non_production_scope_note()
         if scope_note:
             print(scope_note)
+        policy_note = clean_default_note(held_back)
+        if policy_note:
+            print(policy_note)
+        vendor_note = vendor_scope_note()
+        if vendor_note:
+            print(vendor_note)
         _print_summary(scanned_files, duration_ms, display_rows, file_counts,
                        discovered_files=total_discovered_files,
                        fast_path_skipped_files=fast_path_skipped_files,
@@ -2324,14 +2684,54 @@ def main(argv=None):
         "--audit-all", action="store_true", default=False,
         help="Emit speculative POTENTIAL findings and non-actionable IaC notes",
     )
+    scan_parser.add_argument(
+        "--include-hygiene", action="store_true", default=False,
+        help="Show hygiene/audit-tier findings (CSRF, SRI, cookie configuration, weak hash, "
+             "diagnostic exposure, unbounded allocation, insecure umask/UUID1, mutable default) "
+             "that the clean default report holds back. Detection is unchanged",
+    )
+    scan_parser.add_argument(
+        "--include-unreachable", action="store_true", default=False,
+        help="Show dormant dependency advisories (reachability UNREACHABLE_MANIFEST_ONLY) that the "
+             "clean default report holds back across terminal, JSON and SARIF",
+    )
+    scan_parser.add_argument(
+        "--include-vendor", action="store_true", default=False,
+        help="Scan vendor/, _vendor/, third_party/ and *_pb2.py too. A directory walk prunes those "
+             "vendored/auto-generated trees by default; a path named on the command line is always "
+             "scanned in full",
+    )
+    scan_parser.add_argument(
+        "--min-severity", choices=("low", "medium", "high", "critical"), default=None,
+        help="Only show findings at or above this severity. Default: the clean default report starts "
+             "at medium (LOW held back); naming a level switches to custom mode. Detection is unchanged",
+    )
+    scan_parser.add_argument(
+        "--all", action="store_true", default=False,
+        help="Full audit: --include-hygiene --include-tests --include-vendor --include-unreachable "
+             "--min-severity low --min-confidence low. Restores the complete emission set across "
+             "terminal, JSON and SARIF",
+    )
     compare_parser = commands.add_parser("compare", help="Compare TimeCodeSecurity findings with Semgrep or Bandit")
     compare_parser.add_argument("path", type=Path, help="Python file or directory to compare")
     compare_parser.add_argument("--vs", choices=("semgrep", "bandit"), default="semgrep", help="Competitor scanner (default: semgrep)")
     compare_parser.add_argument("--tolerance", type=int, default=5, help="Maximum line distance for a match (default: 5)")
     compare_parser.add_argument("--output-json", metavar="REPORT_PATH", help="Write detailed comparison report as JSON")
     args = parser.parse_args(argv)
+    args._yaml_policy_keys = ()
+    if getattr(args, "all", False):
+        # CLI --all is the strongest explicit signal: it overrides any `.tcs.yaml` policy and keeps
+        # the byte-identical full expansion below.
+        args.include_hygiene = True
+        args.include_tests = True
+        args.include_vendor = True
+        args.include_unreachable = True
+        args.min_severity = "low"
+        args.min_confidence = "low"
     if args.command == "scan":
         try:
+            if not getattr(args, "all", False):
+                _apply_yaml_policy(args)
             return _scan(args)
         except Exception as exc:
             # Anything unhandled is an internal error: emit the fallback artefacts and

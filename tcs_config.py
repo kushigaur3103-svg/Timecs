@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 CONFIG_FILENAME = ".tcs.yaml"
-_ALLOWED_TOP_LEVEL = frozenset({"exclude_paths", "rules"})
+_ALLOWED_TOP_LEVEL = frozenset({"exclude_paths", "rules", "policy"})
 _ALLOWED_RULE_KEYS = frozenset({"exclude"})
 # Patterns are declared once per config load and asked about per finding, so the
 # anchored-vs-depth-free split is worth one dict keyed by the (immutable) pattern tuple.

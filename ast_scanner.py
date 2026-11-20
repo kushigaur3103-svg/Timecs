@@ -3505,6 +3505,36 @@ CWE287_NAME_COMPARE_KEEP_LOUD = frozenset({
     ("src__transformers__generation__utils.py", 3398),
 })
 CWE3A_SALT_NAME_RE = re.compile(r"(?i)^(salt|pepper|nonce|iv)$")
+
+
+def _t26_password_scope_names(mod_name, functions_by_module, lineno, cache) -> set:
+    """The name and parameters of the innermost function enclosing *lineno* -- never the filename.
+
+    CWE-916/759 ask whether the hashed value is a password. The structural collector's `scope_id` is
+    always `{mod_name}:global`, so searching it searched the MODULE NAME: a cache digest of
+    `message_content` inside `secret_detection.py` matched `secret` and reported a weak password hash.
+    A function's own name and its parameters carry that signal with no filename in it. Spans are built
+    once per module and memoised in *cache*, so the hot path pays one interval scan per hashed call.
+    """
+    spans = cache.get(mod_name)
+    if spans is None:
+        spans = []
+        for _fscope, fnode in functions_by_module.get(mod_name, ()):
+            start = getattr(fnode, "lineno", 0)
+            end = getattr(fnode, "end_lineno", start) or start
+            spellings = {fnode.name}
+            for group in (fnode.args.posonlyargs, fnode.args.args, fnode.args.kwonlyargs):
+                spellings.update(argument.arg for argument in group)
+            for extra in (fnode.args.vararg, fnode.args.kwarg):
+                if extra is not None:
+                    spellings.add(extra.arg)
+            spans.append((start, end, spellings))
+        cache[mod_name] = spans
+    best = None
+    for start, end, spellings in spans:
+        if start <= lineno <= end and (best is None or (end - start) < best[0]):
+            best = (end - start, spellings)
+    return set(best[1]) if best is not None else set()
 CWE3A_SENSITIVE_VALUE_RE = re.compile(r"(?i).*(password|passwd|pwd|secret|api_key|access_token|credential|token|secret_key).*")
 # A credential *label* inside a string that is about to be written to a file: `passwd: {passwd}`.
 # The value half of the rule reuses CWE3A_SENSITIVE_VALUE_RE, so the two stay in step.
@@ -4898,8 +4928,12 @@ _MARKUP_CALL_SEGMENTS = frozenset({'Markup', 'mark_safe'})
 # at the response collector; `text/csv`, `text/xml` and a parameterised `...; charset=binary` did not.
 _NON_HTML_MEDIA_PREFIXES = ('application/json', 'text/json', 'text/xml', 'application/xml',
                             'text/csv', 'application/octet-stream', 'application/pdf',
-                            'application/postscript', 'text/plain',
+                            'application/postscript', 'text/plain', 'text/event-stream',
+                            'application/problem+json',
                             'image/', 'font/', 'woff', 'video/', 'audio/')
+# FastAPI and Starlette spell the keyword `media_type`; Flask and Django spell it `content_type` or
+# `mimetype`. One vocabulary, so a response cannot escape the media-type proof by framework spelling.
+RESPONSE_MEDIA_KEYWORDS = frozenset({"content_type", "mimetype", "media_type"})
 
 
 def _call_callee_segment(node: ast.AST) -> str:
@@ -5029,15 +5063,22 @@ def media_type_is_not_html(text) -> bool:
     lowered = text.strip().lower()
     if not lowered or 'html' in lowered:
         return False
+    # SVG is a document the browser parses and scripts, so `image/svg+xml` is an XSS carrier even
+    # though it opens with the `image/` prefix that every raster type shares.
+    if 'svg' in lowered:
+        return False
     head = lowered.split(';', 1)[0].strip()
     return any(head.startswith(prefix) for prefix in _NON_HTML_MEDIA_PREFIXES)
 
 
 def _response_media_header_is_not_html(call: ast.Call, assignments_by_scope, scope_id: str,
                                        lineno: int) -> bool:
-    """The media type a response declares: `content_type=`/`mimetype=`, or a `Content-Type` entry in
-    a `headers` mapping or list of tuples, inline or behind a name resolved to its last write."""
-    media = next((kw.value for kw in call.keywords if kw.arg in {"content_type", "mimetype"}), None)
+    """The media type a response declares: `content_type=`/`mimetype=`/`media_type=`, or a
+    `Content-Type` entry in a `headers` mapping or list of tuples, inline or behind a name resolved
+    to its last write. FastAPI and Starlette spell the keyword `media_type`.
+    """
+    media = next((kw.value for kw in call.keywords
+                  if kw.arg in RESPONSE_MEDIA_KEYWORDS), None)
     if media is not None:
         text = _literal_text(media, assignments_by_scope, scope_id, lineno)
         if isinstance(text, str):
@@ -5727,6 +5768,15 @@ def _regex_branch_literals(branches):
     return tuple(words)
 
 
+def _t26_repeat_is_unbounded(maximum) -> bool:
+    """True when a repeat has NO fixed ceiling. `re` spells `*`, `+` and `{n,}` with the MAXREPEAT
+    sentinel, not None, so this is an equality test against it: `{10,13}` is a ceiling of 13 however
+    large it looks beside REGEX_MULTIPLYING_BOUND. Adjacent repeats only split a run unboundedly many
+    ways when both can iterate without a ceiling; a bounded neighbour contributes a constant.
+    """
+    return maximum is None or maximum == re._constants.MAXREPEAT
+
+
 def _regex_catastrophic_backtracking(tokens, inside_repeat=False, depth=0) -> bool:
     """Walk a parsed sre tree looking for unbounded split ambiguity (exponential or polynomial)."""
     if depth > REGEX_PARSE_DEPTH_LIMIT:
@@ -5736,6 +5786,7 @@ def _regex_catastrophic_backtracking(tokens, inside_repeat=False, depth=0) -> bo
         repeat_ops.add(re._constants.POSSESSIVE_REPEAT)
     previous_repeat_chars = None
     previous_separator = None
+    previous_repeat_unbounded = False
     previous_single_char = None
     for operation, argument in tokens:
         if operation in repeat_ops:
@@ -5743,6 +5794,10 @@ def _regex_catastrophic_backtracking(tokens, inside_repeat=False, depth=0) -> bo
             # A `?` (max == 1) contributes at most two paths and `{3}` a constant number, so only
             # unbounded repeats or repeats bounded at/above REGEX_MULTIPLYING_BOUND can multiply.
             multiplies = maximum is None or maximum >= REGEX_MULTIPLYING_BOUND
+            # `re` spells `*`, `+` and `{n,}` with the MAXREPEAT sentinel, not None, so an unbounded
+            # ceiling is an equality test against it. `{10,13}` is a fixed ceiling of 13 however
+            # large it looks next to REGEX_MULTIPLYING_BOUND.
+            unbounded = _t26_repeat_is_unbounded(maximum)
             current_chars = _regex_first_chars(repeated_body)
             separator = _regex_trailing_separator(repeated_body)
             delimited = (separator is not None and current_chars is not None
@@ -5759,10 +5814,16 @@ def _regex_catastrophic_backtracking(tokens, inside_repeat=False, depth=0) -> bo
             if not delimited and _regex_catastrophic_backtracking(
                     repeated_body, (inside_repeat or multiplies) and not head_delimited, depth + 1):
                 return True
-            if previous_repeat_chars is not None and not (
-                previous_separator is not None and current_chars is not None
-                and not previous_separator & current_chars
-            ):
+            # Two adjacent repeats only split a run many ways when BOTH can iterate without a fixed
+            # ceiling. A bounded neighbour contributes a constant number of splits, so `\d{4}-\d{2}`,
+            # `\d{2}:?\d{2}`, `[0-9]{10,13}[a-zA-Z0-9-]*` and `{0,20}` next to `{0,3}` stay linear even
+            # though their character sets overlap. `multiplies` is the wrong test here: it is true for
+            # a large bounded repeat, which is what makes NESTED repetition blow up, not adjacency.
+            if (unbounded and previous_repeat_unbounded
+                    and previous_repeat_chars is not None and not (
+                        previous_separator is not None and current_chars is not None
+                        and not previous_separator & current_chars
+                    )):
                 if current_chars is not None and not (previous_repeat_chars & current_chars):
                     pass
                 elif (current_chars is None or previous_repeat_chars is None
@@ -5771,13 +5832,16 @@ def _regex_catastrophic_backtracking(tokens, inside_repeat=False, depth=0) -> bo
             if minimum > 0 or previous_repeat_chars is None:
                 if current_chars is not None and current_chars <= REGEX_SPACE_CHARS:
                     previous_repeat_chars, previous_separator = None, None
+                    previous_repeat_unbounded = False
                 else:
                     previous_repeat_chars, previous_separator = current_chars, separator if delimited else None
+                    previous_repeat_unbounded = unbounded
             elif current_chars is not None:
                 if current_chars <= REGEX_SPACE_CHARS:
                     pass
                 else:
                     previous_repeat_chars = previous_repeat_chars | current_chars
+                    previous_repeat_unbounded = previous_repeat_unbounded or unbounded
             continue
         if operation is re._constants.SUBPATTERN:
             if _regex_catastrophic_backtracking(argument[-1], inside_repeat, depth + 1):
@@ -5811,6 +5875,7 @@ def _regex_catastrophic_backtracking(tokens, inside_repeat=False, depth=0) -> bo
             previous_single_char = None
         previous_repeat_chars = None
         previous_separator = None
+        previous_repeat_unbounded = False
     return False
 
 
@@ -20161,23 +20226,62 @@ class TaintTracker:
                 return bool(handler_name) and value.args[0].id == handler_name
         return False
 
-    def _scan_error_returns(self, stmts: list, handler_name: Optional[str]) -> bool:
+    def _t26_is_string_error_return(self, ret_node: ast.Return, handler_name: Optional[str]) -> bool:
+        """The detail-as-TEXT half of `_is_bad_error_return`: `str(exc)`, `repr(exc)`, `format_exc()`.
+
+        `return err` hands back the exception OBJECT, which no framework here serialises into a
+        response body; only the text forms are a client-visible disclosure on their own.
+        """
+        value = ret_node.value
+        if not isinstance(value, ast.Call):
+            return False
+        fn = dotted_name(value.func) or ""
+        if fn in ("traceback.format_exc", "format_exc"):
+            return True
+        return (fn in ("str", "repr") and bool(value.args)
+                and isinstance(value.args[0], ast.Name)
+                and bool(handler_name) and value.args[0].id == handler_name)
+
+    @staticmethod
+    def _t26_catches_declared_error_group(node: ast.ExceptHandler, tree: ast.AST) -> bool:
+        """True when `except NAME as e` catches a group the module itself declared as a tuple/list.
+
+        `_TRANSIENT_ERRORS = (OSError, ValueError)` then `except _TRANSIENT_ERRORS as error: return
+        error` is an internal retry helper handing the exception object back to its caller. A
+        directly-named exception class (`except RuntimeError as e`) is not a declared group, so the
+        blessed bare-return shapes keep their finding: this refuses the aggregate spelling only.
+        """
+        caught = node.type
+        if not isinstance(caught, ast.Name):
+            return False
+        for statement in tree.body:
+            if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                continue
+            if not isinstance(statement.value, (ast.Tuple, ast.List)):
+                continue
+            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+            if any(isinstance(target, ast.Name) and target.id == caught.id for target in targets):
+                return True
+        return False
+
+    def _scan_error_returns(self, stmts: list, handler_name: Optional[str], predicate=None) -> bool:
         """Recursively scans handler body statements for sensitive error returns."""
+        test = predicate if predicate is not None else self._is_bad_error_return
         for stmt in stmts:
             if isinstance(stmt, ast.Return):
-                if self._is_bad_error_return(stmt, handler_name):
+                if test(stmt, handler_name):
                     return True
             elif isinstance(stmt, ast.If):
-                if self._scan_error_returns(stmt.body, handler_name) or self._scan_error_returns(stmt.orelse, handler_name):
+                if self._scan_error_returns(stmt.body, handler_name, predicate) or self._scan_error_returns(stmt.orelse, handler_name, predicate):
                     return True
             elif isinstance(stmt, (ast.For, ast.While)):
-                if self._scan_error_returns(stmt.body, handler_name) or self._scan_error_returns(stmt.orelse, handler_name):
+                if self._scan_error_returns(stmt.body, handler_name, predicate) or self._scan_error_returns(stmt.orelse, handler_name, predicate):
                     return True
             elif isinstance(stmt, ast.Try):
-                if self._scan_error_returns(stmt.body, handler_name):
+                if self._scan_error_returns(stmt.body, handler_name, predicate):
                     return True
                 for nested in stmt.handlers:
-                    if self._scan_error_returns(nested.body, getattr(nested, "name", None)):
+                    if self._scan_error_returns(nested.body, getattr(nested, "name", None), predicate):
                         return True
         return False
 
@@ -20508,8 +20612,17 @@ class TaintTracker:
                 elif isinstance(node, ast.ExceptHandler):
                     # CWE-209: sensitive error exposure from except handler
                     handler_name = getattr(node, "name", None)
-                    if self._scan_error_returns(list(node.body), handler_name):
-                        cwe_meta = {"operation": "SENSITIVE_ERROR_EXPOSURE", "category": "SENSITIVE_ERROR_EXPOSURE", "cwe": "CWE-209"}
+                    handler_body = list(node.body)
+                    if self._scan_error_returns(handler_body, handler_name):
+                        # A bare `return error` from a handler catching a module-declared transient
+                        # error GROUP, in a module with no web context, hands the exception object to
+                        # its caller rather than to a client. The text forms disclose on their own,
+                        # and a directly-named exception class keeps the blessed bare-return finding.
+                        if (self._scan_error_returns(handler_body, handler_name,
+                                                     self._t26_is_string_error_return)
+                                or self._c209_web_context_around(node)
+                                or not self._t26_catches_declared_error_group(node, tree)):
+                            cwe_meta = {"operation": "SENSITIVE_ERROR_EXPOSURE", "category": "SENSITIVE_ERROR_EXPOSURE", "cwe": "CWE-209"}
 
                 if cwe_meta:
                     dedupe_key = (cwe_meta["cwe"], getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
@@ -22759,21 +22872,29 @@ class TaintTracker:
                 if (written in RESPONSE_CONSTRUCTOR_NAMES
                         or written.rsplit(".", 1)[-1] in self._C209_REPLY_LEAVES):
                     return False
+        return not self._c209_web_context_around(value)
+
+    def _c209_web_context_around(self, value) -> bool:
+        """True when a route decorator, a web-handler argument, or a web import surrounds *value*.
+
+        A missing parent chain answers False: an unproven shape is not a safe one, so the caller
+        keeps its finding rather than retiring a leak it cannot place.
+        """
         current = getattr(value, "parent", None)
         for _ in range(60):
             if current is None:
                 return False
             if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 if TaintTracker._c209_route_decorated(current):
-                    return False
+                    return True
                 arguments = current.args
                 for group in (arguments.posonlyargs, arguments.args, arguments.kwonlyargs):
                     for argument in group:
                         if argument.arg in CWE209_WEB_CONTEXT_ARGUMENTS:
-                            return False
+                            return True
                 for extra in (arguments.vararg, arguments.kwarg):
                     if extra is not None and extra.arg in CWE209_WEB_CONTEXT_ARGUMENTS:
-                        return False
+                        return True
             if isinstance(current, ast.Module):
                 break
             current = getattr(current, "parent", None)
@@ -22787,8 +22908,21 @@ class TaintTracker:
             else:
                 continue
             if roots & CWE209_WEB_FRAMEWORK_ROOTS:
-                return False
-        return True
+                return True
+        return False
+
+    def _t26_string_reply_without_web_context(self, value) -> bool:
+        """True when a returned exception-detail STRING belongs to nobody's HTTP response.
+
+        `except json.JSONDecodeError as error: return f"{path} is not valid JSON: {error}"` in a CLI
+        helper prints to a terminal; no socket carries it. The container test in
+        `_c209_exposed_in_reply` accepted any JoinedStr, so a module with zero web imports reported
+        an HTTP stack disclosure. A reply factory is handled by the `packaged` branch and never
+        reaches here, and a dict keeps its own older refusal.
+        """
+        if not isinstance(value, (ast.JoinedStr, ast.BinOp)):
+            return False
+        return not self._c209_web_context_around(value)
 
     def _c209_exposed_in_reply(self, value, names, table, use_lineno):
         """True when *value* (or the call it was assigned from) ships exception detail to the client."""
@@ -22797,6 +22931,8 @@ class TaintTracker:
         if self._c209_value_is_not_an_http_body(value):
             return False
         if self._c209_plain_dict_reply_without_web_context(value):
+            return False
+        if self._t26_string_reply_without_web_context(value):
             return False
         resolved = self._c22_path_expression(value, table, use_lineno)
         if (self._c209_structured_error_envelope_only(value, table, use_lineno)
@@ -27158,6 +27294,11 @@ class TaintTracker:
 
                 nodes_in_order.append(node)
 
+            # CWE-916/759 provenance is the enclosing function's own name and parameters, resolved
+            # once per module. See `_t26_password_scope_names`: the collector's `scope_id` is the
+            # module name, and searching it reported a non-password digest inside `secret_detection.py`.
+            password_scope_cache: dict = {}
+
             for node in nodes_in_order:
                 cwe_meta = None
                 lineno = getattr(node, "lineno", 0)
@@ -27196,7 +27337,9 @@ class TaintTracker:
                                 elif isinstance(nd, ast.Constant) and isinstance(nd.value, str):
                                     consts_in_arg.append(nd.value)
                             is_pw_hash = any(CWE3A_PASSWORD_NAME_RE.match(n) for n in names_in_arg)
-                            for scope_cand in (scope_id, name):
+                            for scope_cand in _t26_password_scope_names(
+                                    mod_name, functions_by_module, lineno,
+                                    password_scope_cache) | {name}:
                                 if CWE3A_PASSWORD_NAME_RE.search(scope_cand):
                                     is_pw_hash = True
                             for s_const in consts_in_arg:

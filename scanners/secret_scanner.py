@@ -88,7 +88,8 @@ NON_SECRET_PLACEHOLDER_TOKENS = ("temporary_key", "replace_me", "not_found", "no
 # be relying on it. Airflow ships exactly this pair in `default_airflow.cfg`, `default_test.cfg` and
 # the documentation template `config.yml`, all three of which describe a broker URL rather than
 # configure one.
-LOCAL_SERVICE_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1"})
+LOCAL_SERVICE_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1",
+                                 "host.docker.internal"})
 # A document whose own name declares it a test fixture or the shipped default of a product. Only the
 # generic-assignment branch consults this: a vendor token, a PEM block or a service URL proves itself
 # by shape and cannot be silenced by the name of the file it sits in.

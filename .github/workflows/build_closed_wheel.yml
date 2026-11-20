@@ -59,7 +59,7 @@ jobs:
           PYEOF
           rm -rf /tmp/tcs_bench_check
           mkdir -p /tmp/tcs_bench_check
-          cp -r scripts benchmark /tmp/tcs_bench_check/
+          cp -r scripts benchmark /tmp/tcs_bench_check/ && ([ -f benchmark_manifest.json ] && cp benchmark_manifest.json /tmp/tcs_bench_check/ || true)
           cd /tmp/tcs_bench_check
           /tmp/tcs_clean_venv/bin/python - << 'PYEOF'
           import sys, types

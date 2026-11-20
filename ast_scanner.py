@@ -2290,6 +2290,7 @@ CWE209_ERROR_CONTRACT_ATTRIBUTES = frozenset({
 # Serialisers that wrap an already-structured body rather than stringify a frame.
 CWE209_PAYLOAD_SERIALIZERS = frozenset({"json.dumps", "dumps", "simplejson.dumps", "orjson.dumps"})
 CWE209_RAW_TRACE_ATTRIBUTES = frozenset({"__traceback__", "tb_frame", "tb_lineno", "exc_traceback"})
+CWE209_REVEALING_REPLY_KEYS = frozenset({"traceback", "stack", "stacktrace", "backtrace", "frame", "frames", "exc", "exception", "tb"})
 # Representation methods: their return value is text about the object, handed to `str()`/a logger, and
 # never an HTTP body. Used only by `_c209_value_is_not_an_http_body`.
 CWE209_REPR_METHOD_NAMES = frozenset({"__str__", "__repr__", "__unicode__"})

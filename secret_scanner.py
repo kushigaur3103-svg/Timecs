@@ -452,9 +452,10 @@ def _load_master_rules_bank():
     path = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "master_rules_bank.py"
     )
+    import importlib
+    import importlib.util
     if not os.path.isfile(path):
         try:
-            import importlib
             return importlib.import_module("master_rules_bank")
         except Exception:
             return None

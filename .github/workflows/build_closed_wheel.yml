@@ -63,15 +63,18 @@ jobs:
           cp -r "$GITHUB_WORKSPACE/scripts" "$GITHUB_WORKSPACE/benchmark" /tmp/tcs_bench_check/ && ([ -f "$GITHUB_WORKSPACE/benchmark_manifest.json" ] && cp "$GITHUB_WORKSPACE/benchmark_manifest.json" /tmp/tcs_bench_check/ || true)
           cd /tmp/tcs_bench_check
           /tmp/tcs_clean_venv/bin/python - << 'PYEOF'
-          import sys, types
-          sys.modules['tcs_gui'] = types.ModuleType('tcs_gui')
-          sys.path.insert(0, '/tmp/tcs_bench_check')
-          sys.path.insert(0, '/tmp/tcs_bench_check/scripts')
-          import ast_scanner, run_all_checks as rac
-          assert str(ast_scanner.__file__).endswith('.so') and '/tmp/tcs_clean_venv' in str(ast_scanner.__file__), ast_scanner.__file__
-          assert rac.check_benchmark_suite() is True, '552_FAILED'
-          assert rac.check_cross_file_benchmark() is True, 'CROSS_FAILED'
-          print('COMPILED_ACCURACY_LOCK_PASS: 552/552 + 20/20')
+          import sys
+          sys.path.insert(0, "/tmp/tcs_bench_check")
+          import ast_scanner
+          from benchmark.runner import BenchmarkRunner
+          from benchmark.cross_runner import main as cross_main
+          assert str(ast_scanner.__file__).endswith(".so") and "/tmp/tcs_clean_venv" in str(ast_scanner.__file__), ast_scanner.__file__
+          rep = BenchmarkRunner(precision_threshold=1.0, recall_threshold=1.0).run_suite()
+          gm = rep.global_matrix
+          print(f"COMPILED_BENCH_552: total={rep.total_cases} tp={gm.tp} tn={gm.tn} fp={gm.fp} fn={gm.fn} dur_s={rep.total_duration_ms/1000.0:.2f}s")
+          assert rep.total_cases >= 552 and gm.tp == 276 and gm.tn == 276 and gm.fp == 0 and gm.fn == 0, gm
+          assert cross_main([]) == 0, "CROSS_20_FAILED"
+          print("COMPILED_ACCURACY_LOCK_PASS: 552/552 + 20/20")
           PYEOF
 
       - name: Upload private dry-run wheel artifact (NO PyPI upload)

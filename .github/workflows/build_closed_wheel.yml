@@ -1,12 +1,34 @@
-name: Build Closed-Source Wheel (Dry-Run)
+name: Build Closed-Source Binary Wheels (Linux / Windows / macOS)
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_to_testpypi:
+        description: "Publish the verified wheels to TestPyPI (only after Zero-Leak + accuracy gates pass)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: closed-wheel-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  linux-closed-wheel-dry-run:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  build-and-verify:
+    name: Build & verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+
     steps:
       - name: Checkout private repository
         uses: actions/checkout@v4
@@ -19,56 +41,117 @@ jobs:
       - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip "setuptools>=77" wheel "cython>=3.0" pyyaml psutil tree-sitter tree-sitter-python
+          if [ -n "$(python -c "import sys; print('1' if sys.platform.startswith('linux') else '')")" ]; then
+            python -m pip install auditwheel patchelf
+          fi
 
       - name: Build closed-source Cython binary wheel
         run: |
           python scripts/build_closed_wheel.py --out-dir dist
+          ls -1 dist
+
+      - name: Repair Linux wheel to manylinux tag (PyPI rejects linux_x86_64)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          rm -rf dist_repaired
+          auditwheel repair dist/*.whl -w dist_repaired
+          rm -f dist/*linux_x86_64.whl
+          mv -f dist_repaired/*.whl dist
+          ls -1 dist
 
       - name: Run Zero-Leak Gate on built wheel
-        run: |
-          python scripts/verify_closed_wheel.py dist
+        run: python scripts/verify_closed_wheel.py dist
 
-      - name: Clean-venv compiled binary proof + E2E CLI + 552/552 & 20/20 accuracy lock
+      - name: Install wheel into an isolated clean venv outside the checkout
         run: |
-          python -m venv /tmp/tcs_clean_venv
-          /tmp/tcs_clean_venv/bin/pip install --upgrade pip
-          /tmp/tcs_clean_venv/bin/pip install dist/*.whl
-          cd /tmp
-          /tmp/tcs_clean_venv/bin/timecs scan --help | grep -q "policy:"
-          /tmp/tcs_clean_venv/bin/python - << 'PYEOF'
-          import json, pathlib, subprocess, sys
+          python - << 'PYEOF'
+          import os, pathlib, subprocess, sys, tempfile
+          whls = sorted(pathlib.Path("dist").glob("*.whl"))
+          assert len(whls) == 1, whls
+          tmp = pathlib.Path(tempfile.gettempdir())
+          venv = tmp / "tcs_clean_venv"
+          work = tmp / "tcs_verify_workdir"
+          work.mkdir(parents=True, exist_ok=True)
+          subprocess.run([sys.executable, "-m", "venv", "--clear", str(venv)], check=True)
+          bindir = venv / ("Scripts" if os.name == "nt" else "bin")
+          vpy = bindir / ("python.exe" if os.name == "nt" else "python")
+          subprocess.run([str(vpy), "-m", "pip", "install", "--upgrade", "pip"], check=True)
+          subprocess.run([str(vpy), "-m", "pip", "install", str(whls[0].resolve())], check=True)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
+              fh.write("TCS_VPY=" + vpy.as_posix() + chr(10))
+              fh.write("TCS_WORKDIR=" + work.as_posix() + chr(10))
+          print("[venv] python =", vpy.as_posix(), "wheel =", whls[0].name)
+          PYEOF
+
+      - name: Clean-venv compiled binary proof + E2E CLI/SARIF
+        run: |
+          cd "$TCS_WORKDIR"
+          "$TCS_VPY" - << 'PYEOF'
+          import json, os, pathlib, subprocess, sys
+          is_win = sys.platform == "win32"
+          ext = ".pyd" if is_win else ".so"
+          prefix = pathlib.Path(sys.prefix).resolve()
+          timecs = prefix / ("Scripts" if is_win else "bin") / ("timecs.exe" if is_win else "timecs")
+          assert timecs.exists(), timecs
           import ast_scanner, cli, rule_engine, secret_scanner, master_rules_bank, _tcs_sink_names
           import scanners.sca_scanner as sca_scanner
+          def in_venv(path):
+              return os.path.normcase(str(prefix)) in os.path.normcase(str(pathlib.Path(path).resolve()))
           mods = [ast_scanner, cli, rule_engine, secret_scanner, master_rules_bank, _tcs_sink_names, sca_scanner]
-          bad = [m.__file__ for m in mods if not str(m.__file__).endswith('.so') or '/tmp/tcs_clean_venv' not in str(m.__file__)]
+          bad = [m.__file__ for m in mods if not str(m.__file__).lower().endswith(ext) or not in_venv(m.__file__)]
           assert not bad, bad
           assert len(rule_engine.SINK_MATCHER_NAMES) >= 50
           assert rule_engine._MASTER_RULES_BANK is not None
           assert secret_scanner._load_master_rules_bank() is not None
-          print('COMPILED_IMPORTS_OK', len(mods), 'sinks=', len(rule_engine.SINK_MATCHER_NAMES))
-          e2e = pathlib.Path('/tmp/tcs_e2e')
-          e2e.mkdir(parents=True, exist_ok=True)
-          vf = e2e / 'vuln.py'
-          vf.write_text(chr(10).join(['import os', 'from flask import request', 'def r():', '    os.system(request.args.get(' + chr(34) + 'c' + chr(34) + '))', '']), encoding='utf-8')
-          sf = e2e / 'out.sarif'
-          p = subprocess.run(['/tmp/tcs_clean_venv/bin/timecs', 'scan', str(vf), '--format', 'json', '--sarif', str(sf)], capture_output=True, text=True)
-          assert p.returncode == 1, (p.returncode, p.stderr)
+          print("COMPILED_IMPORTS_OK", len(mods), "sinks=", len(rule_engine.SINK_MATCHER_NAMES))
+          work = pathlib.Path(os.environ["TCS_WORKDIR"]) / "tcs_e2e"
+          work.mkdir(parents=True, exist_ok=True)
+          vf = work / "vuln.py"
+          vf.write_text('import os\nfrom flask import request\ndef r():\n    os.system(request.args.get("c"))\n', encoding="utf-8")
+          sf = work / "out.sarif"
+          p = subprocess.run([str(timecs), "scan", str(vf), "--format", "json", "--sarif", str(sf)], capture_output=True, text=True)
+          assert p.returncode == 1, (p.returncode, p.stdout, p.stderr)
           j = json.loads(p.stdout)
-          s = json.loads(sf.read_text(encoding='utf-8'))
-          assert s.get('version') == '2.1.0' and s['runs'][0]['results'], 'empty SARIF'
-          print('COMPILED_CLI_E2E_OK', 'sarif_results=', len(s['runs'][0]['results']))
+          assert isinstance(j, dict), type(j)
+          s = json.loads(sf.read_text(encoding="utf-8"))
+          assert s.get("version") == "2.1.0" and s["runs"][0]["results"], "empty SARIF"
+          print("COMPILED_CLI_E2E_OK", "sarif_results=", len(s["runs"][0]["results"]))
           PYEOF
-          rm -rf /tmp/tcs_bench_check
-          mkdir -p /tmp/tcs_bench_check
-          cp -r "$GITHUB_WORKSPACE/scripts" "$GITHUB_WORKSPACE/benchmark" /tmp/tcs_bench_check/ && ([ -f "$GITHUB_WORKSPACE/benchmark_manifest.json" ] && cp "$GITHUB_WORKSPACE/benchmark_manifest.json" /tmp/tcs_bench_check/ || true)
-          cd /tmp/tcs_bench_check
-          /tmp/tcs_clean_venv/bin/python - << 'PYEOF'
-          import sys
-          sys.path.insert(0, "/tmp/tcs_bench_check")
+
+      - name: Stage benchmark suite outside the checkout
+        run: |
+          python - << 'PYEOF'
+          import os, pathlib, shutil, tempfile
+          src = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+          dst = pathlib.Path(tempfile.gettempdir()) / "tcs_bench_check"
+          if dst.exists():
+              shutil.rmtree(dst, ignore_errors=True)
+          dst.mkdir(parents=True)
+          for name in ("scripts", "benchmark"):
+              shutil.copytree(src / name, dst / name, ignore=shutil.ignore_patterns("__pycache__"))
+          manifest = src / "benchmark_manifest.json"
+          if manifest.exists():
+              shutil.copy2(manifest, dst / manifest.name)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
+              fh.write("TCS_BENCH_DIR=" + dst.as_posix() + chr(10))
+          print("[bench] staged", dst.as_posix())
+          PYEOF
+
+      - name: Accuracy lock (>=552 cases, 276 TP / 276 TN, 0 FP / 0 FN, cross_runner 20/20)
+        run: |
+          cd "$TCS_BENCH_DIR"
+          "$TCS_VPY" - << 'PYEOF'
+          import os, sys
+          bench = os.environ["TCS_BENCH_DIR"]
+          sys.path.insert(0, bench)
           import ast_scanner
           from benchmark.runner import BenchmarkRunner
           from benchmark.cross_runner import main as cross_main
-          assert str(ast_scanner.__file__).endswith(".so") and "/tmp/tcs_clean_venv" in str(ast_scanner.__file__), ast_scanner.__file__
+          ext = ".pyd" if sys.platform == "win32" else ".so"
+          norm = os.path.normcase(str(ast_scanner.__file__))
+          assert norm.endswith(ext), ast_scanner.__file__
+          assert os.path.normcase(bench) not in norm, ast_scanner.__file__
           rep = BenchmarkRunner(precision_threshold=1.0, recall_threshold=1.0).run_suite()
           gm = rep.global_matrix
           print(f"COMPILED_BENCH_552: total={rep.total_cases} tp={gm.tp} tn={gm.tn} fp={gm.fp} fn={gm.fn} dur_s={rep.total_duration_ms/1000.0:.2f}s")
@@ -77,9 +160,41 @@ jobs:
           print("COMPILED_ACCURACY_LOCK_PASS: 552/552 + 20/20")
           PYEOF
 
-      - name: Upload private dry-run wheel artifact (NO PyPI upload)
+      - name: Upload private closed-source wheel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: timecs-closed-wheel-linux-dryrun
+          name: timecs-closed-wheel-${{ matrix.os }}
           path: dist/*.whl
+          if-no-files-found: error
           retention-days: 7
+
+  publish-testpypi:
+    name: Publish verified wheels to TestPyPI
+    needs: build-and-verify
+    if: ${{ github.event.inputs.publish_to_testpypi == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/timecs
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all verified wheels into dist/
+        uses: actions/download-artifact@v4
+        with:
+          pattern: timecs-closed-wheel-*
+          path: dist
+          merge-multiple: true
+
+      - name: List wheels to publish
+        run: |
+          ls -1 dist
+          test -n "$(ls -A dist)"
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist
+          skip-existing: true

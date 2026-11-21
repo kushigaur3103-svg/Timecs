@@ -8,6 +8,11 @@ on:
         required: false
         default: false
         type: boolean
+      publish_to_pypi:
+        description: "Publish the verified wheels to OFFICIAL PyPI (pypi.org) for public pip install timecs"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -197,5 +202,37 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist
+          skip-existing: true
+
+  publish-pypi:
+    name: Publish verified wheels to Official PyPI (pypi.org)
+    needs: build-and-verify
+    if: ${{ github.event.inputs.publish_to_pypi == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/p/timecs
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all verified wheels into dist/
+        uses: actions/download-artifact@v4
+        with:
+          pattern: timecs-closed-wheel-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify exact 12 wheels before Official PyPI publish
+        run: |
+          ls -1 dist
+          COUNT=$(ls -1 dist/*.whl | wc -l)
+          echo "Total wheels to publish: $COUNT"
+          test "$COUNT" -eq 12
+
+      - name: Publish to Official PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
           packages-dir: dist
           skip-existing: true

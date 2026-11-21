@@ -7,7 +7,7 @@ name = "timecs"
 version = "3.0.2"
 description = "Deterministic AST Security Scanner, Proof Graph Engine & Automated Remediation Framework"
 readme = "INSTRUCTIONS_OF_TIMECS.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "LicenseRef-Proprietary"
 dependencies = [
     "pyyaml>=6.0",

@@ -272,10 +272,6 @@ class FunctionContractExtractor:
         """Check if a node is a safe literal constant."""
         if isinstance(node, ast.Constant):
             return True
-        if hasattr(ast, 'Num') and isinstance(node, ast.Num):
-            return True
-        if hasattr(ast, 'Str') and isinstance(node, ast.Str):
-            return True
         return False
 
     def get_contract_for_call(self, call_node: ast.Call) -> Optional[FunctionSinkContract]:

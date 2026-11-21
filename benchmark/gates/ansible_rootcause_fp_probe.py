@@ -538,7 +538,7 @@ def _head_join_shape(self, attr, node):
     if attr != 'join':
         return False
     recv = node.func.value
-    return isinstance(recv, (ast.Constant, ast.Str)) or (
+    return isinstance(recv, ast.Constant) or (
         isinstance(recv, ast.Attribute) and recv.attr in ('sep', 'linesep'))
 
 
@@ -887,7 +887,7 @@ LAWS = (
              and 'recv.attr in ("sep", "linesep")' not in _QUERYBUILDER),
     ('P3 the predicate reads the join leaf and the separator shape only, never a filename',
      lambda: 'if attr != "join":' in _JOIN
-             and 'isinstance(recv, (ast.Constant, ast.Str, ast.Subscript))' in _JOIN
+             and 'isinstance(recv, (ast.Constant, ast.Subscript))' in _JOIN
              and 'recv.attr in ("sep", "linesep")' in _JOIN
              and 'file' not in _JOIN and 'path' not in _JOIN),
     ('no new clause reads a repository, a folder or a filename',

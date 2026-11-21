@@ -196,8 +196,6 @@ def find_high_entropy_secrets_ast(code: str) -> List[str]:
             val_str = None
             if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
                 val_str = node.value.value
-            elif isinstance(node.value, ast.Str):
-                val_str = node.value.s
 
             if val_str and len(val_str) >= 16:
                 for var_name in target_names:
@@ -603,7 +601,7 @@ def _docstring_line_numbers(text: str) -> Set[int]:
         if not isinstance(first, ast.Expr):
             continue
         value = first.value
-        literal = value.s if isinstance(value, ast.Str) else getattr(value, "value", None)
+        literal = getattr(value, "value", None)
         if not isinstance(literal, str):
             continue
         start = getattr(value, "lineno", 0)
@@ -859,8 +857,6 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
                 val_str = None
                 if isinstance(val_node, ast.Constant) and isinstance(val_node.value, str):
                     val_str = val_node.value
-                elif isinstance(val_node, ast.Str):
-                    val_str = val_node.s
 
                 if val_str and len(val_str) >= 8:
                     is_explicit_cred = any(bool(re.search(r"(?i)(aws_secret_access_key|aws_secret|secret_key|private_key|token|bearer|api_key)", vn)) for vn, _ in target_names)

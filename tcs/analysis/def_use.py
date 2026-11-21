@@ -240,10 +240,6 @@ class LocalDefUseTracker:
         """Check if a node is a safe literal (constant string, number, etc.)."""
         if isinstance(node, ast.Constant):
             return True
-        if hasattr(ast, 'Num') and isinstance(node, ast.Num):
-            return True
-        if hasattr(ast, 'Str') and isinstance(node, ast.Str):
-            return True
         if isinstance(node, ast.List) or isinstance(node, ast.Dict):
             # Empty collections are safe
             if isinstance(node, ast.List) and len(node.elts) == 0:

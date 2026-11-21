@@ -70,8 +70,6 @@ def _has_static_decorator(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
 
 def _const_str(node: Optional[ast.AST]) -> Optional[str]:
     """The literal string a key expression holds, or None when it is not one."""
-    if isinstance(node, ast.Index):  # Python < 3.9 keeps `d["k"]` as ast.Index
-        node = node.value
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     return None

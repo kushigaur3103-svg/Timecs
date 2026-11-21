@@ -164,7 +164,7 @@ def _is_zero_risk_file(filepath: str, source: str) -> Tuple[bool, Optional[ast.M
     if isinstance(tree, ast.Module):
         body_items = []
         for node in tree.body:
-            if isinstance(node, ast.Expr) and isinstance(node.value, (ast.Constant, ast.Str)):
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
                 continue  # Docstring
             elif isinstance(node, (ast.Import, ast.ImportFrom)):
                 continue  # Pure imports

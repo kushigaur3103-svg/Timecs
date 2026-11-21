@@ -4262,12 +4262,8 @@ def _eval_static_constant(node, assignments_by_scope, scope_id="", lineno=0, vis
         visited = set()
     if isinstance(node, ast.Constant) and (node.value is None or isinstance(node.value, (int, str, bool, bytes))):
         return node.value
-    if hasattr(ast, "Str") and isinstance(node, ast.Str):
-        return node.s
-    if hasattr(ast, "Bytes") and isinstance(node, ast.Bytes):
-        return node.s
-    if hasattr(ast, "Num") and isinstance(node, ast.Num):
-        return node.n
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float, complex)) and not isinstance(node.value, bool):
+        return node.value
     if isinstance(node, ast.UnaryOp):
         inner = _eval_static_constant(node.operand, assignments_by_scope, scope_id, lineno, visited)
         if isinstance(node.op, ast.USub) and isinstance(inner, int):
@@ -5555,21 +5551,12 @@ def extract_subscript_key(slice_node: ast.AST) -> Optional[Union[str, int]]:
     if slice_node is None:
         return None
     curr = slice_node
-    if hasattr(ast, "Index") and isinstance(curr, ast.Index):
-        curr = curr.value
     if isinstance(curr, ast.Constant):
         if isinstance(curr.value, (str, int)):
             return curr.value
-    elif isinstance(curr, ast.Str):
-        return curr.s
-    elif isinstance(curr, ast.Num):
-        if isinstance(curr.n, int):
-            return curr.n
     elif isinstance(curr, ast.UnaryOp) and isinstance(curr.op, ast.USub):
         if isinstance(curr.operand, ast.Constant) and isinstance(curr.operand.value, int):
             return -curr.operand.value
-        elif isinstance(curr.operand, ast.Num) and isinstance(curr.operand.n, int):
-            return -curr.operand.n
     return None
 
 
@@ -5606,7 +5593,9 @@ REGEX_NOT_DIGIT_CHARS = frozenset(set(range(128)) - REGEX_DIGIT_CHARS)
 REGEX_NOT_SPACE_CHARS = frozenset(set(range(128)) - REGEX_SPACE_CHARS)
 REGEX_NOT_WORD_CHARS = frozenset(set(range(128)) - REGEX_WORD_CHARS)
 
-REGEX_CATEGORY_MAP = {
+_RE_CONSTANTS = getattr(re, "_constants", None)
+
+REGEX_CATEGORY_MAP = {} if _RE_CONSTANTS is None else {
     re._constants.CATEGORY_DIGIT: REGEX_DIGIT_CHARS,
     getattr(re._constants, "CATEGORY_UNI_DIGIT", None): REGEX_DIGIT_CHARS,
     re._constants.CATEGORY_NOT_DIGIT: REGEX_NOT_DIGIT_CHARS,
@@ -6876,8 +6865,6 @@ class TaintTracker:
         if key is not None:
             return key
         curr = slice_node
-        if hasattr(ast, "Index") and isinstance(curr, ast.Index):
-            curr = curr.value
         if isinstance(curr, ast.Name) and scope_id:
             current_scope = scope_id
             mod_name = scope_module(scope_id) if scope_id else ""
@@ -6936,8 +6923,6 @@ class TaintTracker:
             visited = set()
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return str(node.value)
-        if hasattr(ast, "Str") and isinstance(node, ast.Str):
-            return str(node.s)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             left = self._eval_const_str(node.left, scope_id, visited)
             right = self._eval_const_str(node.right, scope_id, visited)
@@ -7683,8 +7668,8 @@ class TaintTracker:
                 # Keyword unpacking: requests.get(url, **options)
                 if isinstance(kw.value, ast.Dict):
                     for k, v in zip(kw.value.keys, kw.value.values):
-                        if isinstance(k, (ast.Constant, ast.Str)):
-                            k_str = k.value if isinstance(k, ast.Constant) else k.s
+                        if isinstance(k, ast.Constant):
+                            k_str = k.value
                             if k_str == "verify" and isinstance(v, ast.Constant) and v.value is False:
                                 return True
                 elif isinstance(kw.value, ast.Name):
@@ -7696,8 +7681,8 @@ class TaintTracker:
                         for r in recs:
                             if isinstance(r.value_node, ast.Dict):
                                 for k, v in zip(r.value_node.keys, r.value_node.values):
-                                    if isinstance(k, (ast.Constant, ast.Str)):
-                                        k_str = k.value if isinstance(k, ast.Constant) else k.s
+                                    if isinstance(k, ast.Constant):
+                                        k_str = k.value
                                         if k_str == "verify" and isinstance(v, ast.Constant) and v.value is False:
                                             return True
                         if "." in curr_scope:
@@ -7845,8 +7830,8 @@ class TaintTracker:
                         return True
                     if isinstance(t, ast.Attribute) and is_security_identifier(t.attr):
                         return True
-                    if isinstance(t, ast.Subscript) and isinstance(t.slice, (ast.Constant, ast.Str)):
-                        s_val = str(t.slice.value if isinstance(t.slice, ast.Constant) else t.slice.s)
+                    if isinstance(t, ast.Subscript) and isinstance(t.slice, ast.Constant):
+                        s_val = str(t.slice.value)
                         if is_security_identifier(s_val):
                             return True
                     if isinstance(t, (ast.Tuple, ast.List)):
@@ -7867,8 +7852,8 @@ class TaintTracker:
                 # security-sensitive identifier, e.g. {"auth_secret": random.random()}
                 for k, v in zip(curr.keys, curr.values):
                     if v is node or any(sub is node for sub in ast.walk(v)):
-                        if isinstance(k, (ast.Constant, ast.Str)):
-                            key_str = k.value if isinstance(k, ast.Constant) else k.s
+                        if isinstance(k, ast.Constant):
+                            key_str = k.value
                             if isinstance(key_str, str) and is_security_identifier(key_str):
                                 return True
             elif isinstance(curr, ast.Call) and curr is not node:
@@ -7923,15 +7908,11 @@ class TaintTracker:
             arg0 = node.args[0]
             if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
                 algo = arg0.value.strip().lower()
-            elif isinstance(arg0, ast.Str):
-                algo = arg0.s.strip().lower()
         if not algo:
             for kw in getattr(node, "keywords", []):
                 if kw.arg == "name":
                     if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
                         algo = kw.value.value.strip().lower()
-                    elif isinstance(kw.value, ast.Str):
-                        algo = kw.value.s.strip().lower()
                     break
         return algo
 
@@ -8503,7 +8484,7 @@ class TaintTracker:
             elif isinstance(n, ast.BinOp) and isinstance(n.op, ast.Add):
                 _extract_holes(n.left)
                 _extract_holes(n.right)
-            elif isinstance(n, (ast.Constant, ast.Str)):
+            elif isinstance(n, ast.Constant):
                 pass
             elif isinstance(n, ast.BinOp) and isinstance(n.op, ast.Mult):
                 pass
@@ -8533,7 +8514,7 @@ class TaintTracker:
                 func = h.func
                 if isinstance(func, ast.Attribute) and func.attr == "replace" and len(h.args) >= 2:
                     arg0 = h.args[0]
-                    val = getattr(arg0, "value", getattr(arg0, "s", None))
+                    val = getattr(arg0, "value", None)
                     if isinstance(val, str) and (chr(10) in val or chr(13) in val):
                         return "FACT_CRLF_ENCODED"
                 if isinstance(func, ast.Attribute) and func.attr == "dumps" and getattr(func.value, "id", None) == "json":
@@ -8555,8 +8536,6 @@ class TaintTracker:
                 if isinstance(val, bool):
                     return "FACT_NUMERIC_SAFE"
                 return "FACT_POTENTIAL_INJECTION"
-            if isinstance(h, ast.Num):
-                return "FACT_NUMERIC_SAFE"
 
             # 3. Explicit casts / safe builtins
             if isinstance(h, ast.Call):
@@ -8628,7 +8607,7 @@ class TaintTracker:
             return all(self._c117_is_provably_numeric_expr(h) for h in holes)
         if isinstance(expr, ast.IfExp):
             return self._c117_is_provably_numeric_expr(expr.body) and self._c117_is_provably_numeric_expr(expr.orelse)
-        if isinstance(expr, (ast.Constant, ast.Num)):
+        if isinstance(expr, ast.Constant):
             val = getattr(expr, "value", None)
             return isinstance(val, (int, float, complex, bool, type(None), str))
         if isinstance(expr, ast.UnaryOp):
@@ -8650,10 +8629,8 @@ class TaintTracker:
             if func_name in ("keys", "values", "items", "get", "pop", "join", "getenv", "lower", "upper", "strip", "split"):
                 return True
             if func_name == "replace":
-                if len(expr.args) >= 2 and isinstance(expr.args[1], (ast.Constant, ast.Str)):
+                if len(expr.args) >= 2 and isinstance(expr.args[1], ast.Constant):
                     val = getattr(expr.args[1], "value", None)
-                    if val is None and hasattr(expr.args[1], "s"):
-                        val = expr.args[1].s
                     if isinstance(val, str) and "\n" not in val and "\r" not in val:
                         if isinstance(expr.func, ast.Attribute) and self._c117_is_provably_numeric_expr(expr.func.value):
                             return True
@@ -8699,7 +8676,7 @@ class TaintTracker:
                 v_name = (expr.value.id if isinstance(expr.value, ast.Name) else expr.value.attr).lower()
                 if any(k in v_name for k in ("config", "dict", "label", "id2label", "label2id", "kwargs", "args", "data")):
                     return True
-            if isinstance(expr.slice, (ast.Constant, ast.Str)):
+            if isinstance(expr.slice, ast.Constant):
                 return True
             if isinstance(expr.slice, ast.Name):
                 return True
@@ -8892,7 +8869,7 @@ class TaintTracker:
         # 6. Check if log arguments are verified safe telemetry (numbers, booleans, internal config attributes, file paths)
         if expr is None:
             return True
-        if isinstance(expr, (ast.Constant, ast.Str, ast.Num)):
+        if isinstance(expr, ast.Constant):
             return True
         if isinstance(expr, ast.JoinedStr):
             holes = [p.value for p in expr.values if isinstance(p, ast.FormattedValue)]
@@ -9109,8 +9086,6 @@ class TaintTracker:
         """True when an assigned value is provably a non-CRLF numeric primitive within intra-procedural scope."""
         if isinstance(expr, ast.Constant):
             return isinstance(expr.value, (int, float, complex, bool)) and not isinstance(expr.value, (str, bytes))
-        if isinstance(expr, ast.Num):
-            return True
         if isinstance(expr, ast.Name):
             if expr.id in ("True", "False"):
                 return True
@@ -9419,8 +9394,6 @@ class TaintTracker:
         """
         if isinstance(expr, ast.Constant):
             return isinstance(expr.value, (int, float, complex))
-        if isinstance(expr, ast.Num):
-            return True
         if isinstance(expr, ast.Name):
             if expr.id in ("True", "False", "None"):
                 return True
@@ -13050,8 +13023,6 @@ class TaintTracker:
                 val = getattr(kw.value, "value", None)
                 if val is False:
                     return True
-                if isinstance(kw.value, ast.NameConstant) and kw.value.value is False:
-                    return True
 
         # 2. Check enclosing assignment targets for non-cryptographic checksumming
         curr = getattr(node, "parent", None)
@@ -13061,8 +13032,8 @@ class TaintTracker:
                     target_str = ""
                     if isinstance(t, ast.Name): target_str = t.id.lower()
                     elif isinstance(t, ast.Attribute): target_str = t.attr.lower()
-                    elif isinstance(t, ast.Subscript) and isinstance(t.slice, (ast.Constant, ast.Str)):
-                        target_str = str(t.slice.value if isinstance(t.slice, ast.Constant) else t.slice.s).lower()
+                    elif isinstance(t, ast.Subscript) and isinstance(t.slice, ast.Constant):
+                        target_str = str(t.slice.value).lower()
                     if any(kw in target_str for kw in vocabulary):
                         return True
                 break
@@ -13338,7 +13309,7 @@ class TaintTracker:
             func_name = dotted_name(receiver.func) or ""
             if func_name == "open" and receiver.args:
                 first_arg = receiver.args[0]
-                if isinstance(first_arg, (ast.Constant, ast.Str)):
+                if isinstance(first_arg, ast.Constant):
                     return True
         return False
 
@@ -13540,14 +13511,14 @@ class TaintTracker:
             if text_has_markup_shape(markup_skeleton(expr)):
                 return True
         elif isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Mod):
-            if isinstance(expr.left, (ast.Constant, ast.Str)):
-                val = expr.left.value if isinstance(expr.left, ast.Constant) else expr.left.s
+            if isinstance(expr.left, ast.Constant):
+                val = expr.left.value
                 if isinstance(val, str) and text_has_markup_shape(val):
                     return True
         elif isinstance(expr, ast.Call):
             if isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
-                if isinstance(expr.func.value, (ast.Constant, ast.Str)):
-                    val = expr.func.value.value if isinstance(expr.func.value, ast.Constant) else expr.func.value.s
+                if isinstance(expr.func.value, ast.Constant):
+                    val = expr.func.value.value
                     if isinstance(val, str) and text_has_markup_shape(val):
                         return True
         elif isinstance(expr, ast.Name) and scope_id:
@@ -14531,7 +14502,7 @@ class TaintTracker:
                              "not_padded_special_tokens_mask", "masked_tokens", "next_token"}
                 dim_prefixes = ("num_", "n_", "max_", "min_", "total_", "pad_", "eos_", "bos_", "sep_", "cls_", "mask_", "unk_")
                 return name in dim_exact or any(name.endswith(sfx) for sfx in dim_suffixes) or any(name.startswith(pfx) for pfx in dim_prefixes)
-            if isinstance(expr, (ast.Constant, ast.Num, ast.Str)):
+            if isinstance(expr, ast.Constant):
                 return True
             if isinstance(expr, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
                 return True
@@ -15157,7 +15128,7 @@ class TaintTracker:
         """Check if a validator function is a dummy (e.g. merely returns True without checks)."""
         meaningful = []
         for s in func_node.body:
-            if isinstance(s, ast.Expr) and isinstance(s.value, (ast.Constant, ast.Str)):
+            if isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant):
                 continue  # docstring
             if isinstance(s, ast.Pass):
                 continue
@@ -15169,8 +15140,6 @@ class TaintTracker:
             if ret_val is None:
                 return True
             if isinstance(ret_val, ast.Constant) and bool(ret_val.value) is True:
-                return True
-            if isinstance(ret_val, ast.NameConstant) and ret_val.value is True:
                 return True
         has_check = any(isinstance(s, (ast.If, ast.Raise, ast.Assert, ast.Try)) for s in ast.walk(func_node))
         if not has_check:
@@ -29601,8 +29570,6 @@ class TaintTracker:
             visited.add(id(expr))
             if isinstance(expr, ast.Constant):
                 return isinstance(expr.value, (str, bytes, int, float, bool, type(None)))
-            if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
-                return True
             if isinstance(expr, (ast.List, ast.Tuple)):
                 return all(_is_static(element, scope_id, lineno, visited, depth + 1) for element in expr.elts)
             # F-strings (JoinedStr) are static only if all interpolated values are static
@@ -29647,8 +29614,6 @@ class TaintTracker:
             # Pure literals: Constant strings/bytes
             if isinstance(expr, ast.Constant):
                 return isinstance(expr.value, (str, bytes))
-            if isinstance(expr, (ast.Str, ast.Bytes)):
-                return True
             # List/Tuple of pure literals
             if isinstance(expr, (ast.List, ast.Tuple)):
                 return all(_is_pure_literal(element, scope_id, lineno, visited.copy()) for element in expr.elts)
@@ -30360,8 +30325,6 @@ class TaintTracker:
             visited.add(id(expr))
             if isinstance(expr, ast.Constant):
                 return isinstance(expr.value, (str, bytes, int, float, bool, type(None)))
-            if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
-                return True
             if isinstance(expr, (ast.List, ast.Tuple)):
                 return all(_is_static(element, scope_id, lineno, visited, depth + 1) for element in expr.elts)
             if isinstance(expr, ast.JoinedStr):
@@ -30393,8 +30356,6 @@ class TaintTracker:
                 visited = set()
             if isinstance(expr, ast.Constant):
                 return isinstance(expr.value, (str, bytes))
-            if isinstance(expr, (ast.Str, ast.Bytes)):
-                return True
             if isinstance(expr, (ast.List, ast.Tuple)):
                 return all(_is_pure_literal(element, scope_id, lineno, visited.copy()) for element in expr.elts)
             if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Mod)):
@@ -31035,7 +30996,7 @@ class TaintTracker:
         if isinstance(expr, ast.IfExp):
             return all(self._c89_hole_is_internal(part, scope_id, lineno, depth + 1)
                        for part in (expr.body, expr.orelse))
-        if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
+        if isinstance(expr, ast.Constant) and isinstance(expr.value, (str, bytes, int, float, complex)) and not isinstance(expr.value, bool):
             return True
         return False
 
@@ -31485,7 +31446,7 @@ class TaintTracker:
         if attr != "join":
             return False
         recv = node.func.value
-        return (isinstance(recv, (ast.Constant, ast.Str, ast.Subscript))
+        return (isinstance(recv, (ast.Constant, ast.Subscript))
                 or (isinstance(recv, ast.Attribute) and recv.attr in ("sep", "linesep")))
 
     def _collect_cwe89_driver_querybuilder_findings(self) -> None:
@@ -31593,8 +31554,6 @@ class TaintTracker:
             visited.add(id(expr))
             if isinstance(expr, ast.Constant):
                 return isinstance(expr.value, (str, bytes, int, float, bool, type(None)))
-            if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
-                return True
             if isinstance(expr, (ast.List, ast.Tuple)):
                 return all(_is_static(element, scope_id, lineno, visited, depth + 1) for element in expr.elts)
             if isinstance(expr, ast.JoinedStr):
@@ -33000,8 +32959,6 @@ class TaintTracker:
                         # Pure byte literal or string literal
                         if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, (bytes, str)):
                             static_constant = True
-                        elif isinstance(first_arg, (ast.Bytes, ast.Str)):
-                            static_constant = True
                 
                 if suppressed or static_constant:
                     pruned.add(sink.id)
@@ -33215,9 +33172,6 @@ class TaintTracker:
                     # Pure string literal: "..." or '...'
                     if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
                         continue
-                    # Static Bytes/Str nodes (older AST)
-                    if isinstance(first_arg, (ast.Bytes, ast.Str)):
-                        continue
 
                 # Find source node for edge creation
                 file_path = self.file_paths.get(mod_name, "unknown.py")
@@ -33305,8 +33259,6 @@ class TaintTracker:
             visited.add(id(expr))
             if isinstance(expr, ast.Constant):
                 return isinstance(expr.value, (str, bytes, int, float, bool, type(None)))
-            if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
-                return True
             if isinstance(expr, (ast.List, ast.Tuple)):
                 return all(_is_static(element, scope_id, lineno, visited, depth + 1) for element in expr.elts)
             # F-strings (JoinedStr) are static only if all interpolated values are static
@@ -33602,8 +33554,6 @@ class TaintTracker:
             if visited is None:
                 visited = set()
             if isinstance(expr, ast.Constant):
-                return False
-            if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
                 return False
             if isinstance(expr, ast.Name):
                 key = (scope_id, expr.id)
@@ -33949,8 +33899,6 @@ class TaintTracker:
             if visited is None:
                 visited = set()
             if isinstance(expr, ast.Constant):
-                return False
-            if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
                 return False
             if isinstance(expr, ast.Name):
                 key = (scope_id, expr.id)
@@ -34498,8 +34446,6 @@ class TaintTracker:
             if visited is None:
                 visited = set()
             if isinstance(expr, ast.Constant):
-                return False
-            if isinstance(expr, (ast.Str, ast.Num, ast.Bytes)):
                 return False
             if isinstance(expr, ast.Name):
                 key = (scope_id, expr.id)
@@ -35308,8 +35254,6 @@ class TaintTracker:
 
         def _is_dynamic(expr: ast.AST, scope_id: str, lineno: int, visited=None) -> bool:
             if expr is None or isinstance(expr, ast.Constant):
-                return False
-            if isinstance(expr, (ast.Str, ast.Bytes, ast.Num)):
                 return False
             if visited is None:
                 visited = set()

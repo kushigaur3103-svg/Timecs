@@ -1,4 +1,8 @@
-import argparse, ast, os, pathlib, shutil, subprocess, sys, tempfile, tomllib
+import argparse, ast, os, pathlib, shutil, subprocess, sys, tempfile
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 STUB = "from . import _pkg_init as _m" + chr(10) + "globals().update({k: v for k, v in vars(_m).items() if not k.startswith(" + chr(39) + "__" + chr(39) + ")})" + chr(10)
 def _has_code(p):

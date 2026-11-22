@@ -219,6 +219,21 @@ QUIET = {
         'class DeployKeyStore:\n'
         '    def rotate_for(self, project_id):\n'
         '        return DeployKey.objects.get(project_id=project_id)\n']),
+    # ---- the escaped-response-body seal, MOVED here from TIER 2 on 3.1.0. It used to be pinned LOUD at
+    # `(7, 'CWE-79: django.http.HttpResponse')`, which is exactly the shape cluster 5 of the 3.1.0 brief
+    # retires: every byte of the body is either author text or the output of an escaping neutraliser, so
+    # no client byte reaches the document. Re-measured truth table: the escape-free siblings stay loud --
+    # `HttpResponse("<b>" + query + "</b>")`, a raw f-string, a raw `%`, a partly-escaped ternary and an
+    # unescaped local binding are each pinned by name in tests/test_arena_fp_clusters_5.py, and the DRF
+    # container body stays loud in `loud.drf_markup_payload` above.
+    'django_http_response': ('CWE-79', 'response_markup_fold_disabled', [
+        'from django.http import HttpResponse\n'
+        'import html\n'
+        '\n'
+        '\n'
+        'def render(request):\n'
+        '    query = request.GET.get("q")\n'
+        '    return HttpResponse("<b>" + html.escape(query) + "</b>")\n']),
     'library_helper_function': ('CWE-862', 'http_entrypoint_guard_disabled', [
         'from sentry.models import Organization\n'
         '\n'
@@ -235,15 +250,6 @@ LOUD = {
     'drf_markup_payload': ('CWE-79', [
         (DRF_VIEW_SPINE + '        return Response("<div>" + query + "</div>")\n',
          (8, 'CWE-79: rest_framework.response.Response'))]),
-    'django_http_response': ('CWE-79', [
-        ('from django.http import HttpResponse\n'
-         'import html\n'
-         '\n'
-         '\n'
-         'def render(request):\n'
-         '    query = request.GET.get("q")\n'
-         '    return HttpResponse("<b>" + html.escape(query) + "</b>")\n',
-         (7, 'CWE-79: django.http.HttpResponse'))]),
     'real_code_execution': ('CWE-95', [
         ('def build(request):\n'
          '    op = request.GET.get("op")\n'
@@ -437,6 +443,7 @@ GUARD_METHODS = (
     '_class_declares_permission_guard',
     '_signature_takes_http_request',
     '_permission_value_declares_a_check',
+    '_c79_response_markup_is_neutralised',
 )
 _ORIGINALS = {name: getattr(_TT, name) for name in GUARD_METHODS}
 
@@ -547,6 +554,15 @@ MUTATIONS = {
         'holds': ['internal_service_impl_method', 'model_helper_class', 'celery_background_task',
                   'drf_permission_classes', 'django_http_response'],
         'apply': _answer('_c862_scope_is_http_entrypoint', False),
+    },
+    # The 3.1.0 escaped-response-body seal: this clause is the only thing that keeps
+    # `quiet.django_http_response` quiet, so switching it off must bring that row straight back.
+    'response_markup_fold_disabled': {
+        'what': 'make the response-body markup fold refuse every expression, the pre-3.1.0 answer',
+        'moves': ['django_http_response'],
+        'holds': ['drf_dict_payload', 'drf_markup_payload', 'drf_html_content_type',
+                  'snuba_sdk_function', 'empty_permission_tuple'],
+        'apply': _disable('_c79_response_markup_is_neutralised'),
     },
 }
 

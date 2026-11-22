@@ -627,6 +627,31 @@ def _is_quoted_bare_pem_header(line: str, start: int, end: int) -> bool:
     return True
 
 
+# A config value that is an *indirection* to the environment holds no secret bytes: it names where
+# the key lives instead of carrying it (`api_key: os.environ/AZURE_KEY`, `token: env:OPENAI_TOKEN`,
+# `password: ${DB_PASSWORD}`, `api_key: !env VLLM_API_KEY`). The fuzzy registry detectors matched
+# the environment-variable NAME and read it as key material, so only those detectors are vetoed, and
+# only for the span that starts at the indirection marker. A real key pasted anywhere else on the
+# same line keeps firing, and every native high-precision detector (PEM, `ghp_`, `xox`, `AKIA`,
+# JWT) is untouched. `SEMGREP`-style noise is not special-cased: the shape, not the project, wins.
+_ENV_INDIRECTION_VALUE_RE = re.compile(
+    r"(?i)\b[\w.\-]+\s*[:=]\s*[\"']?"
+    r"(?:os\.environ\s*[/.(]|\bos\.getenv\s*[(/]|(?<![\w.])env:|environment:"
+    r"|!env[\s]|\$\{?[A-Za-z0-9_]{2,}\}?|\{\{[ \t]*(?:env|secrets)\.[\w.\-]+[ \t]*\}\})")
+_ENV_INDIRECTION_LITERAL_RE = re.compile(
+    r"(?i)^(?:os\.environ\s*[/.(]|\bos\.getenv\s*[(/]|env:|environment:"
+    r"|!env[\s]|\$\{?[A-Za-z0-9_]{2,}\}?|\{\{[ \t]*(?:env|secrets)\.[\w.\-]+[ \t]*\}\})")
+# Substring gate so the regex above costs nothing on the ~all lines that cannot be indirection.
+_ENV_INDIRECTION_HINTS = ("os.environ", "os.getenv", "env:", "${", "!env", "environment:")
+# A value that names itself a redaction stand-in records that a secret was removed, not a secret.
+# Consulted after the entropy override, since these strings are long and read as high-entropy ASCII.
+_REDACTION_SENTINEL_RE = re.compile(
+    r"(?i)(?:scrubbed|redacted|sanitized|\bmasked\b|not_provided|removed_by)")
+_ENV_POINTER_NAME_RE = re.compile(
+    r"(?i)_(?:env|environment|variable|var|key)_?name$|_env_var$|_var_name$")
+_ENV_VAR_NAME_VALUE_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
+
+
 def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
     """Scan text for secrets and return a deterministic list of findings.
 
@@ -770,9 +795,14 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
             )
 
         # 8. Gitleaks signature bank (Precedence 8 - lowest; native detectors win overlaps)
+        env_indir = None
+        if any(hint in clean_line for hint in _ENV_INDIRECTION_HINTS):
+            env_indir = _ENV_INDIRECTION_VALUE_RE.search(clean_line)
         for gl_type, gl_regex in gitleaks_detectors:
             for m in gl_regex.finditer(clean_line):
                 if m.start() == m.end():
+                    continue
+                if env_indir is not None and m.start() <= env_indir.end:
                     continue
                 candidates.append(
                     _CandidateMatch(
@@ -863,6 +893,17 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
                     is_dummy = bool(dummy_regex.search(val_str))
                     if is_dummy and is_explicit_cred and len(val_str) >= 20 and shannon_entropy(val_str) >= 3.0:
                         is_dummy = False
+                    # Provenance, not entropy: an environment lookup and a redaction stand-in hold
+                    # no key material however random their characters look, so the entropy override
+                    # above must not resurrect them.
+                    if _ENV_INDIRECTION_LITERAL_RE.search(val_str) or _REDACTION_SENTINEL_RE.search(val_str):
+                        is_dummy = True
+                    # A constant whose own name declares it stores an environment-variable *name*
+                    # (`*_ENV_NAME`, `*_KEY_NAME`) holds a pointer, and the pointer is only a pointer
+                    # when the value is an identifier that could be pasted into `os.environ[...]`.
+                    elif (any(_ENV_POINTER_NAME_RE.search(vn) for vn, _ in target_names)
+                          and _ENV_VAR_NAME_VALUE_RE.match(val_str)):
+                        is_dummy = True
 
                     if not is_dummy:
                         for var_name, var_col in target_names:

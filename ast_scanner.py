@@ -742,6 +742,11 @@ CWE95_CODE_EVAL_RECEIVER_ROOTS = (
     "builtins.", "pandas.", "pd.", "numexpr.", "asteval.", "simpleeval.",
     "PIL.ImageMath.", "ImageMath.", "torch.",
 )
+# Two eval shapes carry their own proof and never lean on the engine-name table: the dangerous
+# builtin reached through the stdlib module object, and a constructor call that lives inside an
+# eval-engine package. Both answers come from the import the source itself wrote.
+CWE95_BUILTINS_MODULE_RECEIVERS = frozenset({"builtins"})
+CWE95_ENGINE_PACKAGE_CONSTRUCTOR_ROOTS = ("asteval.", "simpleeval.")
 CWE89_ORM_RAW_RECEIVER_SEGMENTS = frozenset({
     "objects", "manager", "modelmanager", "queryset", "qs", "rawqueryset",
 })
@@ -1971,7 +1976,24 @@ CWE798_HEADER_VALUE_RE = re.compile(r"(?i)^x-[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 # to read like prose, a URL or a document, so this can never silence a pasted-in token.
 CWE798_NON_CREDENTIAL_NAME_RE = re.compile(
     r"(?i)(?:message|messages|error|errors|url|urls|hint|hints|rejection|values|template|label|"
-    r"labels|description|prompt|doc|docs|reason|title)$")
+    r"labels|description|prompt|doc|docs|reason|title|"
+    r"env_name|env_var|environment_variable|variable_name|key_name|var_name)$")
+# A value that is *only* a pointer to where the real secret lives. `secret_scanner.py` already
+# honours this shape for text scans and the arena proved the same SDK convention reaches the AST
+# (`api_key = "os.environ/AZURE_KEY"`, `"env:GH_TOKEN"`, `"${VAULT_PASSWORD}"`, `"%(db_pass)s"`).
+# Anchored at the start, because `"pooler=azure;key=${latency_key}"` does contain a reference yet
+# the reference is not the secret. The shell branch demands braces or the ALL-CAPS environment
+# spelling: `$ecret$` and `$uperSecret` are passwords, not pointers, and must stay loud.
+CWE798_ENVIRONMENT_INDIRECTION_RE = re.compile(
+    r"""(?xi)
+    ^ ['"]?                                       # one optional quoting layer
+    (?: os\.(?:environ|getenv)\b                  # os.environ/KEY, os.environ["KEY"], os.getenv(..)
+        | env:                                    # field pointer: "env:TOKEN"
+        | \$\{[A-Za-z_][A-Za-z0-9_]*\}            # braced template pointer: ${FOO}
+        | \$[A-Z][A-Z0-9_]{2,}\b                  # shell environment pointer: $OPENAI_API_KEY
+        | %\([A-Za-z_][A-Za-z0-9_]*\)s            # ConfigParser pointer: %(db_pass)s
+    )
+    """)
 CWE798_SECRET_FINGERPRINT_RE = re.compile(
     r"(?i)(sk-[a-z0-9]|sk_live|sk_test|pk_live|pk_test|akia|gh[pousr]_|xox[baprs]-|eyJ|-----begin"
     r"|ya29\.|AIza[0-9A-Za-z\-]{4,}|xapi[a-z0-9]{8,})")
@@ -2022,11 +2044,27 @@ SENSITIVE_VALUE_NAME_RE = re.compile(
 
 # A name that only *talks about* a credential - a boolean flag, a form column label, a schema
 # key - holds no secret value, so it is not a log leak.
+#
+# LLM/NLP bookkeeping names are the same trap read the other way: they *count* tokens or carry one
+# streamed chunk, and they never hold a credential (`completion_tokens`, `prompt_tokens`,
+# `max_output_tokens`, `user_max_tokens`, `output_cost_per_token`, `token_buffer`, `token_count`).
+# A substring match on `token` cannot tell those from a key, so this qualifier table states which
+# words make `token` a metric. Deliberately absent: `api`, `access`, `auth`, `bearer`, `refresh`,
+# `secret`, `jwt`, `id`, `raw` - so `access_token` and friends stay reported - and a bare `token`
+# is exempted only when a metric word qualifies it, never on its own.
+LLM_TOKEN_METRIC_NAME_PATTERN = (
+    r"(?:[a-z0-9]+_)*(?:max|min|total|num|count|used|usage|remaining|left|budget|limit|window|"
+    r"input|output|prompt|completion|cost|per|avg|mean|sum|estimated|actual|buffer|chunk|"
+    r"tokenizer|length|size)_?tokens?(?:_?(?:count|total|used|limit|budget|window))?"
+    r"|tokens?_?(?:count|total|buffer|usage|limit|window|length)")
+LLM_TOKEN_METRIC_NAME_RE = re.compile(r"(?i)^(?:" + LLM_TOKEN_METRIC_NAME_PATTERN + r")$")
+
 SENSITIVE_NAME_EXEMPT_RE = re.compile(
     r"(?i)^(?:has|is|was|were|did|does|should|can|could|must|need|use)_[a-z_0-9]+$|"
     r"^(?:bos|eos|pad|unk|sep|cls|mask)_tokens?$|"
     r"_(?:flag|bool|sent|set|required|enabled|exists|valid|ok|done|field|fields|label|"
-    r"name|names|schema|type|types|choices|keys|params)$")
+    r"name|names|schema|type|types|choices|keys|params)$|"
+    r"^(?:" + LLM_TOKEN_METRIC_NAME_PATTERN + r")$")
 
 LOG_SINK_METHODS = frozenset({"info", "debug", "warning", "error", "exception", "critical", "log"})
 
@@ -2348,6 +2386,10 @@ CLEARTEXT_HOST_ALLOWLIST = ("localhost", "127.0.0.1", "0.0.0.0", "testserver", "
 # `socket.socket()` is left alone because that spelling is what the resource-exhaustion corpus uses and
 # guessing there would trade a real find for a false one.
 RAW_SOCKET_ADDRESS_CALLS = frozenset({"socket.create_connection", "create_connection"})
+# Receivers that are never a socket module: an instance or a super() proxy. `self.create_connection(
+# db_file)` is a storage helper that borrowed the verb, while `socket.create_connection((h, p))` is the
+# one that actually opens a cleartext address.
+RAW_SOCKET_INSTANCE_RECEIVERS = frozenset({"self", "cls", "super"})
 RAW_SOCKET_CONSTRUCTORS = frozenset({"socket.socket", "socket"})
 RAW_SOCKET_CONNECT_METHODS = frozenset({"connect", "connect_ex"})
 RAW_SOCKET_TLS_WRAPPING_METHODS = frozenset({"wrap_socket", "wrap_bio"})
@@ -2393,6 +2435,25 @@ SQL_COMPOSITION_BUILDERS = frozenset({
 # `from sqlalchemy import text` and `import sqlalchemy as sa` are the two spellings real code uses.
 SQLALCHEMY_TEXT_ALIASES = frozenset({"sqlalchemy", "sa"})
 SQLALCHEMY_TEXT_NAME = "text"
+# CWE-89: SQLAlchemy's Core/ORM statement OBJECTS. `session.execute(select(Relay).where(...))` hands the
+# driver a structure, not text -- the statement string is compiled afterwards and every value inside it
+# becomes a bound parameter -- so the precondition this rule charges (SQL text assembled from input) is
+# absent. A chain counts only when it bottoms out at one of these constructors, and `text()`,
+# `literal_column()` and `RawSQL()` are refused everywhere inside it: there the author wrote the statement.
+CWE89_STATEMENT_CONSTRUCTORS = frozenset({
+    "select", "insert", "update", "delete", "merge", "upsert",
+})
+CWE89_STATEMENT_CHAIN_METHODS = frozenset({
+    "where", "having", "values", "filter", "filter_by", "order_by", "group_by", "limit", "offset",
+    "join", "outerjoin", "add_columns", "select_from", "correlate", "correlate_except", "returning",
+    "prefix_with", "suffix_with", "execution_options", "set", "delete", "update", "on_conflict_do_update",
+    "on_conflict_do_nothing", "insertfrom", "alias",
+})
+CWE89_RAW_SQL_WRAPPERS = frozenset({"text", "literal_column", "literal", "column", "table", "RawSQL"})
+# Two of those wrappers are transparent for the literal test: `text(t)` and `RawSQL(t, params)` hand
+# the driver exactly the template `t`, with `params` bound afterwards, so a template made only of
+# literals is still made only of literals one level down.
+CWE89_RAW_TEMPLATE_WRAPPERS = frozenset({"text", "RawSQL"})
 # CWE-89: Odoo-style ORM searches take an `order` keyword that is parsed into ORDER BY clauses.
 # `search_read`/`search_count` are Odoo-only spellings; a plain `.search` is additionally gated to
 # a chain carrying `.env`, so generic search APIs (LDAP, Elasticsearch helpers) never enter this
@@ -2882,6 +2943,133 @@ XSS_ESCAPING_WRAPPERS = frozenset({
     "escape", "conditional_escape", "striptags", "strip_tags", "urlize", "urlescape",
     "format_html", "json_script", "smart_urlquote",
 })
+# Calls that fold a value into a form where only the author's literal text parses as markup. The
+# escaping wrappers above plus the percent-encoders and a template renderer: `render()` returns the
+# template's own output, so the page structure was written by whoever wrote the template.
+CWE79_MARKUP_NEUTRALIZERS = XSS_ESCAPING_WRAPPERS | frozenset({
+    "escape_once", "escapejs", "clean", "urlencode", "urlquote", "quote", "quote_plus",
+    "render", "render_to_string", "render_string",
+})
+# The "trust this as HTML" wrappers, spelled lower-case because the response collectors compare the
+# callee segment case-folded. They add no escaping of their own, so they are walked through rather
+# than believed: `mark_safe(escape(x))` is Django's prescribed idiom, `mark_safe("<b>" + x)` is not.
+CWE79_MARKUP_TRANSPARENT_WRAPPERS = frozenset(
+    {wrapper.lower() for wrapper in XSS_SAFE_WRAPPERS} | {"markup"})
+
+
+def _c79_markup_segment(func) -> str:
+    """The trailing callee name of a call target, `""` when it is not a plain name or attribute."""
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return func.id if isinstance(func, ast.Name) else ""
+
+
+def _c79_markup_is_escaped_only(expr, neutralizers=None, resolve=None, depth=4) -> bool:
+    """True when nothing the source leaves open reaches the browser unescaped.
+
+    The question is asked per substitution hole, not per statement: a literal contributes no
+    attacker characters, an escaping wrapper neutralises what is inside it, and the trust-me
+    wrappers are transparent so their argument still has to prove itself. A ternary is a chooser,
+    so both branches must qualify. Anything this cannot prove - a bare name, a subscript, an
+    unknown call - is unsafe, because unknown stays reported.
+    """
+    if expr is None or depth <= 0:
+        return False
+    table = CWE79_MARKUP_NEUTRALIZERS if neutralizers is None else neutralizers
+    if isinstance(expr, ast.Constant):
+        return isinstance(expr.value, (str, bytes))
+    if isinstance(expr, ast.JoinedStr):
+        return all(_c79_markup_is_escaped_only(field.value, table, resolve, depth - 1)
+                   for field in expr.values if isinstance(field, ast.FormattedValue))
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Mod)):
+        return (_c79_markup_is_escaped_only(expr.left, table, resolve, depth - 1)
+                and _c79_markup_is_escaped_only(expr.right, table, resolve, depth - 1))
+    if isinstance(expr, ast.IfExp):
+        return (_c79_markup_is_escaped_only(expr.body, table, resolve, depth - 1)
+                and _c79_markup_is_escaped_only(expr.orelse, table, resolve, depth - 1))
+    if isinstance(expr, ast.Call):
+        segment = _c79_markup_segment(expr.func)
+        if segment in table:
+            return True
+        if segment.lower() in CWE79_MARKUP_TRANSPARENT_WRAPPERS:
+            inner = expr.args[0] if expr.args else next(
+                (kw.value for kw in expr.keywords
+                 if kw.arg in {"string", "value", "text", "content"}), None)
+            return inner is not None and _c79_markup_is_escaped_only(
+                inner, table, resolve, depth - 1)
+        return False
+    if isinstance(expr, ast.Name) and resolve is not None:
+        record_value = resolve(expr.id)
+        return record_value is not None and _c79_markup_is_escaped_only(
+            record_value, table, resolve, depth - 1)
+    return False
+
+
+def _c79_filter_output_is_unescaped(func_node) -> bool:
+    """True for a filter that can hand raw input to the page, False when it escapes what it returns.
+
+    `is_safe=True` only switches Django's auto-escaping off; it says nothing about the body. A
+    filter whose every return value is wrapped in an escaping call is honest about the contract,
+    while one that concatenates its argument into markup is the reflected-XSS the flag warns about.
+    """
+    returned = [ret.value for ret in ast.walk(func_node)
+                if isinstance(ret, ast.Return) and ret.value is not None]
+    if not returned:
+        return False
+    return any(not _c79_markup_is_escaped_only(value) for value in returned)
+
+
+# ---------------------------------------------------------------- collector pre-flight gate
+#
+# Seven structural collectors walk every module of the repository. Each of them begins its rule body
+# with a test on a *name* the module has to contain -- `is_valid`, `write`, the query-builder and
+# driver attributes, the deserialisation and path sinks, the response/template/markup names -- and the
+# bulk of any real repository holds none of them. The collectors already answer "no" for those
+# modules; they do it one node at a time, after building a scope id and reading a line number. The two
+# tables below let the same answer be given once per module.
+#
+# COLLECTOR_CALL_TRIGGER_VOCAB is matched against the index `TaintTracker._module_callee_tokens`
+# builds from the memoised `ast.Call` bucket and the Phase-1 import table, so an alias still counts:
+# `from os import remove as gone; gone(path)` is reachable through the tail `remove`.
+# COLLECTOR_TEXT_TRIGGER_VOCAB is matched against the module source itself -- one lowercase pass and
+# one `in` test per token -- for the two XSS collectors whose rules key on dict keys, keyword names,
+# decorators and media types, literals that only ever reach a decision by appearing in the file.
+#
+# Both are necessary conditions, never sufficient ones, so the gate can only ever *decline to skip*;
+# the risk it takes on is a missed skip, never a dropped finding. Each set keeps every token any of its
+# collectors compares against source-derived data, including ones that are over-inclusive by case or
+# length, and the caches return the shared empty frozenset for a module that mentions none of them.
+COLLECTOR_CALL_TRIGGER_VOCAB = frozenset({
+    # response_write: the loop's first statement is a hard `continue` unless `func.attr == "write"`.
+    "write",
+    # cwe89_querybuilder: execute_attrs | driver_attrs | builder_attrs | django_attrs.
+    "execute", "executemany", "executescript", "run", "fetch", "fetchall", "fetchrow", "fetchval",
+    "cursor", "distinct", "having", "group_by", "order_by", "filter", "where", "join", "raw", "extra",
+    # cwe502_deser: the sink test only ever reads these callee leaves.
+    "load", "loads", "load_all", "open", "decode", "unpickler",
+    # cwe22_traversal: file/os/shutil/framework sinks.
+    "remove", "unlink", "chmod", "rename", "copy", "copyfile", "move", "rmtree", "send_file",
+    "fileresponse",
+    # django_post: `_c20_is_form_valid_test` refuses every test that is not a zero-arg `.is_valid()`.
+    "is_valid",
+})
+COLLECTOR_TEXT_TRIGGER_VOCAB = frozenset({
+    # cwe79_recovery: the markup hole. Every structural predicate in that loop either needs a tag in
+    # a string constant (`text_has_markup_shape` returns False without '<') or one of the names below.
+    "<", "{%", "{{", "autoescape", "__html__", "html_safe", "safestring", "safetext", "safedata",
+    "is_safe", "unescape", "httpresponse", "make_response", "response", "render_template",
+    "text/html", "content-type", "markup", "headers", "body", "filter",
+    # template_xss: response bodies, template engines and the stored-template writer, all keyed on
+    # names or literals that must be spelled in the file.
+    "render", "template", "mako", "jinja", "format_html", "templates/",
+})
+# `cwe22_traversal` reaches its framework sinks with `callee_name.endswith(suffix)`, so a callee spelled
+# `MyFileResponse` qualifies. A cut callee index cannot answer for a suffix; one text scan can.
+COLLECTOR_PATH_SUFFIX_GATE_RE = re.compile(r"send_file|fileresponse", re.IGNORECASE)
+# The empty hit set is what most modules produce, and one shared object keeps an index per module from
+# costing anything at all.
+_GATE_TOKENS_EMPTY = frozenset()
+
 # Dummy/test string blocklist for CWE-798 - suppress known test placeholders
 CWE798_DUMMY_STRINGS = frozenset({
     "this-is-probably-a-test", "this-is-not-a-key", "this-is-secret",
@@ -3110,6 +3298,12 @@ CWE601_REDIRECT_VALIDATOR_NAMES = frozenset({
 CWE601_SAFE_REDIRECT_WRAPPERS = frozenset({
     "get_safe_redirect_to", "safe_redirect_to", "validated_redirect_to",
 })
+# A project's own validating wrapper, spelled however that project spells it. Kept out of the table
+# above because that one names the framework's helpers: this family earns the same excuse only the
+# same way -- a definition in this file that validates a parameter and hands it back -- and it is a
+# live second use for a name the model family also owns (`get_return_url`), which is why the
+# zero-argument method below is answered by `CWE601_INTERNAL_URL_METHODS` instead.
+CWE601_PROJECT_REDIRECT_WRAPPERS = frozenset({"get_return_url"})
 
 
 def c601_definition_validates_redirect(def_node: ast.AST) -> bool:
@@ -3156,7 +3350,8 @@ def c601_call_is_safe_redirect_wrapper(call: ast.AST, tree: ast.AST) -> bool:
     func = call.func
     leaf = func.id if isinstance(func, ast.Name) else (
         func.attr if isinstance(func, ast.Attribute) else "")
-    if leaf not in CWE601_SAFE_REDIRECT_WRAPPERS:
+    if (leaf not in CWE601_SAFE_REDIRECT_WRAPPERS
+            and leaf not in CWE601_PROJECT_REDIRECT_WRAPPERS):
         return False
     for stmt in getattr(tree, "body", ()):
         if (isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -3473,6 +3668,12 @@ CWE3A_WEAK_HASH_NAMES = {
     "hashlib.md5", "hashlib.sha1", "hashlib.sha256", "hashlib.sha512",
     "md5", "sha1", "sha256", "sha512",
 }
+# The two members of that set that are still sound cryptography. Reporting them needs the narrower
+# password vocabulary below, because a strong digest of a *secret* is how identifiers and cache keys
+# are built, while md5/sha1 are broken whatever they fold.
+CWE3A_STRONG_HASH_NAMES = frozenset({"hashlib.sha256", "hashlib.sha512", "sha256", "sha512"})
+CWE3A_PASSWORD_ONLY_NAME_RE = re.compile(
+    r"(?i).*(password|passwd|passphrase|pwd|\bpw\b|user_pass).*")
 # `pin` is a credential word (a PIN) and it is also the substring of `stopping`, `mapping`, `grouping`,
 # `clipping` and `dropping`, which is how `if early_stopping == "never" and length_penalty > 0.0:` in a
 # beam-search loop reads as a hardcoded-password comparison
@@ -3496,7 +3697,13 @@ CWE3A_WEAK_HASH_NAMES = {
 # `secret`, `auth`, `credential` and the `\bpw\b` word case are unchanged, so nothing that used to be
 # reported on those words can go quiet through this edit.
 CWE3A_PASSWORD_NAME_RE = re.compile(
-    r"(?i).*(password|passwd|pwd|\bpw\b|user_pass|secret|(?<![A-Za-z])pin(?![A-Za-z])|auth|credential).*")
+    r"(?i).*(password|passwd|pwd|\bpw\b|user_pass|secret|(?<![A-Za-z])pin(?![A-Za-z])"
+    # `auth` is a credential root and `author` is a byline, so the family that follows decides:
+    # `authenticated`, `auth_token`, `oauth`, `authorize`/`authorization` stay credential words, while
+    # `author`, `authors`, `author_name`, `authorship` are prose attribution - `if author == "ai":`
+    # is a content flag, not an authentication check. `authority`/`authorization` keep the `i` after
+    # `or`, which is exactly what separates them from the byline family.
+    r"|auth(?!or(?!i))|credential).*")
 # The boundary fix is a name test, and one blessed Big-8 key shares the retired shape rather than the
 # retired proof: `src__transformers__generation__utils.py:3398` is the same
 # `if early_stopping == "never" and ...` beam-search guard, and the mandate books it LOUD at 119/119.
@@ -3536,7 +3743,8 @@ def _t26_password_scope_names(mod_name, functions_by_module, lineno, cache) -> s
         if start <= lineno <= end and (best is None or (end - start) < best[0]):
             best = (end - start, spellings)
     return set(best[1]) if best is not None else set()
-CWE3A_SENSITIVE_VALUE_RE = re.compile(r"(?i).*(password|passwd|pwd|secret|api_key|access_token|credential|token|secret_key).*")
+CWE3A_SENSITIVE_VALUE_RE = re.compile(
+    r"(?i)(?!(?:" + LLM_TOKEN_METRIC_NAME_PATTERN + r")$).*(password|passwd|pwd|secret|api_key|access_token|credential|token|secret_key).*")
 # A credential *label* inside a string that is about to be written to a file: `passwd: {passwd}`.
 # The value half of the rule reuses CWE3A_SENSITIVE_VALUE_RE, so the two stay in step.
 CWE3A_CREDENTIAL_LABEL_RE = re.compile(
@@ -4819,6 +5027,110 @@ def _literal_text(node, assignments_by_scope, scope_id="", lineno=0, seen=None):
     return None
 
 
+def _c89_statement_is_literal_only(node, assignments_by_scope, scope_id="", lineno=0, seen=None):
+    """True when every character of this SQL text was typed by the author.
+
+    This asks about CONSTRUCTION, not about taint. `col = "id" if flag else "name"` puts `flag` into
+    the dataflow graph, and the graph then reaches the assembled statement -- but the statement offers
+    no hole anybody can write into, because both candidates are literals that were chosen before the
+    program ran. The same is true of an f-string whose every brace is filled from a literal, and of a
+    `%` template whose every argument is one. A condition, a test, a key name: those decide WHICH
+    fixed string runs, never what characters it contains, so they are not read here at all.
+
+    Anything whose characters are not visible in this file stays False -- a call, an attribute, a
+    subscript, a parameter with no recorded write. That is the fail-closed direction: an expression
+    this predicate cannot finish reading is a statement it cannot excuse.
+    """
+    if node is None:
+        return False
+    seen = seen if seen is not None else set()
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, (str, bytes))
+    if isinstance(node, ast.IfExp):
+        return (_c89_statement_is_literal_only(node.body, assignments_by_scope, scope_id, lineno, seen)
+                and _c89_statement_is_literal_only(node.orelse, assignments_by_scope, scope_id, lineno, seen))
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
+        return (_c89_statement_is_literal_only(node.left, assignments_by_scope, scope_id, lineno, seen)
+                and _c89_statement_is_literal_only(node.right, assignments_by_scope, scope_id, lineno, seen))
+    if isinstance(node, ast.JoinedStr):
+        return all(_c89_statement_is_literal_only(
+            value.value if isinstance(value, ast.FormattedValue) else value,
+            assignments_by_scope, scope_id, lineno, seen) for value in node.values)
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return all(_c89_statement_is_literal_only(element, assignments_by_scope, scope_id, lineno, seen)
+                   for element in node.elts)
+    if isinstance(node, ast.Name):
+        key = (scope_id, node.id)
+        if key in seen:
+            return False
+        seen = seen | {key}
+        records = _assignment_records(assignments_by_scope, node.id, scope_id, lineno)
+        if not records:
+            return False
+        return all(_c89_statement_is_literal_only(record.value_node, assignments_by_scope,
+                                                 record.scope_id, record.lineno, seen)
+                   for record in records)
+    if isinstance(node, ast.Call):
+        # The two raw-SQL wrappers are transparent: `text(t)` and `RawSQL(t, params)` give the driver
+        # exactly the template `t`, with `params` bound afterwards. A local function that only shares
+        # the spelling is refused, the same way `_c89_is_sqlalchemy_text` refuses it. Every other call
+        # returns a value this file does not show, so it is not a literal.
+        leaf = (dotted_name(node.func) or "").rsplit(".", 1)[-1] if isinstance(
+            node.func, (ast.Name, ast.Attribute)) else ""
+        if leaf == "RawSQL":
+            inner = node.args[0] if node.args else None
+        elif leaf == "text":
+            parts = (dotted_name(node.func) or "").split(".")
+            if parts[:-1] and not set(parts[:-1]) & SQLALCHEMY_TEXT_ALIASES:
+                return False
+            inner = node.args[0] if node.args else next(
+                (kw.value for kw in node.keywords if kw.arg in {"sql", "text", "statement"}), None)
+        else:
+            return False
+        return _c89_statement_is_literal_only(inner, assignments_by_scope, scope_id, lineno, seen)
+    return False
+
+
+def _c89_argument_is_a_statement_object(node, assignments_by_scope, scope_id="", lineno=0, seen=None):
+    """True for `session.execute(select(Model).where(...))`: a structure the compiler turns into SQL.
+
+    The charge against an `execute` call is that SQL TEXT was assembled from input. A Core/ORM
+    statement object is not text -- `select`, `insert`, `update` and `delete` build a tree, the
+    dialect compiles it afterwards, and every value handed to `.where()`/`.values()` leaves as a bound
+    parameter. The proof reads the construction chain down to its constructor, so a chain that starts
+    anywhere else (`builder(...)`, a model manager, an unknown function) buys nothing, and one raw-SQL
+    wrapper anywhere inside (`text()`, `literal_column()`, Django's `RawSQL()`) voids the whole
+    expression: there the author wrote the statement, so the rule reads it as text again.
+    """
+    if node is None:
+        return False
+    seen = seen if seen is not None else set()
+    if isinstance(node, ast.Name):
+        key = (scope_id, node.id)
+        if key in seen:
+            return False
+        seen = seen | {key}
+        records = _assignment_records(assignments_by_scope, node.id, scope_id, lineno)
+        if not records:
+            return False
+        return all(_c89_argument_is_a_statement_object(record.value_node, assignments_by_scope,
+                                                     record.scope_id, record.lineno, seen)
+                   for record in records)
+    if not isinstance(node, ast.Call):
+        return False
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Call):
+            leaf = (dotted_name(sub.func) or "").rsplit(".", 1)[-1]
+            if leaf in CWE89_RAW_SQL_WRAPPERS:
+                return False
+    head = node
+    while isinstance(head.func, ast.Attribute) and head.func.attr in CWE89_STATEMENT_CHAIN_METHODS:
+        head = head.func.value
+        if not isinstance(head, ast.Call):
+            return False
+    return (dotted_name(head.func) or "").rsplit(".", 1)[-1] in CWE89_STATEMENT_CONSTRUCTORS
+
+
 # One markup test for every CWE-79 record path. The response sink, the structural layer and the
 # registry prune each used to ask "does this text contain `<` and `>`", which is equally true of an
 # RFC 2822 address, a Debian maintainer line, a `<cbc:ID>` UBL element and a Python object repr.
@@ -5211,6 +5523,35 @@ CWE862_DOMAIN_SCOPED_ENDPOINT_BASES = frozenset({
     "MemberEndpoint", "IntegrationEndpoint", "SentryAppEndpoint", "MonitorEndpoint",
     "IncidentEndpoint", "AlertRuleEndpoint", "ReplayEndpoint", "ReleaseEndpoint",
     "EnvironmentEndpoint",
+})
+# The same inheritance proof in the Django/NetBox spelling, where the check lives in a mixin rather
+# than in a `permission_classes` tuple. The mixin is named for the authorisation it runs, so a
+# subclass of `LoginRequiredMixin` / `ObjectPermissionRequiredMixin` / `UserPassesTestMixin` inherits
+# the guard instead of omitting it. The suffix alone is NOT the proof: a base merely ending in
+# `Mixin` says nothing about who may act (`GenerationMixin`, `PushToHubMixin` -- the CWE-22 harness
+# table above refuses a bare `Mixin` for the same reason), so an authorisation word has to appear in
+# the name as well. The `*View` entries are the NetBox generic views, whose own bases are exactly
+# these mixins, and which therefore cannot be subclassed into an unguarded handler.
+CWE862_AUTHORISATION_MIXIN_BASE_NAMES = frozenset({
+    "AccessMixin", "LoginRequiredMixin", "PermissionRequiredMixin",
+    "ObjectPermissionRequiredMixin", "UserPassesTestMixin", "StaffuserRequiredMixin",
+    "SuperuserRequiredMixin", "BaseObjectView", "ObjectEditView", "ObjectDeleteView",
+    "BulkEditView", "BulkDeleteView",
+})
+# A base that enforces nothing however it is spelled: the framework's bare dispatch classes. Every
+# corpus row written on one of them stays reported, so this veto outranks the name shape above.
+CWE862_UNENFORCEABLE_BASE_NAMES = frozenset({
+    "View", "TemplateView", "ListView", "DetailView", "FormView", "APIView", "ViewSet",
+    "GenericAPIView", "ModelViewSet", "ReadOnlyModelViewSet", "GenericViewSet", "Resource",
+})
+CWE862_AUTHORISATION_BASE_WORDS = ("login", "permission", "authoriz", "authoris", "authenticat",
+                                   "staff", "superuser", "userpass", "access")
+# The columns that restrict a fetch to the caller's own rows. `user`/`owner` in this position is not a
+# client-supplied value -- it is the authenticated principal the framework put there -- so the object
+# id in the same call can no longer name somebody else's row.
+CWE862_SUBJECT_SCOPING_KEYWORDS = frozenset({
+    "user", "users", "owner", "user_id", "owner_id", "created_by", "updated_by", "author",
+    "member", "account", "profile", "assignee",
 })
 CWE862_HTTP_ROUTE_DECORATORS = frozenset({
     "route", "path", "re_path", "url", "as_view", "dispatch", "login_required",
@@ -6699,6 +7040,8 @@ class TaintTracker:
         for fpath, code in self.files.items():
             if code is not None:
                 self._source_lines_by_file[fpath] = code.splitlines()
+        # Per-module hits of `COLLECTOR_TEXT_TRIGGER_VOCAB`, released at the collector boundary.
+        self._module_text_token_cache: dict[str, frozenset] = {}
 
         # Phase 4.3: Function contract extractor for wrapper sinks
         self.contract_extractor = FunctionContractExtractor()
@@ -13333,6 +13676,15 @@ class TaintTracker:
     # Django's own route table lookups. `reverse_lazy` is not a different function -- it is `reverse`
     # deferred to import time, which is why class attributes and URLs.py files spell it that way.
     CWE601_REVERSE_BUILDERS = frozenset({"reverse", "reverse_lazy"})
+    # `resolve_url` is Django's "turn a view name, a path or a model instance into a URL" helper. It
+    # answers from this project's own URLconf, so the only way a client gets in is by being the argument.
+    CWE601_URL_RESOLVERS = frozenset({"resolve_url"})
+    # A model instance's own address: `get_absolute_url` takes no arguments at all, so the destination is
+    # built from the URLconf plus this object's fields and no client text can fall through it.
+    # `get_return_url` is the same declaration written by a project -- `def get_return_url(self)`, no
+    # parameters, and its body calls `reverse`/`get_absolute_url` on this object -- so it belongs to this
+    # family and not to the validating wrappers, whose proof is a validator call inside the body.
+    CWE601_INTERNAL_URL_METHODS = frozenset({"get_absolute_url", "get_return_url"})
 
     def _c601_anchored_internal_template(self, expr: ast.AST, reads_client) -> bool:
         """True for an f-string whose literal anchor keeps the Location on this origin.
@@ -15410,6 +15762,8 @@ class TaintTracker:
         if cwe == "CWE-95":
             if leaf not in CWE95_CODE_EVAL_LEAVES or not isinstance(func, ast.Attribute):
                 return False
+            if self._c95_receiver_is_self_proved_eval_engine(func.value, scope_id):
+                return False
             return not self._t24_receiver_is_code_eval_engine(func.value, scope_id)
         if cwe == "CWE-89":
             if leaf != "raw" or not isinstance(func, ast.Attribute):
@@ -15459,6 +15813,28 @@ class TaintTracker:
             ctor = dotted_name(receiver.func) or ""
             if ctor.startswith(CWE95_CODE_EVAL_RECEIVER_ROOTS):
                 return True
+        return False
+
+    def _c95_receiver_is_self_proved_eval_engine(self, receiver: ast.AST, scope_id: str) -> bool:
+        """True for the two eval receivers that explain themselves, table or no table.
+
+        `builtins.eval(text)` is the dangerous builtin written through the module object, and
+        `asteval.Interpreter().eval(text)` compiles because the object it is called on was
+        constructed inside an eval-engine package. Neither answer needs the library-name table, so
+        disabling that table cannot make them quiet - which is what the arena gate books as loud.
+        """
+        for path in self._t24_receiver_paths(receiver, scope_id):
+            if path and path.rsplit(".", 1)[-1] in CWE95_BUILTINS_MODULE_RECEIVERS:
+                return True
+        if isinstance(receiver, ast.Call):
+            ctor_paths = [dotted_name(receiver.func) or ""]
+            if scope_id:
+                try:
+                    ctor_paths.append(self.resolve_canonical_name(receiver.func, scope_id) or "")
+                except RecursionError:
+                    pass
+            return any(path.startswith(CWE95_ENGINE_PACKAGE_CONSTRUCTOR_ROOTS)
+                       for path in ctor_paths if path)
         return False
 
     def _t24_raw_receiver_is_orm_manager(self, receiver: ast.AST, scope_id: str) -> bool:
@@ -16410,6 +16786,68 @@ class TaintTracker:
                 return True
         return self._c862_base_name_is_a_scoped_endpoint(cls)
 
+    def _c862_class_inherits_an_authorisation_mixin(self, cls: ast.ClassDef) -> bool:
+        """The Django/NetBox half of the inheritance proof: the check runs in a mixin base.
+
+        `class DeviceView(LoginRequiredMixin, ObjectPermissionRequiredMixin)` has no
+        `permission_classes` to read and no `if request.user.is_authenticated` in its body, yet the
+        request cannot reach the object fetch unauthenticated -- `dispatch` was overridden by the
+        mixin to make that decision. The proof is the written base name, in two forms: the closed
+        list of names the frameworks ship, and the `*RequiredMixin` convention, which is only a proof
+        when the name also says WHICH check it runs (`ObjectPermissionRequiredMixin` yes,
+        `SerializerMixin` no). `View`, `APIView` and `ViewSet` are vetoed outright: they dispatch and
+        authorise nothing, which is why every corpus row written on them stays reported.
+        """
+        for base in cls.bases:
+            leaf = (dotted_name(base) or "").rsplit(".", 1)[-1]
+            if not leaf or leaf in CWE862_UNENFORCEABLE_BASE_NAMES:
+                continue
+            if leaf in CWE862_AUTHORISATION_MIXIN_BASE_NAMES:
+                return True
+            lowered = leaf.lower()
+            if leaf.endswith("RequiredMixin") and \
+                    any(word in lowered for word in CWE862_AUTHORISATION_BASE_WORDS):
+                return True
+        return False
+
+    def _c862_lookup_is_scoped_to_the_request_subject(self, call: ast.Call) -> bool:
+        """True when the fetch is restricted to the caller's OWN rows, so an id cannot name a stranger.
+
+        `Document.objects.filter(user=request.user).get(pk=doc_id)` charges `pk` to the client and
+        the charge is wrong: the queryset can only ever return a row belonging to the principal the
+        framework authenticated, which is the authorisation this rule says is missing. The proof is
+        read off the one simple statement that holds the call, and only from a value that is literally
+        a `request.user` read -- a name, an alias or a binding proves nothing here and the row stays
+        reported. A compound statement (`if`, `for`, `try`) is not scanned either: a scoping keyword
+        living in a sibling branch would be no evidence about this call.
+        """
+        stmt = getattr(call, "parent", None)
+        while stmt is not None and not isinstance(
+                stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Expr, ast.Return)):
+            if isinstance(stmt, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try,
+                                 ast.With, ast.AsyncWith)):
+                return False
+            stmt = getattr(stmt, "parent", None)
+        if stmt is None:
+            return False
+        for sub in ast.walk(stmt):
+            if not isinstance(sub, ast.Call):
+                continue
+            for keyword in sub.keywords:
+                if keyword.arg in CWE862_SUBJECT_SCOPING_KEYWORDS \
+                        and self._c862_expr_is_request_subject(keyword.value):
+                    return True
+        return False
+
+    @staticmethod
+    def _c862_expr_is_request_subject(expr: ast.AST) -> bool:
+        """A literal `request.user` / `self.request.user` read, written in full."""
+        segments = (dotted_name(expr) or "").split(".")
+        for index in range(len(segments) - 1):
+            if segments[index] in ("request", "req") and segments[index + 1] in ("user", "users"):
+                return True
+        return False
+
     def _c862_class_is_an_authorisation_component(self, cls: ast.ClassDef) -> bool:
         """The class IS the check: an authentication/permission/backend implementation.
 
@@ -16578,6 +17016,15 @@ class TaintTracker:
             if (self._c862_class_inherits_domain_scoped_endpoint(cls)
                     and not self._c862_class_disables_permissions(cls)):
                 return True
+            # The Django/NetBox spelling of the identical proof: the guard is a mixin base, not a
+            # tuple, and the same opt-out (`permission_classes = ()`) still outranks it.
+            if (self._c862_class_inherits_an_authorisation_mixin(cls)
+                    and not self._c862_class_disables_permissions(cls)):
+                return True
+        # Not an inheritance proof but a dataflow one, and it needs no class at all: the fetch is
+        # already restricted to the authenticated principal's own rows.
+        if self._c862_lookup_is_scoped_to_the_request_subject(call):
+            return True
         if func is None:
             # Module scope is where the flat Flask/Django view body lives (all seven blessed rows):
             # no enclosing function means no task decorator, migration class or ORM `self` to read.
@@ -20583,7 +21030,8 @@ class TaintTracker:
                     # CWE-209: sensitive error exposure from except handler
                     handler_name = getattr(node, "name", None)
                     handler_body = list(node.body)
-                    if self._scan_error_returns(handler_body, handler_name):
+                    if self._scan_error_returns(handler_body, handler_name) \
+                            and not self._c209_detail_escapes_only_to_the_caller(node):
                         # A bare `return error` from a handler catching a module-declared transient
                         # error GROUP, in a module with no web context, hands the exception object to
                         # its caller rather than to a client. The text forms disclose on their own,
@@ -21061,6 +21509,100 @@ class TaintTracker:
             buckets = (nodes, [node for node in nodes if isinstance(node, ast.Call)])
             tree.__dict__["_cached_node_buckets"] = buckets
         return buckets[1]
+
+    def _module_callee_tokens(self, tree: ast.AST, mod_name: str) -> frozenset:
+        """The callee names this module can offer a collector, cut down to the trigger vocabulary.
+
+        Built from the memoised `ast.Call` bucket -- the same list the blindspot stage shares -- and
+        the Phase-1 import table, so a rebinding still counts: `from os import remove as gone;
+        gone(path)` answers for `remove`. Only vocabulary hits survive, so the resident set is a
+        handful of strings and the common module gets the shared empty frozenset. Memoised on the tree
+        and released with its other per-module caches.
+        """
+        cached = tree.__dict__.get("_cached_callee_tokens")
+        if cached is None:
+            found = set()
+            for call in self._module_calls(tree):
+                func = call.func
+                if isinstance(func, ast.Attribute):
+                    found.add(func.attr.lower())
+                elif isinstance(func, ast.Name):
+                    found.add(func.id.lower())
+            for alias, path in (self.imports.get(mod_name) or {}).items():
+                found.add(str(alias).lower())
+                if isinstance(path, str):
+                    for segment in path.split("."):
+                        if segment:
+                            found.add(segment.lower())
+            cached = frozenset(found) & COLLECTOR_CALL_TRIGGER_VOCAB or _GATE_TOKENS_EMPTY
+            tree.__dict__["_cached_callee_tokens"] = cached
+        return cached
+
+    def _module_source_text(self, mod_name: str):
+        """The module's own source, or None when the engine never held a copy of it.
+
+        Text gates treat None as "present", so a file the gate cannot read is walked rather than waved
+        through -- the fail-closed direction, and the one that keeps the gate a cost decision only.
+        """
+        return (self.files.get(self.file_paths.get(mod_name, ""))
+                or self.files.get(mod_name)) or None
+
+    def _module_text_tokens(self, mod_name: str) -> frozenset:
+        """Trigger literals this module's own source spells, one lowercase pass per module.
+
+        The two XSS collectors key on things that are never a callee -- a `{"autoescape": False}`
+        dict key, a `content_type=` keyword, an `@html_safe` decorator, a `"text/html"` header, the
+        `templates/` + `.html` path of the stored-template writer -- so their gate reads the text.
+        The membership test is `token in lowered`, not a compiled alternation: a 30-branch pattern
+        re-tests every branch at every offset of a 250 KB module, which the profile showed costing
+        more than the two collectors it guarded, while `str.__contains__` runs one C search per
+        token over text that was lowercased once. Same strings, same case-insensitive semantics.
+        A module the engine holds no text for answers with the whole vocabulary: the gate declines to
+        skip what it cannot read, rather than trusting a file that is simply not in the table.
+        """
+        cached = self._module_text_token_cache.get(mod_name)
+        if cached is None:
+            text = self._module_source_text(mod_name)
+            if text is None:
+                cached = COLLECTOR_TEXT_TRIGGER_VOCAB
+            else:
+                lowered = text.lower()
+                cached = frozenset(token for token in COLLECTOR_TEXT_TRIGGER_VOCAB
+                                   if token in lowered) or _GATE_TOKENS_EMPTY
+            self._module_text_token_cache[mod_name] = cached
+        return cached
+
+    def release_collector_gate_scratch(self) -> None:
+        """Drop the per-module gate caches and the node lists the collector phase existed to serve.
+
+        Memory only, never behaviour: every structure released here is a cache with a rebuild path,
+        not an input.
+
+        * `_cached_reachable_nodes` held, for every module in the repository, a list of every node the
+          tree contains minus its statically dead branches. It was built by `_reachable_nodes` for the
+          23 collector batches, and the last ask in the pipeline is the source-detection pass that
+          runs *before* those batches -- the blindspot stage reads `_module_nodes`, the cascade reads
+          neither. Releasing it here drops the largest per-module transient before the graph cascade
+          and the SARIF render, and because `_reachable_nodes` recomputes on a miss, a later ask costs
+          a walk and cannot change one answer.
+        * the two gate caches and the per-module callee buckets, same reasoning one level down.
+
+        Nothing is collected here on purpose. Every structure released below is a container that
+        references nodes owned by a tree that is still alive, so popping it drops its last reference
+        and reference counting frees its pointer array in that same statement -- no cycle is created,
+        because the only path to the list ran through the slot that was just emptied. A `gc.collect()`
+        here therefore buys no memory and costs a full generation-2 walk of a live heap: measured on
+        the eight Big-8 modules at 0.23 s out of a 9.4 s scan with peak RSS unchanged. The two
+        neighbouring release idioms, `release_sink_gate_scratch` and `release_collector_memos`, do the
+        same for the same reason, and the one collection the pipeline needs is already in `analyze`'s
+        `finally`, after the last tree is released.
+        """
+        for tree in self.modules.values():
+            cache = tree.__dict__
+            cache.pop("_cached_reachable_nodes", None)
+            cache.pop("_cached_callee_tokens", None)
+            cache.pop("_cached_node_buckets", None)
+        self._module_text_token_cache = {}
 
     def _sink_node_unrecorded(self, node) -> bool:
         """True when no entry of `sink_records` holds this exact node -- O(1), was an O(sinks) scan.
@@ -22881,6 +23423,43 @@ class TaintTracker:
                 return True
         return False
 
+    CWE209_HTTP_METHOD_NAMES = frozenset(
+        {"get", "post", "put", "patch", "delete", "head", "options", "trace", "dispatch", "view"})
+
+    def _c209_detail_escapes_only_to_the_caller(self, handler) -> bool:
+        """True when a handler's exception text is a library's own return value, not a reply.
+
+        CWE-209 is disclosure *to a client*, and a client needs a socket. `BaseTool._run(self, query)`
+        and `render_cell(self, value)` hand `repr(e)` back to the agent or the template that called the
+        library; nothing serves it. That is the one shape this rule can retire honestly, and it is
+        narrow on purpose: a free function (`def handle(): ... return str(e)`) keeps its finding,
+        because the engine has no evidence about who prints it.
+
+        Anything that even looks like HTTP stays loud: a route decorator, a `request`-shaped
+        parameter, a method named after a verb, or a body that reads `self.request` (DRF builds its
+        reply from that). A leak that travels inside a response object was never this rule's job -
+        `_c209_exposed_in_reply` owns it and still demands a reply constructor.
+        """
+        func = getattr(handler, "parent", None)
+        while func is not None and not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            func = getattr(func, "parent", None)
+        if func is None:
+            return False
+        positional = list(func.args.posonlyargs) + list(func.args.args)
+        if not positional or positional[0].arg not in ("self", "cls"):
+            return False
+        if self._c209_route_decorated(func) or self._c209_is_web_handler(func):
+            return False
+        if func.name in self.CWE209_HTTP_METHOD_NAMES:
+            return False
+        if {argument.arg for argument in positional} & CWE209_WEB_CONTEXT_ARGUMENTS:
+            return False
+        for sub in ast.walk(func):
+            if isinstance(sub, ast.Attribute) and sub.attr == "request" \
+                    and isinstance(sub.value, ast.Name) and sub.value.id == "self":
+                return False
+        return True
+
     def _t26_string_reply_without_web_context(self, value) -> bool:
         """True when a returned exception-detail STRING belongs to nobody's HTTP response.
 
@@ -23110,6 +23689,11 @@ class TaintTracker:
             candidates = [argument for argument in arguments if not self._c117_inert(argument)]
             if not candidates:
                 continue
+            # An audit line that names *who* acted, and nothing else, carries no client-supplied text:
+            # `logger.info(f"User {request.user} successfully authenticated")` reads the session-loaded
+            # subject, which is not a request parameter and never arrives from a URL, form or header.
+            if self._c117_audit_names_only_the_subject(node, candidates, table):
+                continue
             if not any(self._c117_client_controlled(candidate, table, node.lineno, endpoints, crud=crud)
                        and not self._c117_neutralized(candidate, table, node.lineno)
                        for candidate in candidates):
@@ -23235,6 +23819,60 @@ class TaintTracker:
                 if name in ("request.get_json", "get_json", "request.data", "get_data"):
                     return True
         return False
+
+    # The subject of an audit line. Django hands the authenticated user over as `request.user`,
+    # Flask-Login as `current_user`, and the printable identity is one of these members.
+    CWE117_IDENTITY_MEMBERS = frozenset(
+        {"user", "username", "name", "id", "pk", "email", "get_username", "get_full_name"})
+    CWE117_AUDIT_VERBS = frozenset({"info", "debug"})
+
+    def _c117_is_subject_read(self, expr, table, use_lineno, depth=2):
+        """True when this expression *is* the authenticated subject, or a member of it.
+
+        Bindings are followed for two hops, so `user = authenticate(request)` three lines above is the
+        same subject as `request.user`. Only `request.user` is accepted off the request object - every
+        other `request.` container is client text and stays loud - and a name that resolves to a
+        request parameter falls through to the caller's own check.
+        """
+        if expr is None or depth < 0:
+            return False
+        if isinstance(expr, ast.Name):
+            if expr.id == "current_user":
+                return True
+            return self._c117_is_subject_read(
+                self._blindspot_latest_assignment(table, expr.id, use_lineno),
+                table, use_lineno, depth - 1)
+        if isinstance(expr, ast.Attribute):
+            if isinstance(expr.value, ast.Name) and expr.value.id == "request":
+                return expr.attr == "user"
+            return (expr.attr in self.CWE117_IDENTITY_MEMBERS
+                    and self._c117_is_subject_read(expr.value, table, use_lineno, depth - 1))
+        if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute):
+            return (expr.func.attr in ("get_username", "get_full_name")
+                    and self._c117_is_subject_read(expr.func.value, table, use_lineno, depth - 1))
+        return False
+
+    def _c117_audit_names_only_the_subject(self, call, candidates, table) -> bool:
+        """True for an info/debug line whose every dynamic value is the authenticated subject.
+
+        One hole that is not the subject ends the exemption, so
+        `logger.info(f"User {request.user} typed {request.POST['q']}")` keeps its finding: the identity
+        is inert, the query is not.
+        """
+        verb = (call.func.attr if isinstance(call.func, ast.Attribute)
+                else (call.func.id if isinstance(call.func, ast.Name) else ""))
+        if verb not in self.CWE117_AUDIT_VERBS:
+            return False
+        holes = list(call.args[1:])
+        for argument in candidates:
+            for sub in ast.walk(argument):
+                if isinstance(sub, ast.FormattedValue):
+                    holes.append(sub.value)
+                elif isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.Mod) \
+                        and isinstance(sub.left, ast.Constant):
+                    holes.append(sub.right)
+        return bool(holes) and all(
+            self._c117_is_subject_read(hole, table, call.lineno) for hole in holes)
 
     def _c117_scope_supplied(self, arg, params, table, scope_start, use_lineno):
         """True when a caller-named parameter reaches the log line untouched inside its own scope.
@@ -23837,6 +24475,11 @@ class TaintTracker:
                 continue
             handle = None
             if segments[-1] in RAW_SOCKET_ADDRESS_CALLS and len(segments) <= 2:
+                # Only a module can hand out a new socket. A method on the object itself opens whatever
+                # that object manages - a SQLite file, a connection pool - and never a network address,
+                # so the receiver name settles it before any argument is read.
+                if len(segments) == 2 and segments[0] in RAW_SOCKET_INSTANCE_RECEIVERS:
+                    continue
                 target = node
             elif segments[-1] in RAW_SOCKET_CONNECT_METHODS and len(segments) == 2 \
                     and isinstance(node.func.value, ast.Name) \
@@ -23988,6 +24631,13 @@ class TaintTracker:
             candidates = self._c319_resolutions(query, table, node.lineno)
             if not any(self._c89_formatted_statement(part) for part in candidates):
                 continue
+            # A hole that only ever holds a literal is not a hole. `col = "id" if flag else "name"`
+            # puts `flag` into the dataflow graph, but the statement the hook receives is one of two
+            # strings the author typed, and there is nothing left for the driver to quote.
+            if all(_c89_statement_is_literal_only(part, self.assignments_by_scope,
+                                                 self._node_enclosing_scope(node), node.lineno)
+                   for part in candidates):
+                continue
             if self._blindspot_line_suppressed(source_lines, node):
                 continue
             self._add_blindspot_sink(
@@ -24065,6 +24715,11 @@ class TaintTracker:
                 (keyword.value for keyword in node.keywords
                  if keyword.arg in ("sql", "text", "statement")), None)
             if statement is None or not self._c89_interpolated_statement(statement):
+                continue
+            # Same refusal as the hook rule: an interpolated template whose every filling is a literal
+            # was written by the author, not by a client.
+            if _c89_statement_is_literal_only(statement, self.assignments_by_scope,
+                                              self._node_enclosing_scope(node), node.lineno):
                 continue
             if self._blindspot_line_suppressed(source_lines, node):
                 continue
@@ -24409,6 +25064,28 @@ class TaintTracker:
         """
         statements = region if isinstance(region, list) else [region]
         nodes = [child for statement in statements for child in ast.walk(statement)]
+        # `SecondForm(request.POST, instance=obj)` hands the multi-dict to Django's own validation
+        # machinery, which re-checks every field, so the raw read inside a validated-form view is the
+        # documented second-form idiom rather than unvalidated use. Only a direct `data` argument of a
+        # callee named like a form (`*Form` / `*FormClass`) qualifies; the same `request.POST` passed
+        # to any other callable, or indexed and read out, is still reported.
+        form_ctor_reads: set = set()
+        for child in nodes:
+            if not isinstance(child, ast.Call):
+                continue
+            func = child.func
+            callee_name = (func.id if isinstance(func, ast.Name)
+                           else func.attr if isinstance(func, ast.Attribute) else "")
+            # Form classes are spelled both ways in the wild - `LoginForm`, `UploadFormClass`,
+            # `FormB` - and the convention is what proves the callee re-validates the data, since a
+            # Django form always rebuilds and re-checks every field it is handed. Case-sensitive on
+            # purpose: `transform`, `perform` and `platform` are not forms.
+            if not (callee_name.endswith("Form") or callee_name.endswith("FormClass")
+                    or callee_name.startswith("Form")):
+                continue
+            for arg in list(child.args) + [kw.value for kw in child.keywords]:
+                if isinstance(arg, ast.Attribute) and arg.attr in DJANGO_RAW_POST_ATTRS:
+                    form_ctor_reads.add(id(arg))
         for node in nodes:
             if not isinstance(node, ast.Attribute):
                 continue
@@ -24418,6 +25095,8 @@ class TaintTracker:
                 chain.append(root.attr)
                 root = root.value
             if chain[0] not in DJANGO_RAW_POST_ATTRS:
+                continue
+            if id(node) in form_ctor_reads:
                 continue
             # `request.POST`, or `self.request.POST` in a class-based view.
             if isinstance(root, ast.Name) and root.id == "request":
@@ -24479,6 +25158,11 @@ class TaintTracker:
         the synthetic source through STRUCTURAL_SYNTHETIC_SOURCES.
         """
         for mod_name, tree in sorted(self.modules.items()):
+            # `_c20_validated_post_reads` refuses every `if` whose test is not a zero-argument
+            # `.is_valid()`, so a module that never spells that callee has nothing for the rule -- and
+            # no statement index to build for it either, which is what the walk actually costs.
+            if "is_valid" not in self._module_callee_tokens(tree, mod_name):
+                continue
             file_path = self.file_paths.get(mod_name, "unknown.py")
             scope_id = f"{mod_name}:global"
             seen: set[tuple[int, int]] = set()
@@ -24829,9 +25513,16 @@ class TaintTracker:
                     add("TEMPLATE_AUTOESCAPE_DISABLED", "XSS", "CWE-116")
 
             # B. CWE-96: dynamic lookup inside a globals()/locals() namespace.
+            # `pop` and `setdefault` change the mapping, so a runtime-named key really does inject a
+            # binding into the module, and a one-argument `get(name)` is how a dispatcher picks the
+            # object it is about to use. `get(name, default)` is the loader idiom for "is this optional
+            # dependency present?" - the default is the whole point, and what comes back is stored or
+            # returned, never called as code. A namespace *write* is not reported either: the engine
+            # decided long ago that storing into globals() is not an injection sink.
             if isinstance(node.func, ast.Attribute) and node.func.attr in CLUSTER1_MAPPING_READ_METHODS \
                     and node.args and self._c1_is_namespace_use(node.func.value, ns_history) \
-                    and not self._c1_is_literal_key(node.args[0]):
+                    and not self._c1_is_literal_key(node.args[0]) \
+                    and not (node.func.attr == "get" and len(node.args) >= 2):
                 add("DANGEROUS_GLOBALS_USE", "CODE_INJECTION", "CWE-96")
 
             # D. CWE-521: password looked up with an empty/None fallback.
@@ -27307,14 +27998,30 @@ class TaintTracker:
                                 elif isinstance(nd, ast.Constant) and isinstance(nd.value, str):
                                     consts_in_arg.append(nd.value)
                             is_pw_hash = any(CWE3A_PASSWORD_NAME_RE.match(n) for n in names_in_arg)
-                            for scope_cand in _t26_password_scope_names(
-                                    mod_name, functions_by_module, lineno,
-                                    password_scope_cache) | {name}:
+                            pw_from_data = is_pw_hash
+                            scope_cands = _t26_password_scope_names(
+                                mod_name, functions_by_module, lineno,
+                                password_scope_cache) | {name}
+                            for scope_cand in scope_cands:
                                 if CWE3A_PASSWORD_NAME_RE.search(scope_cand):
                                     is_pw_hash = True
                             for s_const in consts_in_arg:
                                 if CWE3A_PASSWORD_NAME_RE.search(s_const):
                                     is_pw_hash = True
+                                    pw_from_data = True
+                            # A strong digest is only a *password* hash when a password is inside it.
+                            # `DEPLOYMENT_ID = hashlib.sha256(SECRET_KEY.encode()).hexdigest()` and a
+                            # `json.dumps(credential_args)` cache key fold a secret into an identifier;
+                            # nothing stores a weakly-hashed password, and CWE-916 speaks about stores.
+                            # `md5`/`sha1` keep the wider vocabulary - they are broken for every use.
+                            # The narrowing reads the digest's own operands only: a claim that came
+                            # from the enclosing scope is the scope proof's answer, not this one's, and
+                            # silencing it here would steal that rule's falsification.
+                            if pw_from_data and not any(
+                                    CWE3A_PASSWORD_ONLY_NAME_RE.search(candidate)
+                                    for candidate in names_in_arg | set(consts_in_arg)) \
+                                    and names & CWE3A_STRONG_HASH_NAMES:
+                                is_pw_hash = False
 
                             if is_pw_hash:
                                 has_salt = False
@@ -30007,6 +30714,18 @@ class TaintTracker:
                             )
 
                 if names & code_sinks:
+                    # `eval` the builtin and `eval` the method are different verbs. `ConditionSet(...).
+                    # eval(data)` walks an expression tree the program already built and `model.eval()`
+                    # switches a neural network to inference mode - neither compiles text into code, so
+                    # no untrusted string crosses a compiler. A call on an object is code execution only
+                    # when the source proves that object is an engine that does compile (`pandas`,
+                    # `numexpr`, `asteval`, `builtins`), which is the same provenance the taint pass
+                    # already trusts; an unexplained receiver is refused, never guessed away.
+                    callee_is_engine = (not isinstance(node.func, ast.Attribute)
+                                        or self._c95_receiver_is_self_proved_eval_engine(
+                                            node.func.value, scope_id)
+                                        or self._t24_receiver_is_code_eval_engine(
+                                            node.func.value, scope_id))
                     code_expr = _argument(node, 0, {"source", "code", "line"})
                     # `dynamic.format("literal")` still builds program text at runtime, so a
                     # format call is constructed code even when every argument is a literal
@@ -30016,7 +30735,8 @@ class TaintTracker:
                         and isinstance(code_expr.func, ast.Attribute)
                         and code_expr.func.attr == "format"
                     )
-                    if _is_dynamic(code_expr, scope_id, lineno) or format_constructed:
+                    if callee_is_engine and (
+                            _is_dynamic(code_expr, scope_id, lineno) or format_constructed):
                         _add_finding(node, mod_name, scope_id, "DYNAMIC_CODE_EXECUTION", "CODE_EXECUTION", "CWE-95")
                 elif names & subinterp_sinks:
                     code_expr = _argument(node, 1, {"code", "source"})
@@ -31907,7 +32627,14 @@ class TaintTracker:
                     self._c89_statement_arrives_from_a_tainted_caller(call, scope_id, mod_name):
                 _emit89(call, mod_name, scope_id)
 
+        # Every rule in the walk below is entered through `attr in execute_attrs | driver_attrs |
+        # builder_attrs | django_attrs`, and that membership test is exact, so the four tables
+        # themselves answer the gate -- derived here, never copied, so it cannot drift from them.
+        query_builder_gate = frozenset(
+            attr.lower() for attr in (execute_attrs | driver_attrs | builder_attrs | django_attrs))
         for mod_name, tree in self.modules.items():
+            if not query_builder_gate & self._module_callee_tokens(tree, mod_name):
+                continue
             mod_file = self.file_paths.get(mod_name, "")
             for node in self._reachable_nodes(tree):
                 if not isinstance(node, ast.Call) or not isinstance(node.func, ast.AST):
@@ -31937,6 +32664,20 @@ class TaintTracker:
                     if _vulnerable_call(node, scope_id, mod_name, require_shape_or_db=False,
                                         bare_extra_ok=True):
                         _emit89(node, mod_name, scope_id)
+
+    def _c79_response_markup_is_neutralised(self, body, resolve=None) -> bool:
+        """True when every dynamic byte of a response body came out of an escaping neutraliser.
+
+        Method form rather than a direct call to `_c79_markup_is_escaped_only` so the seal it holds is
+        falsifiable: `benchmark/gates/drf_snuba_scope_probe.py` switches this off
+        (`response_markup_fold_disabled`) and asserts that `quiet.django_http_response` reports again,
+        which is the only way that quiet row can be shown to be owned by this clause and not by a
+        fixture that never carried taint. The proof itself is unchanged -- `_c79_markup_is_escaped_only`
+        believes a call only when its callee is in `CWE79_MARKUP_NEUTRALIZERS` (or a transparent
+        wrapper around such a call), needs *every* branch of a ternary and *every* hole of an f-string
+        escaped, and refuses plain names, attributes and subscripts unless `resolve` proves the binding.
+        """
+        return _c79_markup_is_escaped_only(body, None, resolve)
 
     def _collect_cwe79_xss_recovery_findings(self) -> None:
         """Phase 10.3: recover reflected-XSS and auto-escape-bypass constructs the
@@ -31982,8 +32723,17 @@ class TaintTracker:
                 record = _assigned_before(body.id, scope_id, lineno)
                 if record is not None:
                     body = record.value_node
-            return (isinstance(body, ast.Call)
-                    and _callee_segment(body) in sanitizer_segments)
+            if (isinstance(body, ast.Call)
+                    and _callee_segment(body) in sanitizer_segments):
+                return True
+            # The flat check above only believes a body that *is* one sanitizer call. Django's own
+            # idiom is markup written by the author around escaped holes - `"<b>" + escape(x) +
+            # "</b>"`, `f"<b>{escape(x)}</b>"`, `mark_safe(escape(x))` - where the dynamic part
+            # never reaches the response unescaped, so the concatenation is not a finding.
+            return self._c79_response_markup_is_neutralised(
+                body,
+                lambda name: (lambda record: record.value_node if record is not None else None)(
+                    _assigned_before(name, scope_id, lineno)))
 
         def _cwe79_payload_is_not_markup(call_node: ast.Call, scope_id: str, lineno: int) -> bool:
             """A CWE-79 sink call that cannot carry markup a browser parses: a response whose media
@@ -32325,6 +33075,12 @@ class TaintTracker:
             return []
 
         for mod_name, tree in self.modules.items():
+            # No rule in this loop is reached without either a browser-parseable tag in a string
+            # constant -- `text_has_markup_shape` returns False for text with no "<" -- or one of the
+            # names the dict keys, decorators, keyword arguments and media types are spelled with. Both
+            # come out of the file itself, so one cut of the source answers for the whole walk.
+            if not COLLECTOR_TEXT_TRIGGER_VOCAB & self._module_text_tokens(mod_name):
+                continue
             for node in self._reachable_nodes(tree):
                 # Productive-type gate: every rule below is reached only from a head test on one of
                 # these nine node types, so the scope climb and lineno read are dead work for the
@@ -32386,7 +33142,8 @@ class TaintTracker:
                         elif (isinstance(decorator, ast.Call)
                               and _seg(decorator.func) == "filter"
                               and any(kw.arg == "is_safe" and isinstance(kw.value, ast.Constant)
-                                      and kw.value.value is True for kw in decorator.keywords)):
+                                      and kw.value.value is True for kw in decorator.keywords)
+                              and _c79_filter_output_is_unescaped(node)):
                             _emit79(decorator, mod_name, scope_id, "TEMPLATE_FILTER_IS_SAFE")
                     if node.name == "__html__":
                         _emit79(node, mod_name, scope_id, "HTML_MAGIC_METHOD")
@@ -32827,8 +33584,19 @@ class TaintTracker:
         os_sinks = {"os.remove", "os.unlink", "os.chmod", "os.rename"}
         shutil_sinks = {"shutil.copy", "shutil.copyfile", "shutil.move", "shutil.rmtree"}
         framework_sinks = {"send_file", "FileResponse"}
+        # The four tables above are the whole sink test -- every branch compares the callee leaf or the
+        # dotted callee name, whose last segment is that same leaf -- so the gate is the tables read
+        # back, leaves only. The one branch that compares a *suffix* is covered by the text ask below.
+        path_sink_gate = frozenset(
+            name.rsplit(".", 1)[-1].lower()
+            for name in file_sinks | os_sinks | shutil_sinks | framework_sinks)
 
         for mod_name, tree in self.modules.items():
+            if not path_sink_gate & self._module_callee_tokens(tree, mod_name):
+                source = self._module_source_text(mod_name)
+                if source is not None and not COLLECTOR_PATH_SUFFIX_GATE_RE.search(source):
+                    continue
+
             for node in self._reachable_nodes(tree):
                 if not isinstance(node, ast.Call):
                     continue
@@ -33099,8 +33867,15 @@ class TaintTracker:
         pickle_sinks = {"loads", "load"}
         yaml_unsafe_funcs = {"load", "load_all"}
         safe_yaml_loaders = {"safeloader", "yaml.safeloader", "csafeloader", "yaml.csafeloader"}
+        # Every branch of the sink test below requires the callee leaf to be one of these, including
+        # the `yaml.*` branch (whose functions are `load`/`load_all`) and `shelve.open`; the receiver
+        # checks that follow only ever narrow a hit, never widen one.
+        deser_gate = frozenset(
+            pickle_sinks | yaml_unsafe_funcs | {"open", "decode", "unpickler"})
 
         for mod_name, tree in self.modules.items():
+            if not deser_gate & self._module_callee_tokens(tree, mod_name):
+                continue
             for node in self._reachable_nodes(tree):
                 if not isinstance(node, ast.Call):
                     continue
@@ -33806,6 +34581,13 @@ class TaintTracker:
         def _literal7(node, fold_scope: str, fold_lineno: int):
             return _memo_fold("text", _literal_text, node, fold_scope, fold_lineno)
 
+        def _literal_only7(node, fold_scope: str, fold_lineno: int):
+            return _memo_fold("literal_only", _c89_statement_is_literal_only, node, fold_scope, fold_lineno)
+
+        def _statement_object7(node, fold_scope: str, fold_lineno: int):
+            return _memo_fold("statement_object", _c89_argument_is_a_statement_object,
+                              node, fold_scope, fold_lineno)
+
         # Sink records bucketed by (file, line_start, column_start): a prefix of the exact
         # CodeLocation that _remove_existing and _add_finding compare against, so every record
         # either of them could match is necessarily in the bucket being read, and the full
@@ -34280,7 +35062,13 @@ class TaintTracker:
                      if kw.arg in {"statement", "sql", "query"}), None)
                 _remove_existing_if_defusable(
                     node, {"CWE-89"}, mod_name,
-                    lambda: _literal7(query_arg, scope_id, lineno) is not None)
+                    lambda: _literal7(query_arg, scope_id, lineno) is not None
+                    # The same conclusion by a different road: a ternary whose two answers are both
+                    # literals has no hole, whatever the dataflow graph says about the condition.
+                    or _literal_only7(query_arg, scope_id, lineno)
+                    # Or no text at all -- an ORM/Core statement object compiles to SQL later, with
+                    # every value leaving as a bound parameter.
+                    or _statement_object7(query_arg, scope_id, lineno))
 
                 # CWE-502: a payload that is a literal, or bytes read from a literal
                 # path, cannot carry attacker-controlled pickle/yaml structure.
@@ -34766,6 +35554,8 @@ class TaintTracker:
                 if any(name in {"url_for", "request.get_full_path"}
                        or name.endswith(".url_for")
                        or name.rsplit(".", 1)[-1] in self.CWE601_REVERSE_BUILDERS
+                       or name.rsplit(".", 1)[-1] in self.CWE601_INTERNAL_URL_METHODS
+                       or name.rsplit(".", 1)[-1] in self.CWE601_URL_RESOLVERS
                        for name in names):
                     # `get_full_path` is this request's own path and query -- relative, so no host can
                     # be injected -- while `url_for` is only internal when the endpoint and every
@@ -34775,6 +35565,21 @@ class TaintTracker:
                     if any(name.rsplit(".", 1)[-1] in self.CWE601_REVERSE_BUILDERS
                            for name in names):
                         return _reverse_builds_an_internal_path(target, scope_id, lineno)
+                    if any(name.rsplit(".", 1)[-1] in self.CWE601_URL_RESOLVERS
+                           for name in names):
+                        # `resolve_url` answers from this project's own URLconf for a view name or a
+                        # model instance, and echoes back whatever else it is handed -- so it is an
+                        # internal producer exactly when no client text reached it. `resolve_url(
+                        # request.GET["next"])` stays a finding; `resolve_url(obj)` is the object's page.
+                        values = [*target.args, *(keyword.value for keyword in target.keywords)]
+                        return bool(values) and not any(
+                            _expr_reads_client_input(value, scope_id, lineno) for value in values)
+                    if any(name.rsplit(".", 1)[-1] in self.CWE601_INTERNAL_URL_METHODS
+                           for name in names):
+                        # The address of an object this process already loaded. Both members of that
+                        # family are declared with nothing but `self`, so a call that hands one an
+                        # argument is not that method and earns no excuse from here.
+                        return not target.args and not target.keywords
                     return True
             if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
                 record = _assigned_value(target.value.id, scope_id, lineno)
@@ -35046,6 +35851,22 @@ class TaintTracker:
                     "your_api_key", "your_secret", "dummy", "example_value",
                 )
             ):
+                return False
+            # A stand-in written by a redactor (`"scrubbed_by_provider_for_sensitive_keys"`,
+            # `"[redacted]"`) records that a secret was removed, not a secret. Gated on the
+            # fingerprint fence: a value that still carries a provider prefix (`sk_live_...masked`)
+            # is concrete, so trusting the word can never retire a real pasted key.
+            if not CWE798_SECRET_FINGERPRINT_RE.search(normalized) and any(
+                marker in lowered for marker in (
+                    "scrubbed", "redacted", "sanitized", "not_provided", "cleared_value",
+                )
+            ):
+                return False
+            # A value that only names *where* the secret lives is not a secret: `"os.environ/AZURE_KEY"`
+            # is how the provider SDKs spell "read it from the environment", and an `.ini` template
+            # spells the same thing `"%(db_pass)s"`. Anchored at the start, so a pasted key that merely
+            # mentions an environment lookup further along stays loud.
+            if CWE798_ENVIRONMENT_INDIRECTION_RE.match(normalized):
                 return False
             if concrete_credential_prefix.match(normalized):
                 return True
@@ -35320,6 +36141,11 @@ class TaintTracker:
 
         seen: set[tuple[int, int]] = set()
         for mod_name, tree in self.modules.items():
+            # The walk's very first statement is a hard `continue` unless the callee attribute is
+            # exactly "write", so no receiver proof, no scope climb and no argument inspection can ever
+            # be reached by a module that never writes to anything.
+            if "write" not in self._module_callee_tokens(tree, mod_name):
+                continue
             for node in self._reachable_nodes(tree):
                 if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute) or node.func.attr != "write":
                     continue
@@ -35617,6 +36443,12 @@ class TaintTracker:
             ))
 
         for mod_name, tree in self.modules.items():
+            # Same reasoning as the recovery collector, and the same gate: every finding this loop
+            # appends sits under a response-name test, a template-engine or render-name test, a
+            # media-type or keyword literal, or the stored-template writer's `templates/` + `.html`
+            # path -- all of them spelled in the file, none of them reachable without a hit.
+            if not COLLECTOR_TEXT_TRIGGER_VOCAB & self._module_text_tokens(mod_name):
+                continue
             for node in self._reachable_nodes(tree):
                 # Productive-type gate: the Assign rule below ends in `continue` and the next
                 # statement is `if not isinstance(node, ast.Call): continue`, so only these two node
@@ -36218,6 +37050,11 @@ class TaintTracker:
         # the collectors already answered, so the cascade runs the unmemoized path and the last
         # strong reference to a repository's worth of call expressions goes away now.
         self.release_collector_memos()
+        # Collectors phase boundary: this is the last point at which a reachable-node list, a gate
+        # index or a Call bucket can still be asked for, so their transients go here and the one
+        # collection that makes the drop land runs while the cascade and the SARIF render are still
+        # ahead of us.
+        self.release_collector_gate_scratch()
         self._collector_profile["blindspot_all"] = _time.perf_counter() - _bs_t0
         _sink_deltas["blindspot_all"] = len(self.sink_records) - _prev_sinks
         print("TimeCodeSecurity [PROFILE] Collectors (s): " + " ".join(

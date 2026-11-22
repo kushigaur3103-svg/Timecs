@@ -21,13 +21,20 @@ from __future__ import annotations
 
 import os
 import sys
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Optional
 
 __all__ = ["VERSION", "BANNER", "SUBTITLE", "badge", "color_enabled", "supports_unicode",
            "print_banner", "print_phase", "print_step", "print_worker", "print_completion",
            "print_warning", "print_error"]
 
-VERSION = "3.0.2"
+# The installed distribution owns the number it reports: the wheel writes it from `pyproject.toml`,
+# so the banner can never drift from the artifact a user ran. A bare source checkout has no
+# metadata, and falls back to the release this tree is preparing.
+try:
+    VERSION = version("timecs")
+except PackageNotFoundError:
+    VERSION = "3.1.0"
 
 # Six letters, five rows, one space between glyphs: 46 columns at its widest.
 BANNER = (

@@ -74,7 +74,11 @@ class TestParsePolicyOrdering:
         creations = [node for node in ast.walk(run_fn)
                      if isinstance(node, ast.Call)
                      and getattr(node.func, "id", getattr(node.func, "attr", "")) == "ProcessPoolExecutor"]
-        assert len(creations) == 1, f"pool must be built once, found {len(creations)}"
+        # At v3.1.0 the law was "one pool for the run, never one per 40-file slice". At v3.1.1 the
+        # parse does not build a pool at all: `ast.parse` is under a second for a corpus the pool
+        # needed several interpreters just to start, so the parent is the cheapest worker available
+        # and the fan-out was pure overhead. A pool rebuilt here would have to be worth its spawn.
+        assert len(creations) == 0, f"parsing must stay in the parent, found {len(creations)} pools"
 
 
 class TestCwe89EmitIndex:

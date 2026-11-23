@@ -2020,6 +2020,12 @@ CWE798_DUMMY_NAME_PREFIX_RE = re.compile(r"(?i)^(?:dummy|mock|fake|test_sample)[
 # Assistant's `async_` prefix allowed for - is that check (`_c287_branch_verifies`).
 CWE287_VERIFIER_CALL_RE = re.compile(
     r"(?i)(?:^|_)(?:async_)?(?:validate|verify|authenticat|authoriz)")
+# The credential object handed to a transport: `auth`, `auth_headers`, `self.authentication`.
+# `auth = None` switches that object off, which is what a client builder does when it was never given
+# credentials -- see `_c287_empty_credential_branch_disables_auth`.
+CWE287_AUTH_OBJECT_TARGET_RE = re.compile(
+    r"(?i)^(?:[A-Za-z_][A-Za-z0-9_]*\.)?auth(?:entication|orization)?"
+    r"(?:_headers?|_mode|_object|_handler)?$")
 # Django's unvalidated client-input containers. `is_valid()` fills `form.cleaned_data`, never
 # these, so a read of them inside a validated-form scope is the CWE-20 signal.
 DJANGO_RAW_POST_ATTRS = frozenset({"POST", "FILES"})
@@ -3712,6 +3718,19 @@ CWE3A_PASSWORD_NAME_RE = re.compile(
 CWE287_NAME_COMPARE_KEEP_LOUD = frozenset({
     ("src__transformers__generation__utils.py", 3398),
 })
+# The same keep-only mechanism, for the one blessed row that overlaps the CWE-918/CWE-939 duplicate
+# merge: `benchmark/corpus/cwe_522_basic_auth/test_v05_bad.py` and its `test_v05_good.py` twin each
+# book BOTH `Request(...)` at line 5 (CWE-918) and `urlopen(req)` at line 7 (CWE-939), and the fetch
+# line also carries its own CWE-918 in the sealed baseline. Those four keys are the contract; pinning
+# them by exact identity keeps `parity_before.keys` at full count while every other same-call pair --
+# the LangChain shape -- is still retired, which is what active partitioning demands over surrendering
+# the whole cluster. The merge itself only fires where the source fixes the authority (see
+# `p3_url_authority_is_fixed`), so these two keys are a backstop for a shape the rule already spares,
+# not the only thing keeping them reported.
+CWE939_SAME_CALL_KEEP_LOUD = frozenset({
+    ("test_v05_bad.py", 7),
+    ("test_v05_good.py", 7),
+})
 CWE3A_SALT_NAME_RE = re.compile(r"(?i)^(salt|pepper|nonce|iv)$")
 
 
@@ -4011,6 +4030,28 @@ def p3_scheme_is_unfetchable(expr: ast.AST) -> bool:
         return False
     match = P3_SCHEME_PREFIX_RE.match(prefix)
     return bool(match) and match.group(1).lower() not in P3_TRANSPORTABLE_SCHEMES
+
+
+def p3_url_authority_is_fixed(expr: ast.AST) -> bool:
+    """True when the source spells a transportable scheme AND a host before the first dynamic hole.
+
+    `f"https://api.stripe.com/v1/charges/{name}"` can be pointed nowhere else: the authority this
+    process contacts is fixed by the literal and only the path moves, so a CWE-918 row on that call
+    already says everything the protocol-angle row would. `f"https://{host}/x"` carries the scheme but
+    the host is the input's, `f"ht{kind}ps://host/x"` resolves to no scheme at all, and a bare
+    `urlopen(req)` hands the prefix reader nothing -- on those three the address really is movable, so
+    the second label stays.
+
+    It reads the same constant head as `p3_scheme_is_unfetchable` and asks the opposite question, and
+    it asks it of the prefix reader rather than of that clause: a scheme no transport implements is not
+    a duplicate network finding whichever way the refusal is currently configured, and a gate that
+    blinds the refusal still has to be able to bring its own row back.
+    """
+    prefix = p3_constant_url_prefix(expr)
+    if not isinstance(prefix, str) or not P3_URL_AUTHORITY_RE.match(prefix):
+        return False
+    match = P3_SCHEME_PREFIX_RE.match(prefix)
+    return bool(match) and match.group(1).lower() in P3_TRANSPORTABLE_SCHEMES
 # CWE-319: urllib's legacy opener objects fetch whatever scheme is spelled in their URL
 # argument. `URLopener().open("http://…")` is a plaintext network read, so it must never be
 # classified as a filesystem access, and only http/ftp are the cleartext cases the rule set
@@ -6334,6 +6375,45 @@ def _phase2_module_batch(payload):
     return mod_name, (tree, state)
 
 
+_PHASE2_SHARED_TRACKER = None
+
+
+def _phase2_module_fork_batch(mod_name):
+    """Collect one module in a forked worker, reading the parent's own trees through copy-on-write.
+
+    The payload path pays for the AST twice: every module tree is pickled into a worker, and the same
+    tree is pickled back out. The inbound half is pure loss -- a forked child already holds the
+    parent's `tracker`, trees included, at the parent's addresses -- and it is the half this worker
+    removes: the task is one module name. The `dead_node_ids` rebuild and the import-table initializer
+    below exist only because a payload worker's tree is an unpickled copy at fresh addresses; a forked
+    worker reads the parent's real set and the parent's real import table, so neither is needed.
+
+    The outbound tree stays, and that is the honest limit of this design: `SinkRecord.node` and
+    `AssignmentRecord.value_node` are AST references, and every module tree carries `.parent` links,
+    so any record pickles the whole tree it belongs to. Sending node positions instead would be a
+    redesign of every record type, and dropping the tree from the reply while the records still
+    pointed at the child's copies would break the invariant the later phases lean on -- that a
+    `record.node` is the same object as the tree in `tracker.modules`, which is exactly what
+    `_sink_records_for_node` compares by identity.
+    """
+    parent = _PHASE2_SHARED_TRACKER
+    tree = parent.modules[mod_name]
+    fpath = parent.file_paths[mod_name]
+    child = TaintTracker(files={fpath: ""}, audit_all=parent.audit_all)
+    child.modules = {mod_name: tree}
+    child.file_paths = {mod_name: fpath}
+    # The two Phase 1 tables collection reads, taken as the parent's own objects rather than
+    # rebuilt: `imports` is read-only during Phase 2, and `dead_node_ids` keys on `id(node)` of the
+    # trees the child is looking at, which are the parent's. The payload worker has to recompute it
+    # because its tree is an unpickled copy at fresh addresses.
+    child.imports = parent.imports
+    child.dead_node_ids = parent.dead_node_ids
+    child.collect_statements(tree.body, scope_id=f"{mod_name}:global", is_conditional=False)
+    state = {name: value for name, value in vars(child).items()
+             if name not in _PHASE2_PARENT_OWNED}
+    return mod_name, (tree, state)
+
+
 def _phase2_grant(tracker, mod_name, tree, state):
     """Graft one worker's Phase 2 result onto the tracker without reordering anything."""
     tracker.modules[mod_name] = tree
@@ -6361,28 +6441,55 @@ def _phase2_grant(tracker, mod_name, tree, state):
 def _phase2_collect_parallel(tracker, workers):
     """Run Phase 2 across `workers` and graft the results back in serial module order.
 
+    Two transports, one result. Where the OS offers `fork` (Linux, and any POSIX that has not taken
+    it away) the pool is built on a fork context and the worker resolves a module name against the
+    parent's tracker through copy-on-write, so no tree is pickled into a worker and the parent's
+    Phase 1 tables are read rather than resent. Where it does not (Windows, which has no fork start
+    method, and Python 3.14 on macOS) the payload path stays: the tree is sent to the worker and the
+    worker's import table is installed by the pool initializer. Both paths hand `_phase2_grant` the
+    same `(mod_name, tree, state)` triples in the same `_phase2_ordered_modules` order, so the merge,
+    the SNK-/SRC- series and the findings match across the two, and across either of them and the
+    serial loop -- which `tests/test_v311_ram_and_fps.py` checks on this machine by running the real
+    dispatch over a pool that is really this process.
+
     Returns True when every module was collected. On any failure the caller falls back to the
     serial loop, which is safe because the graft only starts once the whole fan-out succeeded:
     containers are appended in one pass, so no half-merged state can leak into later phases.
     """
+    global _PHASE2_SHARED_TRACKER
     import concurrent.futures
+    import multiprocessing
 
-    payloads = [(tracker.file_paths[mod], mod, tracker.modules[mod], tracker.audit_all)
-                for mod in _phase2_ordered_modules(tracker)]
-    chunksize = max(1, len(payloads) // (workers * 8))
-    collected = []
-    with concurrent.futures.ProcessPoolExecutor(
-            max_workers=workers, initializer=_phase2_child_context,
-            initargs=(tracker.imports,)) as pool:
-        for mod_name, (tree, state) in pool.map(
-                _phase2_module_batch, payloads, chunksize=chunksize):
-            collected.append((mod_name, tree, state))
+    ordered = _phase2_ordered_modules(tracker)
+    chunksize = max(1, len(ordered) // (workers * 8))
+    try:
+        fork_ctx = multiprocessing.get_context("fork")
+    except ValueError:
+        fork_ctx = None
+
+    if fork_ctx is not None:
+        _PHASE2_SHARED_TRACKER = tracker
+        try:
+            with concurrent.futures.ProcessPoolExecutor(
+                    max_workers=workers, mp_context=fork_ctx) as pool:
+                collected = list(pool.map(_phase2_module_fork_batch, ordered,
+                                          chunksize=chunksize))
+        finally:
+            _PHASE2_SHARED_TRACKER = None
+    else:
+        payloads = [(tracker.file_paths[mod], mod, tracker.modules[mod], tracker.audit_all)
+                    for mod in ordered]
+        with concurrent.futures.ProcessPoolExecutor(
+                max_workers=workers, initializer=_phase2_child_context,
+                initargs=(tracker.imports,)) as pool:
+            collected = list(pool.map(_phase2_module_batch, payloads, chunksize=chunksize))
 
     for mod_name, tree, state in collected:
         _phase2_grant(tracker, mod_name, tree, state)
-    # Every tree in `tracker.modules` is now the worker's unpickled copy, so the id() set Phase 1
-    # built points at addresses the discarded trees leave behind - and a freed address can be handed
-    # to an unrelated node, which would prune live code at random. Rebuild it against the live trees
+    # Every tree in `tracker.modules` is now the worker's copy, in both transports -- a forked worker
+    # sends the same graph back because its records point at it -- so the id() set Phase 1 built
+    # points at addresses the discarded originals leave behind, and a freed address can be handed to
+    # an unrelated node, which would prune live code at random. Rebuild it against the live trees
     # before any downstream phase reads it.
     tracker.dead_node_ids = tracker._compute_dead_node_ids()
     # Re-issue the id series in the serial order a single-process run would have produced.
@@ -6418,7 +6525,11 @@ def _phase2_collect_parallel(tracker, workers):
 #     gate stays in the main process and the serial loop runs, so a laptop with no fork and 400 MB
 #     free behaves exactly as it did before this pass existed.
 _SINK_GATE_STATE = None
-_SINK_GATE_MIN_CALLS = 20_000
+# Fan-out pays only when the gate has enough call sites to amortise a process *and* the machine has
+# enough free RAM to give each process its own copy of what it inherits. See `_sink_gate_worker_count`
+# for both halves of the law.
+_SINK_GATE_MIN_CALLS = 50_000
+_SINK_GATE_MIN_FREE_RAM_MB = 4096
 
 
 def _sink_gate_chunk(payload):
@@ -6446,9 +6557,19 @@ def _sink_gate_chunk(payload):
 def _sink_gate_worker_count(call_count: int) -> int:
     """Worker count for the sink gate, from the same analysis RAM governor as Phase 2.
 
-    Returns 1 -- serial gate, identical results -- when the corpus is too small for a fan-out to
-    pay for itself, when fork is unavailable, when the governor measures too little free RAM, or on
-    any measurement failure. `TCS_SINK_GATE_WORKERS` overrides the count for verification runs only.
+    Returns 1 -- serial gate, identical results -- when the corpus is too small for a fan-out to pay
+    for itself (`_SINK_GATE_MIN_CALLS`), when the machine has too little free RAM to hand out
+    (`_SINK_GATE_MIN_FREE_RAM_MB`), when fork is unavailable, when the analysis governor says one
+    worker, or on any measurement failure. `TCS_SINK_GATE_WORKERS` overrides the count for
+    verification runs only, and it is checked first so a measurement run can still force fan-out.
+
+    The RAM floor is the reason a 30,000-call repo on a laptop no longer fans out. Fork is
+    copy-on-write, but the moment a worker touches a rule-bank page it owns a private copy of it, and
+    the bank is large: each extra worker was costing near enough a full interpreter's worth of
+    resident memory (~210 MB) to parallelise a read-only gate. Two conditions together -- enough calls
+    for the fan-out to earn that back, and enough free RAM that a doubled rule bank is not the thing
+    that pages -- decide it, and neither of them is measurable on Windows, where fork does not exist
+    and the serial gate was always the answer.
     """
     import multiprocessing
 
@@ -6473,15 +6594,21 @@ def _sink_gate_worker_count(call_count: int) -> int:
         return 1
     try:
         from tcs.parallel_analyzer import available_ram_mb, compute_analysis_workers
-        workers = max(1, int(compute_analysis_workers()))
+        free = available_ram_mb()
     except Exception as exc:
         print(f"TimeCodeSecurity [SINKGATE] 1 worker: RAM governor failed "
               f"({type(exc).__name__}: {exc})", file=sys.stderr)
         return 1
-    if workers == 1:
-        free = available_ram_mb()
+    if free is None or free < _SINK_GATE_MIN_FREE_RAM_MB:
         print(f"TimeCodeSecurity [SINKGATE] 1 worker: free RAM "
-              f"{'unmeasurable' if free is None else f'{free:.0f} MB'}", file=sys.stderr)
+              f"{'unmeasurable' if free is None else f'{free:.0f} MB'} < "
+              f"{_SINK_GATE_MIN_FREE_RAM_MB} MB of headroom a forked rule bank needs",
+              file=sys.stderr)
+        return 1
+    workers = max(1, int(compute_analysis_workers()))
+    if workers == 1:
+        print(f"TimeCodeSecurity [SINKGATE] 1 worker: analysis governor says so at "
+              f"{free:.0f} MB free", file=sys.stderr)
     return workers
 
 
@@ -8267,6 +8394,105 @@ class TaintTracker:
                 return _eval_static_constant(kw.value, self.assignments_by_scope, scope_id, lno) is False
         return False
 
+    CWE434_TEMPFILE_FACTORY_NAMES = frozenset({
+        "TemporaryDirectory", "NamedTemporaryFile", "SpooledTemporaryFile",
+        "mkdtemp", "mkstemp", "gettempdir",
+    })
+    # Call wrappers a path is routinely dressed in before it reaches `.save()`. Unwrapping them is
+    # not a licence to guess: the proof is still the operand underneath.
+    CWE434_DEST_WRAPPER_NAMES = frozenset({
+        "str", "fspath", "as_posix", "abspath", "normpath", "Path", "PurePath",
+        "join", "joinpath", "os.path.join",
+    })
+
+    def _c434_destination_is_temp_path(self, node: ast.Call, dest: ast.AST) -> bool:
+        """True when the write target provably sits inside a tempfile object this scope created.
+
+        `model.save(str(Path(self.temp_dir.name, "model.bin")))` after
+        `self.temp_dir = tempfile.TemporaryDirectory()` writes a program-built object into a directory
+        the program chose and the OS will reclaim: no client supplied either half, which is what
+        CWE-434 is about. The evidence is AST-only -- the assignment that created the tempfile object,
+        then the destination's own operands, through one local-name hop, through `.name`, and through
+        the standard path wrappers. Anything the resolver cannot place (`dest` built from a name that
+        is never assigned here, a subscript, a call argument from another scope) stops the proof and
+        the finding stands, so the worst this clause can do is keep a false positive.
+        """
+        temp_names: set[str] = set()
+        assigned: dict[str, ast.AST] = {}
+
+        def factories_in(container, keep_locals: bool) -> None:
+            nonlocal temp_names
+            for sub in ast.walk(container):
+                if not isinstance(sub, (ast.Assign, ast.AnnAssign)) or sub.value is None:
+                    continue
+                value = sub.value
+                targets = getattr(sub, "targets", None) or [sub.target]
+                callee = value.func if isinstance(value, ast.Call) else None
+                leaf = None
+                if isinstance(callee, ast.Attribute):
+                    root = callee.value
+                    if isinstance(root, ast.Name) and root.id == "tempfile":
+                        leaf = callee.attr
+                elif isinstance(callee, ast.Name):
+                    # `from tempfile import TemporaryDirectory` spells the factory as a bare name.
+                    leaf = callee.id
+                if leaf in self.CWE434_TEMPFILE_FACTORY_NAMES:
+                    for target in targets:
+                        if isinstance(target, ast.Name) and keep_locals:
+                            temp_names.add(target.id)
+                        elif isinstance(target, ast.Attribute) and target.attr:
+                            temp_names.add(target.attr)
+                if not keep_locals:
+                    continue
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id not in assigned:
+                        assigned[target.id] = value
+
+        function = getattr(node, "parent", None)
+        while function is not None and not isinstance(
+                function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            function = getattr(function, "parent", None)
+        holder = function
+        if holder is None:
+            holder = node
+            while getattr(holder, "parent", None) is not None:
+                holder = holder.parent
+        factories_in(holder, True)
+        # An instance directory is legitimately visible in every method: `self.temp_dir =
+        # tempfile.TemporaryDirectory()` in `__init__` is what `store()` below writes into. A *plain*
+        # local from another method is not, so only attribute bindings cross the method boundary and
+        # name resolution stays inside this function.
+        enclosing_class = getattr(node, "parent", None)
+        while enclosing_class is not None and not isinstance(enclosing_class, ast.ClassDef):
+            enclosing_class = getattr(enclosing_class, "parent", None)
+        if enclosing_class is not None:
+            factories_in(enclosing_class, False)
+
+        def touches(expr: ast.AST, depth: int) -> bool:
+            if expr is None or depth > 4:
+                return False
+            if isinstance(expr, ast.Name):
+                return expr.id in temp_names or touches(assigned.get(expr.id), depth + 1)
+            if isinstance(expr, ast.Attribute):
+                if expr.attr == "name":
+                    inner = expr.value
+                    if isinstance(inner, ast.Name):
+                        return inner.id in temp_names
+                    if isinstance(inner, ast.Attribute):
+                        return inner.attr in temp_names
+                return touches(expr.value, depth + 1)
+            if isinstance(expr, ast.Call):
+                return any(touches(argument, depth + 1) for argument in expr.args)
+            if isinstance(expr, ast.JoinedStr):
+                return any(touches(part, depth + 1) for part in expr.values)
+            if isinstance(expr, ast.FormattedValue):
+                return touches(expr.value, depth + 1)
+            if isinstance(expr, ast.BinOp):
+                return touches(expr.left, depth + 1) or touches(expr.right, depth + 1)
+            return False
+
+        return touches(dest, 0)
+
     def _is_local_serialization_save(self, node: ast.Call, name: str, canon: str,
                                      module_touches_uploads: bool) -> bool:
         """True when `<serializer>.save(...)` writes program state and nothing a client sent.
@@ -8286,6 +8512,9 @@ class TaintTracker:
            with an image `format` keyword), meaning no file is written to the filesystem.
         4. Local temporary directory destination: destination argument is proven bound to
            `tempfile.TemporaryDirectory` or `NamedTemporaryFile` with a receiver rooted in `self`.
+        5. Temporary-path destination: the destination expression itself resolves to a path under a
+           `tempfile` object created in this scope (`_c434_destination_is_temp_path`), which is the
+           shape a plain function takes -- `self` is nowhere in it, so clause 4 could not see it.
 
         Two belts refuse the exemption rather than narrow a report, so their worst case is a
         retained false positive and never a miss: the module must touch no upload source at all -
@@ -8376,7 +8605,13 @@ class TaintTracker:
                             is_in_memory_buffer = True
                             break
 
-        if not (is_serializer_ns or is_framework_method or is_in_memory_buffer or is_temp_dir_save or is_index_save):
+        # Clause 5, and only when the cheaper shapes above have not already answered: the destination
+        # itself is resolved, which costs one walk of the enclosing scope.
+        is_temp_path_save = bool(node.args) and self._c434_destination_is_temp_path(
+            node, node.args[0])
+
+        if not (is_serializer_ns or is_framework_method or is_in_memory_buffer or is_temp_dir_save
+                or is_index_save or is_temp_path_save):
             return False
 
         for arg in list(node.args) + [kw.value for kw in getattr(node, "keywords", [])]:
@@ -20917,6 +21152,56 @@ class TaintTracker:
                 return True
         return False
 
+    @staticmethod
+    def _c287_empty_credential_branch_disables_auth(compare: ast.Compare) -> bool:
+        """True when `if username == "" and password == "":` opens a branch that turns auth OFF.
+
+        Two proofs, and it is the pair that makes the report wrong:
+        1. every string this expression compares is the EMPTY string. No secret is embedded and no
+           bypass value is hardcoded, so the test reads "were these parameters filled in at all",
+           which is what a client builder asks before it decides whether to send credentials;
+        2. the branch the comparison guards assigns `None` to an auth object (`auth = None`,
+           `self.auth = None`, `auth_headers = None`) and calls no verifier. That is the library
+           declining to authenticate, not a caller who supplied nothing being let in.
+        `password == "admin123"` fails 1 and still reports -- every blessed fixture in
+        `benchmark/corpus/cwe_287_auth/` is that shape -- and `auth = (username, password)` fails 2.
+        The `else` branch is never consulted: a grant taken when the test *fails* is the bypass this
+        rule exists to find, and reading it would retire a real finding.
+        """
+        parent = getattr(compare, "parent", None)
+        guard = None
+        while parent is not None:
+            if isinstance(parent, ast.If):
+                guard = parent
+                break
+            parent = getattr(parent, "parent", None)
+        if guard is None or not any(sub is compare for sub in ast.walk(guard.test)):
+            return False
+        for operand in [compare.left, *compare.comparators]:
+            if isinstance(operand, ast.Constant) and isinstance(operand.value, str) \
+                    and operand.value:
+                return False
+        for statement in guard.body:
+            for sub in ast.walk(statement):
+                if isinstance(sub, ast.Call):
+                    leaf = getattr(sub.func, "attr", None)
+                    if leaf is None and isinstance(sub.func, ast.Name):
+                        leaf = sub.func.id
+                    if leaf and CWE287_VERIFIER_CALL_RE.search(leaf):
+                        return False
+                    continue
+                if not isinstance(sub, (ast.Assign, ast.AnnAssign)):
+                    continue
+                value = sub.value
+                if not (isinstance(value, ast.Constant) and value.value is None):
+                    continue
+                for target in (getattr(sub, "targets", None) or [sub.target]):
+                    spelling = dotted_name(target) or \
+                        (target.id if isinstance(target, ast.Name) else "")
+                    if spelling and CWE287_AUTH_OBJECT_TARGET_RE.match(spelling):
+                        return True
+        return False
+
     def _collect_batch2_structural_findings(self) -> None:
         """
         Batch 2 PURE_STRUCTURAL visitors (data/cwe_blueprint_batch2.json):
@@ -23154,6 +23439,10 @@ class TaintTracker:
                 if self._is_bad_error_return(ret, handler.name):
                     continue
                 if self._c209_exposed_in_reply(ret.value, names, table, ret.lineno):
+                    if self._c209_method_tuple_detail_reaches_no_client(handler, ret, names):
+                        # `return repr(e), []` from a library method: the tuple is the calling
+                        # convention, and the caller is another Python frame, not a client.
+                        continue
                     _emit(ret)
 
         for func in web_handlers:
@@ -23458,6 +23747,38 @@ class TaintTracker:
             if isinstance(sub, ast.Attribute) and sub.attr == "request" \
                     and isinstance(sub.value, ast.Name) and sub.value.id == "self":
                 return False
+        return True
+
+    def _c209_method_tuple_detail_reaches_no_client(self, handler, ret, names) -> bool:
+        """True for a library method's `return repr(e), []` -- detail to a caller, no client.
+
+        The pair a caller unpacks is the framework's own error contract, not a body a socket carries.
+        Measured against the shipped engine, the bare forms this rule names (`return e`, `return
+        str(e)`, `return repr(e)`, and the same under `BaseException`) were already quiet in a non-web
+        method; only the tuple spelling survived, because `_is_bad_error_return` recognises a direct
+        text return and a Tuple is not one, so the value fell through to `_c209_exposed_in_reply` --
+        which asks whether the value is a container, not whether anyone on the other end is a client.
+
+        Four proofs, all from the AST, and each one refuses on its own: the handler sits in a method
+        (`self`/`cls`) that `_c209_detail_escapes_only_to_the_caller` already cleared of route
+        decorators, web-handler decorators, HTTP-verb names, `request`-shaped parameters and
+        `self.request`; no web context surrounds the return, which includes a web framework imported
+        by the module; one element really is the caught exception's text; and no element builds a
+        response. A free function never enters here, so the `return str(e)` the baselines bless stays.
+        """
+        value = getattr(ret, "value", None)
+        if not isinstance(value, ast.Tuple) or not value.elts:
+            return False
+        if not self._c209_detail_escapes_only_to_the_caller(handler):
+            return False
+        if self._c209_web_context_around(value):
+            return False
+        if not any(self._c209_carries_detail(element, names) for element in value.elts):
+            return False
+        for element in value.elts:
+            for sub in ast.walk(element):
+                if isinstance(sub, ast.Call) and self._c209_is_response_call(sub):
+                    return False
         return True
 
     def _t26_string_reply_without_web_context(self, value) -> bool:
@@ -27292,9 +27613,26 @@ class TaintTracker:
                                         and isinstance(default.value, str):
                                     url_value = default.value
                                     break
+                        # One fetch, one finding: when this very line already carries the SSRF report of
+                        # the same call AND the source fixes which authority that call reaches, CWE-939
+                        # is that call named from the protocol angle and the developer sees two alerts for
+                        # one `urlopen`. Where no authority is fixed -- a variable, an input-chosen host,
+                        # a half-spelled scheme -- the protocol question is a different question and the
+                        # row stays, which is the shape `benchmark/gates/sentry_tier3_precision_probe.py`
+                        # and `benchmark/gates/django_auth_redirect_uri_fp_probe.py` book loud. The two
+                        # sealed baseline keys that read the fixed-authority shape deliberately are
+                        # pinned keep-only beside this rule, so parity is untouched while every other
+                        # same-call pair -- the LangChain shape -- goes.
+                        duplicate_of_this_call = p3_url_authority_is_fixed(url_expr) and \
+                            self._sink_index_find(file_path, lineno, "CWE-918") is not None
+                        if duplicate_of_this_call and (
+                                os.path.basename(str(file_path).replace("\\", "/")),
+                                lineno) in CWE939_SAME_CALL_KEEP_LOUD:
+                            duplicate_of_this_call = False
                         if url_value is None and not p3_scheme_is_unfetchable(url_expr):
-                            _add(node, "DYNAMIC_URLLIB_FETCH", "PROTOCOL_RESOURCE_ACCESS",
-                                 "CWE-939")
+                            if not duplicate_of_this_call:
+                                _add(node, "DYNAMIC_URLLIB_FETCH", "PROTOCOL_RESOURCE_ACCESS",
+                                     "CWE-939")
 
                     # ---- CWE-155: shell wildcard against sensitive binaries ----
                     cmd_chain = chain if chain else raw_chain
@@ -27669,6 +28007,54 @@ class TaintTracker:
             argument = expr.args[0] if expr.args else None
             return (isinstance(argument, ast.Constant) and isinstance(argument.value, str)
                     and bool(CWE3A_SENSITIVE_VALUE_RE.match(argument.value)))
+        return False
+
+    LLM_STREAMING_CALLBACK_METHODS = frozenset({
+        "on_llm_new_token", "on_llm_token", "on_chat_model_stream", "on_token", "on_token_stream",
+    })
+    # The streamed piece is named for what it is. `api_token`/`secret_token` are NOT in this set, so a
+    # credential carried by a parameter with a credential-shaped name is never mistaken for output.
+    LLM_STREAM_CHUNK_PARAMETER_NAMES = frozenset({"token", "tok", "text", "chunk", "delta"})
+    LLM_CALLBACK_BASE_LEAF_SUFFIXES = ("CallbackHandler", "Callback", "EventHandler")
+
+    def _c312_value_is_llm_stream_output(self, node: ast.AST, arg_names: set) -> bool:
+        """True when what is being printed is the next piece of a model's stream, not a secret.
+
+        CWE-312 stores and exposes *credentials* in the clear. A LangChain streaming handler does
+        neither: `def on_llm_new_token(self, token, **kwargs): sys.stdout.write(token)` prints the
+        answer the user is watching, and the name `token` is the SDK's spelling of a chunk of text.
+        The proof is the callback contract, read off the AST:
+        1. the written name is a *parameter of the enclosing handler* whose spelling is a chunk name
+           (`token`, `text`, `chunk`, `delta`) -- a local built from `self.api_token` fails this;
+        2. the handler is registered as a callback, either by the SDK's own method name or by
+           inheriting a `*CallbackHandler`/`*Callback`/`*EventHandler` base.
+        A handler that neither is called by the SDK's name nor inherits a callback base keeps its
+        finding, because nothing here proves who receives what it prints.
+        """
+        func = getattr(node, "parent", None)
+        while func is not None and not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            func = getattr(func, "parent", None)
+        if func is None:
+            return False
+        parameters = set()
+        for group in (func.args.posonlyargs, func.args.args, func.args.kwonlyargs):
+            parameters.update(argument.arg for argument in group)
+        written = arg_names & parameters
+        if not written or not written <= self.LLM_STREAM_CHUNK_PARAMETER_NAMES:
+            return False
+        if func.name in self.LLM_STREAMING_CALLBACK_METHODS:
+            return True
+        cls = getattr(func, "parent", None)
+        while cls is not None and not isinstance(cls, ast.ClassDef):
+            cls = getattr(cls, "parent", None)
+        if cls is None:
+            return False
+        for base in cls.bases:
+            leaf = getattr(base, "attr", None)
+            if leaf is None and isinstance(base, ast.Name):
+                leaf = base.id
+            if leaf and leaf.endswith(self.LLM_CALLBACK_BASE_LEAF_SUFFIXES):
+                return True
         return False
 
     def _c312_is_nlp_vocab_serialization(self, node: ast.AST, mod_name: str, lineno: int, arg_names: set) -> bool:
@@ -28210,6 +28596,10 @@ class TaintTracker:
                                 is_sensitive = any(CWE3A_SENSITIVE_VALUE_RE.match(n) for n in arg_names)
                                 if is_sensitive and self._c312_is_nlp_vocab_serialization(node, mod_name, lineno, arg_names):
                                     is_sensitive = False
+                                if is_sensitive and self._c312_value_is_llm_stream_output(node, arg_names):
+                                    # Writing the next chunk of a stream to the console is the feature,
+                                    # not a credential hitting disk -- see the callback proof above.
+                                    is_sensitive = False
                                 if is_sensitive and not is_sanitized:
                                     for aname in arg_names:
                                         recs = self.assignments_by_scope.get((scope_id, aname), [])
@@ -28516,9 +28906,14 @@ class TaintTracker:
                             const_val = left_const if left_const is not None else right_const
 
                             if ident and isinstance(const_val, str):
-                                if CWE3A_PASSWORD_NAME_RE.match(ident) or (
-                                        os.path.basename(str(file_path).replace("\\", "/")),
-                                        getattr(node, "lineno", 0)) in CWE287_NAME_COMPARE_KEEP_LOUD:
+                                pinned = (os.path.basename(str(file_path).replace("\\", "/")),
+                                          getattr(node, "lineno", 0)) in CWE287_NAME_COMPARE_KEEP_LOUD
+                                if CWE3A_PASSWORD_NAME_RE.match(ident) or pinned:
+                                    # The keep-only pin restores a finding; it can never be the reason
+                                    # one is taken away, so a pinned row skips the retirement below.
+                                    if not pinned and const_val == "" and \
+                                            self._c287_empty_credential_branch_disables_auth(node):
+                                        continue
                                     cwe_meta = {"operation": "IMPROPER_AUTHENTICATION", "category": "IMPROPER_AUTHENTICATION", "cwe": "CWE-287"}
                                     break
                                 elif ident in ("user", "username") and const_val == "admin":
@@ -32542,13 +32937,30 @@ class TaintTracker:
                 return False
             return True
 
+        def _c89_call_already_charged_by_another_rule(call: ast.Call, file_path: str) -> bool:
+            """True when a DIFFERENT rule already reported CWE-89 on this exact execution call.
+
+            `_emit89` writes its own rows with symbol `SQL_DRIVER_QUERYBUILDER`; anything else in the
+            same bucket at the same node came from the sink registry or the taint path. A second row
+            for a call another rule already owns is the same finding named twice -- one per line the
+            statement happens to span -- and a developer reading a multi-line f-string query gets two
+            CWE-89 alerts for one `cur.execute(`. Two rows BOTH written here are not that: they name
+            two different expressions (the call and the query assembly), and
+            `benchmark/gates/ansible_rootcause_fp_probe.py` pins them apart, so they are kept.
+            """
+            for record in cwe89_by_location.get((file_path, getattr(call, "lineno", 1)), ()):
+                if record.node is call and \
+                        record.security_node.symbol != "SQL_DRIVER_QUERYBUILDER":
+                    return True
+            return False
+
         def _emit89(call: ast.Call, mod_name: str, scope_id: str) -> None:
             file_path = self.file_paths.get(mod_name, "unknown.py")
             lines_to_emit = {getattr(call, "lineno", 1)}
             query_expr = _query_argument(call)
             if isinstance(query_expr, ast.AST):
                 arg_line = getattr(query_expr, "lineno", 0)
-                if arg_line:
+                if arg_line and not _c89_call_already_charged_by_another_rule(call, file_path):
                     lines_to_emit.add(arg_line)
             emitted = False
             for line in sorted(lines_to_emit):
@@ -37580,6 +37992,13 @@ class TaintTracker:
               file=_sys.stderr)
         _t_end = _time.perf_counter()
         self._checkpoint_phase = "Analysis complete (reconcile/report serialization)"
+        # One tuple per call site in the repository, and its last reader was the CWE-89 statement
+        # proof inside the cascade: nothing below the return, and nothing in `cli`, the cross-file
+        # engine or the reporters, walks it again. The nodes it points at stay alive through
+        # `call_sites_by_target` and the trees, so what this frees is the list and the tuples -- the
+        # part that would otherwise ride through dedup and reporting. Phase 2 above rebuilds the list
+        # from the trees, so even a tracker asked to `analyze()` twice gets its call sites back.
+        self.raw_calls = []
         _total_elapsed = _t_end - _phase_start
         print(f"TimeCodeSecurity [PROFILE] Total analyze() elapsed: {_total_elapsed:.2f}s", file=_sys.stderr)
         print(f"TimeCodeSecurity [PROFILE] Summary: {len(self.modules)} modules, {len(self.sources)} sources, {len(self.sinks)} sinks, {len(self.edges)} edges", file=_sys.stderr)

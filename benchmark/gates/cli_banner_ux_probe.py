@@ -74,7 +74,11 @@ BOX = "\u2500"
 ARROW = "\u2192"
 DOT = "\u00b7"
 STANDALONE_TCS = re.compile(r"\bTCS\b")
-ALLOWED_IMPORTS = frozenset({"__future__", "os", "sys", "typing"})
+# `importlib` is allowed for one purpose: `banner.py` reads the *installed distribution's* version
+# through `importlib.metadata`, so the number the user sees is the number the wheel shipped with.
+# Metadata is not the engine -- `FORBIDDEN_IMPORTS` below still bars every analysis module, and the
+# read is guarded by `PackageNotFoundError` with a literal fallback, so a bare checkout cannot crash.
+ALLOWED_IMPORTS = frozenset({"__future__", "os", "sys", "typing", "importlib"})
 FORBIDDEN_IMPORTS = ("cli", "ast_scanner", "iac_auditor", "scanners", "cross_file_engine",
                      "psutil", "requests", "yaml", "colorama", "rich", "click", "tomllib")
 WIRING_CONTRACT = (

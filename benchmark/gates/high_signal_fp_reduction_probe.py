@@ -314,6 +314,30 @@ case('F2', 'helper_dict_without_web_context', _F2_SDK, 'CWE-209', 'salt_sdk.py',
      at(_SDK_REPLY, 'def local_cfg', 4), 'quiet', 'dict_arm', 'loud',
      'an OSError read by another Python process is logging noise, not a stack disclosure')
 
+# The third way a dict reaches a client: the function is mounted on a URL. No web framework is
+# imported anywhere in this file, so the only proof available is the decorator itself -- measured, a
+# `@blueprint.route` body returns its error dict loud while the undecorated helper beside it is quiet.
+_SDK_REPLY_WITH_ROUTE = module(
+    'def api_call(payload):',
+    '    try:',
+    '        return dispatch(payload)',
+    '    except Exception as exc:',
+    '        return {"success": False, "error": str(exc)}',
+    '',
+    '',
+    '@blueprint.route("/api")',
+    'def api_view(payload):',
+    '    try:',
+    '        return dispatch(payload)',
+    '    except Exception as exc:',
+    '        return {"error": str(exc)}')
+
+_F2_ROUTE = {'routed_sdk.py': _SDK_REPLY_WITH_ROUTE}
+case('F2', 'route_decorator_is_web_context_alone', _F2_ROUTE, 'CWE-209', 'routed_sdk.py',
+     at(_SDK_REPLY_WITH_ROUTE, 'def api_view', 4), 'loud', 'dict_arm', 'loud',
+     'the decorator is the only web proof in the file, and the row on the undecorated helper above '
+     'stays quiet, so the two answers come from the route arm alone')
+
 # --------------------------------------------------------------------------- F3: optional parameters
 _PASSWORD_DEFAULT = module(
     'import ssl',
@@ -870,7 +894,9 @@ LAWS = (
      lambda: 'RESPONSE_CONSTRUCTOR_NAMES' in inspect.getsource(
          T._c209_plain_dict_reply_without_web_context)),
     ('F2 a route decorator defeats the clause',
-     lambda: '_c209_route_decorated' in inspect.getsource(T._c209_plain_dict_reply_without_web_context)),
+     lambda: '_c209_route_decorated' in inspect.getsource(T._c209_web_context_around)
+             and 'self._c209_web_context_around(value)' in inspect.getsource(
+                 T._c209_plain_dict_reply_without_web_context)),
     ('F4 the filter checks its own sink before anything else',
      lambda: (lambda src: src.index('_cwe1333_sink_matcher') < src.index('pattern = next(')
               and 'return False' in src[src.index('_cwe1333_sink_matcher'):src.index('pattern = next(')])(
@@ -927,7 +953,8 @@ MUTATIONS = {
     'dict_clause_blind': (
         'F2: every dict is treated as non-web, so the views that really are replies go quiet',
         'dict_arm_all',
-        ['sdk_helper_plain_dict', 'view_dict_with_request_argument', 'web_framework_import'],
+        ['route_decorator_is_web_context_alone', 'sdk_helper_plain_dict',
+         'view_dict_with_request_argument', 'web_framework_import'],
         ['f2_flask_import', 'f2_not_a_dict', 'f2_reply_constructor', 'f2_request_argument']),
     'password_blind': (
         'F3: any empty default at all counts as shipping a credential',

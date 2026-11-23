@@ -30,6 +30,10 @@ except ImportError:
 # ─── Hardware Governance Constants ───────────────────────────────────────────
 
 MIN_FREE_CORES = 2                    # Keep at least 2 cores free for Windows OS + DWM
+# The reservation above is a Windows tax: DWM, the shell and the antivirus scan hold cores whether or
+# not the scan runs. Linux and macOS runners do not carry that tax, and CI pays for the vCPUs it is
+# given, so on a POSIX machine with real RAM to spare one core is enough cover for whatever else runs.
+LARGE_MACHINE_FREE_RAM_MB = 4096      # Above this much free RAM a POSIX runner sheds the Windows tax
 WORKER_RAM_BUDGET_MB = 550            # Budget 550 MB RAM per active worker process
 HARD_SAFETY_THRESHOLD_MB = 900        # If available RAM < 900 MB, drop to 1 worker immediately
 PER_FILE_TIMEOUT_S = 4.0              # Strict per-file watchdog timeout (seconds)
@@ -50,7 +54,7 @@ def compute_safe_workers() -> int:
     - On cloud runners (8-32 GB RAM): scales up to 6-12 workers for max throughput
     
     Safety guarantees:
-    - Never freezes OS by keeping ≥2 cores free
+    - Never freezes OS by keeping cores free: 2 on Windows, 1 on a POSIX runner with 4 GB+ to spare
     - Hard safety threshold at 900 MB available RAM
     - Budgets 550 MB per worker to prevent OOM
     """
@@ -66,7 +70,10 @@ def compute_safe_workers() -> int:
         
         # Calculate capacity based on both CPU and RAM
         cpu_count = os.cpu_count() or 4
-        cpu_capacity = max(1, cpu_count - MIN_FREE_CORES)
+        # Windows keeps two cores free for DWM and the shell no matter how much RAM is idle; a POSIX
+        # runner with 4 GB+ free is spending its idle cores on nothing, so it reserves one.
+        core_reserve = MIN_FREE_CORES if os.name == "nt" or free_ram_mb < LARGE_MACHINE_FREE_RAM_MB else 1
+        cpu_capacity = max(1, cpu_count - core_reserve)
         ram_capacity = max(1, int(free_ram_mb // WORKER_RAM_BUDGET_MB))
         
         # Dynamic worker calculation with hard ceiling
@@ -305,70 +312,17 @@ def parse_files_parallel(
             modules[result["mod_name"]] = result["tree"]
             file_paths[result["mod_name"]] = result["filepath"]
 
-    # A governor that lands on one worker used to keep the fan-out anyway: a brand new
-    # ProcessPoolExecutor for every BATCH_SIZE slice, each file pickled into the child and its AST
-    # pickled back. Measured on the 609-file corpus: 4.91 s that way against 0.15 s in process, for
-    # identical trees - and the per-slice spawn multiplies by 267 slices on a 10k-file repository.
-    # So one worker parses in the parent, and several workers share ONE pool for the whole run
-    # instead of paying a fresh interpreter per slice.
-    governor_events = 0
-    in_process = max_workers <= 1
-    slices = [file_items[i:i + BATCH_SIZE] for i in range(0, total_files, BATCH_SIZE)]
-
-    if in_process:
-        for filepath, source in file_items:
-            _merge(_parse_here(filepath, source))
-        max_workers = 1
-    else:
-        executor: Optional[ProcessPoolExecutor] = None
-        try:
-            for slice_idx, batch in enumerate(slices):
-                # Re-check memory between slices and adjust the pool dynamically. Once the run has
-                # fallen back to the parent there is no pool left to protect, so the check stops.
-                if executor is not None and slice_idx > 0 and slice_idx % 2 == 0:
-                    current_free_mb = get_memory_stats()["available_gb"] * 1024
-                    if current_free_mb < HARD_SAFETY_THRESHOLD_MB:
-                        print(
-                            f"TimeCodeSecurity [GOVERNOR] CRITICAL: RAM dropped to "
-                            f"{current_free_mb:.0f} MB. Finishing this run in the parent.",
-                            file=sys.stderr,
-                        )
-                        # A ProcessPoolExecutor cannot shrink, and "1 worker" through a pool is the
-                        # pickling round-trip this change removes. The remaining slices run here:
-                        # one process instead of N is the strict RAM win the governor is for.
-                        # Nothing is in flight at this point (`_parse_slice` collected every
-                        # future), so waiting costs nothing and leaves no orphan worker behind.
-                        executor.shutdown(wait=True)
-                        executor = None
-                        in_process = True
-                        max_workers = 1
-                        governor_events += 1
-                    elif current_free_mb < 1500 and max_workers > 2:
-                        print(
-                            f"TimeCodeSecurity [GOVERNOR] Memory pressure "
-                            f"({current_free_mb:.0f} MB). Reducing workers from "
-                            f"{max_workers} to {max_workers - 1}.",
-                            file=sys.stderr,
-                        )
-                        max_workers = max_workers - 1
-                        governor_events += 1
-                        # Tear the pool down so the next slice rebuilds it at the smaller size: a
-                        # live ProcessPoolExecutor cannot give workers back, and a log line claiming
-                        # a reduction that did not happen would be the governor lying about RAM.
-                        executor.shutdown(wait=True)
-                        executor = None
-                if in_process:
-                    for filepath, source in batch:
-                        _merge(_parse_here(filepath, source))
-                    continue
-                if executor is None:
-                    executor = ProcessPoolExecutor(max_workers=max_workers)
-                free_mb = get_memory_stats()["available_gb"] * 1024
-                for result in _parse_slice(executor, batch, free_mb, max_workers):
-                    _merge(result)
-        finally:
-            if executor is not None:
-                executor.shutdown(wait=True)
+    # Parsing runs in the parent, for every corpus size and every worker count the governor returns.
+    # It used to fan out anyway: a `ProcessPoolExecutor` shared across 40-file slices, each file
+    # pickled into a child and its AST pickled back. Measured on the 609-file corpus that cost
+    # 4.91 s against 0.15 s in process for identical trees, and on a real repository the picture only
+    # gets worse -- `ast.parse` is roughly 0.3 ms per file, so 2,700 files is under a second of work
+    # while the pool is N interpreters that each import the rule bank before they can touch one.
+    # The parallelism a scan actually needs is in the analysis phases, which read the trees this
+    # function returns; those have their own governors. Nothing here is left conditional on RAM,
+    # because the answer does not change with the machine: the parent is the cheapest worker there is.
+    for filepath, source in file_items:
+        _merge(_parse_here(filepath, source))
 
     elapsed = time.time() - start_time
 
@@ -378,14 +332,17 @@ def parse_files_parallel(
         file=sys.stderr,
     )
 
+    # `workers_initial` is what the governor asked for, kept in the ledger even though the parse no
+    # longer spends it: the CLI prints the pair, and "started at 4, parsed in the parent" is the
+    # evidence that the pool was declined rather than missing.
     parse_stats = {
         "discovered": total_files,
         "parsed": len(modules),
         "fast_path_skipped": fast_path_skipped,
         "unparseable": len(skipped_files),
-        "parse_mode": "inline" if in_process else "parallel",
+        "parse_mode": "inline",
         "workers_initial": workers_initial,
-        "workers_final": max_workers,
+        "workers_final": 1,
         "governor_events": governor_events,
     }
     return modules, file_paths, skipped_files, parse_stats
@@ -394,7 +351,7 @@ def parse_files_parallel(
 
 
 def _parse_here(filepath: str, source: Optional[str]) -> Dict[str, Any]:
-    """Run the worker body in the parent. It cannot raise: it is where a lost worker lands."""
+    """Parse one file in this process. It cannot raise: an unparseable file is a ledger entry."""
     try:
         return _parse_single_file((filepath, source))
     except Exception as exc:
@@ -413,7 +370,12 @@ def _parse_slice(
     free_ram_mb: float,
     workers: int = 1,
 ) -> List[Dict[str, Any]]:
-    """Parse one slice on the shared pool and hand the results back in file order.
+    """Parse one slice on a pool and hand the results back in file order.
+
+    `parse_files_parallel` does not call this any more: parsing runs inline in the parent, so no
+    slice is submitted anywhere. It stays as the written policy for a fan-out that would be
+    correct -- `tests/test_parse_slice_timeout_retry.py` pins the queue-depth budget, and a future
+    change that parallelises parsing again has to satisfy it rather than rediscover it.
 
     Two properties the per-slice pool did not have:
     - the executor is created once for the whole run, so a 10k-file repository pays one spawn

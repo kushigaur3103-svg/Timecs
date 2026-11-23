@@ -1900,29 +1900,51 @@ def _parse_parser_arg(parser_str: Optional[str]) -> str:
     return DEFAULT_PARSER_MODE
 
 
+def _auto_worker_count() -> int:
+    """Default pool size for `--workers auto`: the hardware governor's answer and nothing after it.
+
+    Two faults made `auto` the most expensive setting in the product. It returned `os.cpu_count()`,
+    so it never asked the governor that budgets RAM per worker, and a worker here was not cheap --
+    each one was a fresh interpreter that imported its own copy of the rule bank, so a 4-core laptop
+    opened 5 processes and roughly 1 GB of peak RSS before it had read a single file. The pool is
+    now governed by measurement alone: `tcs.parallel_scanner.compute_safe_workers()` reads free RAM,
+    forces 1 worker below `HARD_SAFETY_THRESHOLD_MB` (900 MB, the laptop case), divides what is left
+    by `WORKER_RAM_BUDGET_MB`, and holds a free-core reservation, so the same flag answers 1 on a
+    machine that cannot afford a second interpreter and scales up to `MAX_WORKERS_CEILING` on a cloud
+    runner. The cap that used to sit on top of that answer -- 2 workers on any machine at or below
+    16 GB -- was a second, dumber governor: it overrode a measurement the first one had already made
+    and cost a 16 GB runner half the pool it had RAM for. An explicit `--workers N` never comes
+    through here, so a user who wants a different pool still has it.
+    """
+    try:
+        from tcs.parallel_scanner import compute_safe_workers
+        return max(1, int(compute_safe_workers()))
+    except Exception as exc:
+        print(f"TimeCodeSecurity [WORKERS] --workers auto: governor unavailable "
+              f"({type(exc).__name__}: {exc}); staying serial rather than guessing a pool size.",
+              file=sys.stderr)
+        return 1
+
+
 def _parse_workers_arg(workers_str: Optional[str]) -> int:
-    """Parse --workers argument into integer worker count.
-    
+    """Normalise --workers into a pool size.
+
     Args:
         workers_str: String value from CLI ('1', '2', '4', '8', 'auto', or None)
-    
+
     Returns:
-        Integer worker count (defaults to os.cpu_count() for full multi-core utilization)
+        Integer worker count. `None` and `'auto'` are the RAM-governed default
+        (`_auto_worker_count`); a number is honoured as given, because an explicit request is the
+        user overriding the governor on a machine the governor cannot see.
     """
     if workers_str is None:
         workers_str = "auto"
-    
+
     workers_str = workers_str.strip().lower()
-    
+
     if workers_str == "auto":
-        try:
-            import os
-            cpu_count = os.cpu_count() or 4
-            # Use all available CPU cores (dynamic multi-core concurrency)
-            return max(1, cpu_count)
-        except Exception:
-            return 4
-    
+        return _auto_worker_count()
+
     try:
         n = int(workers_str)
         if n < 1:
@@ -1934,11 +1956,7 @@ def _parse_workers_arg(workers_str: Optional[str]) -> int:
         return n
     except ValueError:
         print(f"Warning: invalid --workers value '{workers_str}', using auto-detect", file=sys.stderr)
-        try:
-            import os
-            return os.cpu_count() or 4
-        except Exception:
-            return 4
+        return _auto_worker_count()
 
 
 def _maybe_warn_js_ts(args):

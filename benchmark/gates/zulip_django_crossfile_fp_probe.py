@@ -720,17 +720,24 @@ def _():
 
 
 @probe('c5_migration_paths_are_four_digits_under_migrations',
-       '0023_x.py qualifies, helpers.py, 23_x.py and a production file do not')
+       'Django 0023_x.py and Odoo 9.0.1.2/pre-x.py qualify, helpers.py, 23_x.py, a phase-less Odoo '
+       'helper and a production file do not')
 def _():
     verdict = T._file_is_numbered_django_migration
-    reader = types.SimpleNamespace(NUMBERED_MIGRATION_PATH_RE=T.NUMBERED_MIGRATION_PATH_RE)
+    # The predicate reads both generated-script spellings off `self`, so the stub reader has to carry
+    # both: the Django `migrations/0235_x.py` stamp and the Odoo `migrations/9.0.1.2/pre-x.py` one.
+    reader = types.SimpleNamespace(NUMBERED_MIGRATION_PATH_RE=T.NUMBERED_MIGRATION_PATH_RE,
+                                   ODOO_VERSIONED_MIGRATION_PATH_RE=T.ODOO_VERSIONED_MIGRATION_PATH_RE)
     return (verdict(reader, 'zerver/migrations/0023_add_label.py')
             and verdict(reader, 'zerver\\migrations\\0100_squashed.py')
             and not verdict(reader, 'zerver/migrations/helpers.py')
             and not verdict(reader, 'zerver/migrations/23_old.py')
             and not verdict(reader, 'zerver/migrations/12345_old.py.bak')
             and not verdict(reader, 'zerver/lib/ops.py')
-            and not verdict(reader, 'zerver/notmigrations/0023_add.py'))
+            and not verdict(reader, 'zerver/notmigrations/0023_add.py')
+            and verdict(reader, 'addons/purchase/migrations/9.0.1.2/pre-create-properties.py')
+            and verdict(reader, 'addons\\sale\\upgrades\\12.0.1.0\\post-migrate.py')
+            and not verdict(reader, 'addons/purchase/migrations/9.0.1.2/helpers.py'))
 
 
 @probe('c5_spec_documents_by_name_and_header', 'the name or the two specification keys identify a spec')

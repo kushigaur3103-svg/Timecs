@@ -29,8 +29,10 @@ that survived it:
   8. CWE-209  - `return repr(e), []`, the tuple spelling of cluster 3 that survived it
 """
 
+import ast
 import contextlib
 import io
+import pickle
 import sys
 from pathlib import Path
 
@@ -324,6 +326,46 @@ class V(View):
             return str(e)
 '''
 
+# The chain shapes, numbered the way the engine reports them: the finding anchors on the `except`
+# line, one above the `return`.
+_METHOD_CLOSURE_RETURN_E = '''class RunnableConfigurableFields:
+    def __init__(self, fields):
+        def wrapper(*args, **kw):
+            try:
+                return go(*args, **kw)
+            except Exception as e:
+                return e
+        return wrapper
+'''
+
+_MODULE_CLOSURE_RETURN_E = '''def configurable(fn):
+    def wrapper(*args, **kw):
+        try:
+            return fn(*args, **kw)
+        except Exception as e:
+            return e
+    return wrapper
+'''
+
+_SELF_NAMED_FREE_FUNCTION_CLOSURE_RETURN_E = '''def configurable(self, fn):
+    def wrapper(*args, **kw):
+        try:
+            return fn(*args, **kw)
+        except Exception as e:
+            return e
+    return wrapper
+'''
+
+_METHOD_CLOSURE_UNDER_POST = '''class Client:
+    def post(self, url):
+        def send():
+            try:
+                return dispatch(url)
+            except Exception as e:
+                return str(e)
+        return send()
+'''
+
 
 class TestErrorExposureNeedsAClient:
     def test_bare_exception_object_from_a_method_is_silent(self):
@@ -339,6 +381,33 @@ class TestErrorExposureNeedsAClient:
 
     def test_http_method_detail_still_fires(self):
         _fires(_VIEW_METHOD_DETAIL, 8, "CWE-209")
+
+    def test_a_method_returns_a_closure_and_that_detail_is_silent(self):
+        # LangChain's spelling: `RunnableConfigurableFields.__init__` builds a `wrapper` and hands the
+        # caller that closure, so the `return e` is a frame deeper out but the receiver is the same --
+        # whoever called the method. The proof is the enclosing chain, and the chain reaches `self`.
+        _silent(_METHOD_CLOSURE_RETURN_E, 6, "CWE-209")
+
+    def test_a_module_level_closure_detail_still_fires(self):
+        # The chain rule is a proof, not a licence. `configurable(fn)` is a plain function; behind it
+        # sits nothing but a caller that could be a view, so the bare `return e` stays reported.
+        _fires(_MODULE_CLOSURE_RETURN_E, 5, "CWE-209")
+
+    def test_a_self_named_free_function_closure_detail_still_fires(self):
+        # A parameter spelled `self` is not method provenance; the outermost frame must sit in a class.
+        _fires(_SELF_NAMED_FREE_FUNCTION_CLOSURE_RETURN_E, 5, "CWE-209")
+
+    def test_a_closure_under_a_verb_named_method_still_fires(self):
+        # The refusal set is consulted for every frame, not only the innermost, so a route handler's
+        # helper keeps the finding its handler would have kept.
+        _fires(_METHOD_CLOSURE_UNDER_POST, 6, "CWE-209")
+
+    def test_the_chain_refusals_are_named(self):
+        # The three markers that turn a library method back into a handler, read off the constants so
+        # widening them is a decision someone has to make in this file's presence.
+        assert {"request", "handler", "response"} <= ast_scanner.CWE209_WEB_CONTEXT_ARGUMENTS
+        assert {"get", "post", "put", "patch", "delete"} <= \
+            ast_scanner.TaintTracker.CWE209_HTTP_METHOD_NAMES
 
 
 # ─── Cluster 4: a write into a directory the program created is not an upload ─
@@ -675,6 +744,38 @@ def _signature(tracker):
              for node in tracker.sources])
 
 
+def _fork_reply(tracker, mod_name):
+    """Ask a fork worker for one module the way the pool does, and hand back the reply it sends."""
+    ast_scanner._PHASE2_SHARED_TRACKER = tracker
+    try:
+        return ast_scanner._phase2_module_fork_batch(mod_name)[1]
+    finally:
+        ast_scanner._PHASE2_SHARED_TRACKER = None
+
+
+def _reachable(value):
+    """Everything a reply carries -- containers, and the attributes of the records inside them.
+
+    The attribute view is the engine's own `_phase2_object_members`, so a field the transport can
+    reach is a field this check can reach, including the ones that live only in `__slots__`. AST
+    nodes are leaves: reaching one is the failure this walk looks for, and walking its `.parent`
+    chain would recreate the whole corpus in the test.
+    """
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        yield item
+        if isinstance(item, dict):
+            stack.extend(item.keys())
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple, set, frozenset)):
+            stack.extend(item)
+        elif isinstance(item, (ast.AST, str, bytes, int, float, complex, bool)) or item is None:
+            continue
+        else:
+            stack.extend(ast_scanner._phase2_object_members(item).values())
+
+
 class TestPhase2TransportsAgree:
     def _analyze(self, monkeypatch, workers, *, fork, pool=_InlinePool):
         import concurrent.futures
@@ -725,18 +826,68 @@ class TestPhase2TransportsAgree:
             "the unreachable `if False:` body came back as a sink"
 
     def test_a_forked_worker_reads_the_parents_own_tree(self, monkeypatch):
-        # Copy-on-write means no copy: the worker is handed a module name and resolves it against
-        # `_PHASE2_SHARED_TRACKER`, so the tree it collects is the identical object the parent holds.
+        # Copy-on-write means no copy in either direction. The worker resolves the module name against
+        # `_PHASE2_SHARED_TRACKER`, so it collects the identical tree the parent holds, and what comes
+        # back is not that tree: `tree is None` is the reply saying "every node I found is a position
+        # in the one you already have". A non-None tree here would mean an AST crossed the pipe.
         tracker = TaintTracker(files=dict(_MULTI_MODULE_CORPUS))
         mod_name = ast_scanner._phase2_ordered_modules(tracker)[0]
         tree_before = tracker.modules[mod_name]
-        ast_scanner._PHASE2_SHARED_TRACKER = tracker
-        try:
-            name, (tree, _state) = ast_scanner._phase2_module_fork_batch(mod_name)
-        finally:
-            ast_scanner._PHASE2_SHARED_TRACKER = None
-        assert name == mod_name
-        assert tree is tree_before, "a tree was pickled into or out of a worker"
+        tree, _state = _fork_reply(tracker, mod_name)
+        assert tree is None, "a tree was pickled out of the worker"
+        assert tracker.modules[mod_name] is tree_before, "the parent's tree was replaced by its worker"
+
+    def test_the_reply_carries_no_ast_node_at_all(self):
+        # The payload a fork worker returns is what a real pipe would pickle, so this is the transport
+        # measured rather than asserted: zero `ast.AST` objects reachable, markers present, and the
+        # bytes round-trip. The tree a record used to drag back was the whole module, `.parent` links
+        # included -- 1.23 GB of it on a 40,000-line corpus.
+        tracker = TaintTracker(files=dict(_MULTI_MODULE_CORPUS))
+        replies = [_fork_reply(tracker, mod) for mod in ast_scanner._phase2_ordered_modules(tracker)]
+        assert all(_tree is None for _tree, _state in replies), "a tree was pickled out of a worker"
+        numbered = [state for _tree, state in replies]
+        assert any(any(isinstance(item, tuple) and len(item) == 2 and item[0] == "_TCS_AST_IDX_"
+                       for item in _reachable(state)) for state in numbered), \
+            "no node was numbered, so the transport was never exercised"
+        for state in numbered:
+            leaked = [item for item in _reachable(pickle.loads(pickle.dumps(state)))
+                      if isinstance(item, ast.AST)]
+            assert not leaked, f"{len(leaked)} AST nodes survived in the reply"
+
+    def test_mapping_keys_sets_and_defaultdicts_keep_their_types(self):
+        from collections import defaultdict
+
+        tree = ast.parse("value = 1\n")
+        node = tree.body[0]
+        nodes = ast_scanner._preorder_ast_nodes(tree)
+        numbered = ast_scanner._phase2_encode_state(
+            {node: {node}, "default": defaultdict(list, {node: [node]})},
+            {id(item): index for index, item in enumerate(nodes)})
+        assert not any(isinstance(item, ast.AST) for item in _reachable(numbered))
+        restored = ast_scanner._phase2_decode_state(pickle.loads(pickle.dumps(numbered)), nodes)
+        key = next(item for item in restored if isinstance(item, ast.AST))
+        assert key is node
+        assert key in restored[key], "a set member was not restored as the parent's node"
+        assert restored["default"].default_factory is list
+        assert restored["default"][node][0] is node
+
+    def test_the_graft_answers_every_number_with_the_parents_node(self):
+        # Identity is the invariant the later phases lean on: `_sink_records_for_node` compares a
+        # `record.node` against the tree in `tracker.modules` by `is`. Restoring by position has to put
+        # back exactly that object, and it has to do it through the bytes a pool really sends.
+        tracker = TaintTracker(files=dict(_MULTI_MODULE_CORPUS))
+        trees = dict(tracker.modules)
+        for mod_name in ast_scanner._phase2_ordered_modules(tracker):
+            tree, state = _fork_reply(tracker, mod_name)
+            ast_scanner._phase2_grant_fork(tracker, mod_name, tree, pickle.loads(pickle.dumps(state)))
+        assert tracker.modules == trees, "a numbered reply replaced one of the parent's trees"
+        positions = {id(node) for tree in trees.values() for node in ast.walk(tree)}
+        nodes = [record.node for record in tracker.sink_records]
+        for bucket in tracker.assignments_by_scope.values():
+            nodes.extend(record.value_node for record in bucket)
+        assert nodes, "nothing came back through the numbered transport, so nothing was checked"
+        for node in nodes:
+            assert id(node) in positions, "a grafted record points outside the parent's trees"
 
     def test_the_shared_tracker_is_released_when_the_round_fails(self, monkeypatch):
         # A worker that dies must not leave the engine holding a tracker through a module global, and
@@ -747,9 +898,9 @@ class TestPhase2TransportsAgree:
             _signature(self._analyze(monkeypatch, workers=1, fork=True))
 
 
-class TestParsingStaysInTheParent:
+class TestParsingStaysInProcess:
     def _files(self):
-        # Past `BATCH_SIZE`, so the corpus reaches the parse loop instead of the sequential
+        # Past `BATCH_SIZE`, so the corpus reaches the threaded parse loop instead of the sequential
         # short-circuit that guards tiny runs.
         import tcs.parallel_scanner as scanner
 
@@ -757,16 +908,17 @@ class TestParsingStaysInTheParent:
         return {f"/repo/m{i}.py": f"import os\n\nvalue = os.environ.get('K{i}', '{i}')\n"
                 for i in range(count)}
 
-    def test_a_four_worker_request_parses_inline_and_reports_that_it_did(self):
+    def test_a_four_worker_request_parses_with_threads_and_reports_that_it_did(self):
+        import os
         import tcs.parallel_scanner as scanner
 
         files = self._files()
         modules, file_paths, skipped, stats = scanner.parse_files_parallel(files, 4)
         assert set(stats) == {"discovered", "parsed", "fast_path_skipped", "unparseable",
                               "parse_mode", "workers_initial", "workers_final", "governor_events"}
-        assert stats["parse_mode"] == "inline"
+        assert stats["parse_mode"] == "threaded"
         assert stats["workers_initial"] == 4, "the ledger must still show what was asked for"
-        assert stats["workers_final"] == 1
+        assert stats["workers_final"] == min(4, os.cpu_count() or 1)
         assert stats["governor_events"] == 0
         assert stats["discovered"] == len(modules) == len(file_paths) == len(files)
         assert not skipped
@@ -780,7 +932,7 @@ class TestParsingStaysInTheParent:
         monkeypatch.setattr(scanner, "ProcessPoolExecutor", forbidden)
         files = self._files()
         modules, _paths, _skipped, stats = scanner.parse_files_parallel(files, 8)
-        assert stats["parse_mode"] == "inline" and len(modules) == len(files)
+        assert stats["parse_mode"] == "threaded" and len(modules) == len(files)
 
     def test_the_trees_are_the_ones_the_sequential_parser_builds(self, monkeypatch):
         import tcs.parallel_scanner as scanner
@@ -800,11 +952,11 @@ class TestParsingStaysInTheParent:
 # ─── The release number the banner and the package both have to say ─────────
 
 class TestReleaseVersion:
-    def test_pyproject_and_banner_agree_on_3_1_1(self):
+    def test_pyproject_and_banner_agree_on_3_1_2(self):
         # Read as source, not imported: `banner` prefers the installed distribution's metadata when
         # one is present, so an import would test whichever wheel this machine happens to hold.
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         banner_src = (ROOT / "banner.py").read_text(encoding="utf-8")
-        assert 'version = "3.1.1"' in pyproject
-        assert 'VERSION = "3.1.1"' in banner_src, "the fallback must name the release it ships with"
-        assert 'version = "3.1.0"' not in pyproject
+        assert 'version = "3.1.2"' in pyproject
+        assert 'VERSION = "3.1.2"' in banner_src, "the fallback must name the release it ships with"
+        assert 'version = "3.1.1"' not in pyproject

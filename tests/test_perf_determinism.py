@@ -13,6 +13,7 @@ import ast
 import inspect
 import io
 import contextlib
+import os
 import tempfile
 import textwrap
 from pathlib import Path
@@ -51,11 +52,11 @@ class TestParsePolicyOrdering:
         assert with_pool[2] == without[2]
         assert with_pool[3]["parsed"] == without[3]["parsed"]
 
-    def test_in_process_parse_never_builds_a_pool(self):
+    def test_threaded_parse_never_builds_a_process_pool(self):
         files = _make_tree(BATCH_SIZE + 5)
         stats = _quiet(parse_files_parallel, files, 1)[3]
-        assert stats["parse_mode"] == "inline", "one worker must not pay a spawn per slice"
-        assert stats["workers_final"] == 1
+        assert stats["parse_mode"] == "threaded", "large parses must overlap in shared-memory threads"
+        assert stats["workers_final"] == min(4, os.cpu_count() or 1)
 
     def test_results_are_collected_in_submission_order_not_completion_order(self):
         """`as_completed` handed back whichever worker finished first, which made the dict order

@@ -6377,6 +6377,161 @@ def _phase2_module_batch(payload):
 
 _PHASE2_SHARED_TRACKER = None
 
+# What an AST reference looks like inside a fork worker's reply: this tag and the node's position in
+# `_preorder_ast_nodes` of the module it belongs to. One module, one numbering, so a number answers
+# exactly one node on both sides.
+_TCS_AST_IDX = "_TCS_AST_IDX_"
+
+
+class _Phase2EncodeRefusal(Exception):
+    """A state value the numbering pass cannot rebuild, so its AST has to travel as an object."""
+
+
+def _preorder_ast_nodes(tree) -> list:
+    """Every node in `tree`, each before its children, walked without recursion.
+
+    Both sides of the fork transport number a module with this same walk, so a number means one node
+    and nothing else. The explicit stack matters: a generated module nests deeper than
+    `sys.setrecursionlimit`, and numbering is exactly where that would otherwise kill the scan.
+    """
+    nodes = []
+    stack = [tree]
+    while stack:
+        node = stack.pop()
+        nodes.append(node)
+        stack.extend(reversed(list(ast.iter_child_nodes(node))))
+    return nodes
+
+
+def _phase2_object_members(value) -> dict:
+    """The attribute values a record carries, read from `__dict__` and from every `__slots__`."""
+    members = {}
+    namespace = getattr(value, "__dict__", None)
+    if isinstance(namespace, dict):
+        members.update(namespace)
+    for klass in type(value).__mro__:
+        slots = klass.__dict__.get("__slots__")
+        if isinstance(slots, str):
+            slots = (slots,)
+        for slot in slots or ():
+            if isinstance(slot, str) and slot not in ("__weakref__", "__dict__") \
+                    and hasattr(value, slot):
+                members[slot] = getattr(value, slot)
+    return members
+
+
+def _phase2_rebuild(container, encoded):
+    """Rebuild `container` as its own type from `encoded`, or refuse if it cannot be one.
+
+    Refusing is the safe answer. A record that arrives as a plainer type than it left -- a
+    `AssignmentNameTable` reduced to a `dict`, a `defaultdict` that now raises `KeyError` -- would
+    graft onto the parent as something the later phases read differently, and that is a result
+    change disguised as a transport change.
+    """
+    kind = type(container)
+    if isinstance(encoded, dict):
+        if kind is dict:
+            return encoded
+        try:
+            if hasattr(container, "default_factory"):
+                return kind(container.default_factory, encoded)
+            return kind(encoded)
+        except Exception as exc:
+            raise _Phase2EncodeRefusal(f"{kind.__name__} cannot be rebuilt: {exc}") from exc
+    if isinstance(encoded, list):
+        if kind is list:
+            return encoded
+        if kind is set:
+            return set(encoded)
+        if kind is frozenset:
+            return frozenset(encoded)
+        try:
+            return kind(encoded)
+        except Exception as exc:
+            raise _Phase2EncodeRefusal(f"{kind.__name__} cannot be rebuilt: {exc}") from exc
+    if isinstance(encoded, tuple):
+        if kind is tuple:
+            return tuple(encoded)
+        try:
+            return kind(*encoded)
+        except Exception as exc:
+            try:
+                return kind(encoded)
+            except Exception as iterable_exc:
+                raise _Phase2EncodeRefusal(
+                    f"{kind.__name__} cannot be rebuilt: {exc}; {iterable_exc}") from iterable_exc
+    raise _Phase2EncodeRefusal(f"{kind.__name__} cannot be rebuilt")
+
+
+def _phase2_map_state(value, to_marker, to_node):
+    """Return `value` with each AST reference replaced by `to_marker`, and each marker by `to_node`.
+
+    Encoding a worker's state and decoding it on the parent are the same walk over the same shapes,
+    so the container logic exists once. It copies only a container that actually held a reference:
+    everything else comes back as the identical object, which keeps pickle's memo sharing intact and
+    leaves a module with ten thousand records and three findings copying three of them.
+    """
+    if to_marker is not None and isinstance(value, ast.AST):
+        return to_marker(value)
+    if isinstance(value, tuple) and len(value) == 2 and value[0] == _TCS_AST_IDX:
+        if to_node is None:
+            raise _Phase2EncodeRefusal("an AST number reached a worker that cannot answer it")
+        return to_node(value[1])
+    if value is None or isinstance(
+            value, (str, bytes, bytearray, int, float, complex, bool, type, Enum, BaseException,
+                    re.Pattern)):
+        return value
+    if isinstance(value, (dict, list, tuple, set, frozenset)):
+        encoded = {}
+        changed = False
+        if isinstance(value, dict):
+            for key, item in value.items():
+                built_key = _phase2_map_state(key, to_marker, to_node)
+                built_item = _phase2_map_state(item, to_marker, to_node)
+                changed = changed or built_key is not key or built_item is not item
+                encoded[built_key] = built_item
+        else:
+            for index, item in enumerate(value):
+                built = _phase2_map_state(item, to_marker, to_node)
+                changed = changed or built is not item
+                encoded[index] = built
+        if not changed:
+            return value
+        return _phase2_rebuild(value, encoded if isinstance(value, dict) else list(encoded.values()))
+    members = _phase2_object_members(value)
+    encoded = {}
+    changed = False
+    for name, member in members.items():
+        built = _phase2_map_state(member, to_marker, to_node)
+        changed = changed or built is not member
+        encoded[name] = built
+    if not changed:
+        return value
+    kind = type(value)
+    try:
+        clone = kind.__new__(kind)
+    except Exception as exc:
+        raise _Phase2EncodeRefusal(f"{kind.__name__} cannot be copied: {exc}") from exc
+    for name, member in encoded.items():
+        try:
+            object.__setattr__(clone, name, member)
+        except Exception as exc:
+            raise _Phase2EncodeRefusal(f"{kind.__name__}.{name} cannot be set: {exc}") from exc
+    return clone
+
+
+def _phase2_encode_state(state, node_to_idx):
+    """Number every AST reference in a worker's state, so the reply ships ints instead of trees."""
+    return _phase2_map_state(
+        state,
+        lambda node: (_TCS_AST_IDX, node_to_idx[id(node)]),
+        None)
+
+
+def _phase2_decode_state(state, nodes):
+    """Answer a numbered reply with the parent's own node objects, in the parent's own tree."""
+    return _phase2_map_state(state, None, lambda index: nodes[index])
+
 
 def _phase2_module_fork_batch(mod_name):
     """Collect one module in a forked worker, reading the parent's own trees through copy-on-write.
@@ -6388,13 +6543,15 @@ def _phase2_module_fork_batch(mod_name):
     below exist only because a payload worker's tree is an unpickled copy at fresh addresses; a forked
     worker reads the parent's real set and the parent's real import table, so neither is needed.
 
-    The outbound tree stays, and that is the honest limit of this design: `SinkRecord.node` and
-    `AssignmentRecord.value_node` are AST references, and every module tree carries `.parent` links,
-    so any record pickles the whole tree it belongs to. Sending node positions instead would be a
-    redesign of every record type, and dropping the tree from the reply while the records still
-    pointed at the child's copies would break the invariant the later phases lean on -- that a
-    `record.node` is the same object as the tree in `tracker.modules`, which is exactly what
-    `_sink_records_for_node` compares by identity.
+    The outbound tree is removed here too, and the identity the later phases depend on survives it.
+    `SinkRecord.node` and `AssignmentRecord.value_node` are AST references, and every tree carries
+    `.parent` links, so a record used to pickle the whole tree it belongs to. Now each one leaves as
+    its position in `_preorder_ast_nodes`, and `_phase2_grant_fork` answers that position with a node
+    out of the tree the parent is holding -- so a `record.node` IS an object in `tracker.modules`,
+    which is what `_sink_records_for_node` compares by identity, with no tree crossing the pipe in
+    either direction. A state value the numbering pass cannot rebuild (an exotic container, a node
+    from another module's tree) falls back to sending the tree, which is the v3.1.1 transport: slower
+    for that one module, never wrong.
     """
     parent = _PHASE2_SHARED_TRACKER
     tree = parent.modules[mod_name]
@@ -6411,7 +6568,12 @@ def _phase2_module_fork_batch(mod_name):
     child.collect_statements(tree.body, scope_id=f"{mod_name}:global", is_conditional=False)
     state = {name: value for name, value in vars(child).items()
              if name not in _PHASE2_PARENT_OWNED}
-    return mod_name, (tree, state)
+    try:
+        node_to_idx = {id(node): index for index, node in enumerate(_preorder_ast_nodes(tree))}
+        numbered = _phase2_encode_state(state, node_to_idx)
+    except Exception:
+        return mod_name, (tree, state)
+    return mod_name, (None, numbered)
 
 
 def _phase2_grant(tracker, mod_name, tree, state):
@@ -6438,6 +6600,25 @@ def _phase2_grant(tracker, mod_name, tree, state):
             setattr(tracker, name, value)
 
 
+def _phase2_grant_fork(tracker, mod_name, tree, state):
+    """Graft a fork worker's reply, answering its AST numbers with the parent's own nodes.
+
+    A numbered reply (`tree is None`) carries no AST at all: every `record.node` and
+    `record.value_node` is a position in `_preorder_ast_nodes`, which the parent resolves against the
+    tree it still holds for this module. The grafted records therefore point at the same objects the
+    later phases walk, which is the identity `_sink_records_for_node` compares by, and no tree crosses
+    the pipe in either direction. A reply that still carries a tree is either the payload transport or
+    a module the numbering pass refused, and grafts exactly as it did in v3.1.1.
+    """
+    if tree is None:
+        parent_tree = tracker.modules.get(mod_name)
+        if parent_tree is None:
+            raise RuntimeError(f"{mod_name} left the parent's modules before its numbered reply landed")
+        state = _phase2_decode_state(state, _preorder_ast_nodes(parent_tree))
+        tree = parent_tree
+    _phase2_grant(tracker, mod_name, tree, state)
+
+
 def _phase2_collect_parallel(tracker, workers):
     """Run Phase 2 across `workers` and graft the results back in serial module order.
 
@@ -6446,11 +6627,12 @@ def _phase2_collect_parallel(tracker, workers):
     parent's tracker through copy-on-write, so no tree is pickled into a worker and the parent's
     Phase 1 tables are read rather than resent. Where it does not (Windows, which has no fork start
     method, and Python 3.14 on macOS) the payload path stays: the tree is sent to the worker and the
-    worker's import table is installed by the pool initializer. Both paths hand `_phase2_grant` the
-    same `(mod_name, tree, state)` triples in the same `_phase2_ordered_modules` order, so the merge,
-    the SNK-/SRC- series and the findings match across the two, and across either of them and the
-    serial loop -- which `tests/test_v311_ram_and_fps.py` checks on this machine by running the real
-    dispatch over a pool that is really this process.
+    worker's import table is installed by the pool initializer. Both transports answer with the same
+    `(mod_name, (tree, state))` pair in the same `_phase2_ordered_modules` order, and the fork one
+    answers with `tree is None` plus numbers into that tree, so the merge, the SNK-/SRC- series and
+    the findings match across the two, and across either of them and the serial loop -- which
+    `tests/test_v311_ram_and_fps.py` checks on this machine by running the real dispatch over a pool
+    that is really this process.
 
     Returns True when every module was collected. On any failure the caller falls back to the
     serial loop, which is safe because the graft only starts once the whole fan-out succeeded:
@@ -6484,14 +6666,16 @@ def _phase2_collect_parallel(tracker, workers):
                 initargs=(tracker.imports,)) as pool:
             collected = list(pool.map(_phase2_module_batch, payloads, chunksize=chunksize))
 
-    for mod_name, tree, state in collected:
-        _phase2_grant(tracker, mod_name, tree, state)
-    # Every tree in `tracker.modules` is now the worker's copy, in both transports -- a forked worker
-    # sends the same graph back because its records point at it -- so the id() set Phase 1 built
-    # points at addresses the discarded originals leave behind, and a freed address can be handed to
-    # an unrelated node, which would prune live code at random. Rebuild it against the live trees
-    # before any downstream phase reads it.
-    tracker.dead_node_ids = tracker._compute_dead_node_ids()
+    for mod_name, (tree, state) in collected:
+        _phase2_grant_fork(tracker, mod_name, tree, state)
+    # A numbered fork reply grafts records that point at the parent's own trees, which never left, so
+    # its dead-node set is still exact. The payload transport and any refused module send a worker's
+    # copy back instead, and `tree is None` is the only way to tell them apart here: once
+    # `tracker.modules` holds those copies, the id() set Phase 1 built points at addresses the
+    # discarded originals leave behind, and a freed address can be handed to an unrelated node, which
+    # would prune live code at random. Rebuild it against the live trees before any phase reads it.
+    if any(tree is not None for tree, _state in collected):
+        tracker.dead_node_ids = tracker._compute_dead_node_ids()
     # Re-issue the id series in the serial order a single-process run would have produced.
     for sink in tracker.sinks:
         sink.id = tracker.next_sink_id()
@@ -23728,22 +23912,39 @@ class TaintTracker:
         parameter, a method named after a verb, or a body that reads `self.request` (DRF builds its
         reply from that). A leak that travels inside a response object was never this rule's job -
         `_c209_exposed_in_reply` owns it and still demands a reply constructor.
+
+        A closure inherits its caller, and LangChain's libraries are written in closures: the handler
+        sits in `def wrapper(*a, **kw)` inside `RunnableConfigurableFields.__init__`, and the detail
+        reaches whoever called the method, one frame further out. So the proof walks the whole chain
+        instead of the innermost frame. What has to hold, holds of every frame in it -- no route
+        decorator, no web-shaped argument, no verb-named function -- and what identifies the library
+        identifies its outermost frame: `self` or `cls`. A method's nested function therefore retires
+        exactly as the method itself did, while a closure at module level or inside a free function
+        still has nobody behind it to excuse it.
         """
-        func = getattr(handler, "parent", None)
-        while func is not None and not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            func = getattr(func, "parent", None)
-        if func is None:
+        chain = []
+        current = getattr(handler, "parent", None)
+        while current is not None:
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                chain.append(current)
+            current = getattr(current, "parent", None)
+        if not chain:
             return False
-        positional = list(func.args.posonlyargs) + list(func.args.args)
+        outermost = chain[-1]
+        if not isinstance(getattr(outermost, "parent", None), ast.ClassDef):
+            return False
+        positional = list(outermost.args.posonlyargs) + list(outermost.args.args)
         if not positional or positional[0].arg not in ("self", "cls"):
             return False
-        if self._c209_route_decorated(func) or self._c209_is_web_handler(func):
-            return False
-        if func.name in self.CWE209_HTTP_METHOD_NAMES:
-            return False
-        if {argument.arg for argument in positional} & CWE209_WEB_CONTEXT_ARGUMENTS:
-            return False
-        for sub in ast.walk(func):
+        for func in chain:
+            if self._c209_route_decorated(func) or self._c209_is_web_handler(func):
+                return False
+            if func.name in self.CWE209_HTTP_METHOD_NAMES:
+                return False
+            if {argument.arg for argument in
+                list(func.args.posonlyargs) + list(func.args.args)} & CWE209_WEB_CONTEXT_ARGUMENTS:
+                return False
+        for sub in ast.walk(outermost):
             if isinstance(sub, ast.Attribute) and sub.attr == "request" \
                     and isinstance(sub.value, ast.Name) and sub.value.id == "self":
                 return False

@@ -14,7 +14,7 @@ import os
 import pathlib
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -312,17 +312,16 @@ def parse_files_parallel(
             modules[result["mod_name"]] = result["tree"]
             file_paths[result["mod_name"]] = result["filepath"]
 
-    # Parsing runs in the parent, for every corpus size and every worker count the governor returns.
-    # It used to fan out anyway: a `ProcessPoolExecutor` shared across 40-file slices, each file
-    # pickled into a child and its AST pickled back. Measured on the 609-file corpus that cost
-    # 4.91 s against 0.15 s in process for identical trees, and on a real repository the picture only
-    # gets worse -- `ast.parse` is roughly 0.3 ms per file, so 2,700 files is under a second of work
-    # while the pool is N interpreters that each import the rule bank before they can touch one.
-    # The parallelism a scan actually needs is in the analysis phases, which read the trees this
-    # function returns; those have their own governors. Nothing here is left conditional on RAM,
-    # because the answer does not change with the machine: the parent is the cheapest worker there is.
-    for filepath, source in file_items:
-        _merge(_parse_here(filepath, source))
+    # `ast.parse` can overlap its C parsing work while the threads share this interpreter and its
+    # allocator: no child imports the rule bank, no source or AST is pickled, and no second copy of
+    # the process image is resident. `map` yields in submission order, so module insertion order --
+    # and every SNK-/SRC- id derived from it -- is identical to the sequential parser's.
+    parse_workers = min(4, os.cpu_count() or 1)
+    paths = [filepath for filepath, _source in file_items]
+    sources = [source for _filepath, source in file_items]
+    with ThreadPoolExecutor(max_workers=parse_workers) as pool:
+        for result in pool.map(_parse_here, paths, sources):
+            _merge(result)
 
     elapsed = time.time() - start_time
 
@@ -332,17 +331,16 @@ def parse_files_parallel(
         file=sys.stderr,
     )
 
-    # `workers_initial` is what the governor asked for, kept in the ledger even though the parse no
-    # longer spends it: the CLI prints the pair, and "started at 4, parsed in the parent" is the
-    # evidence that the pool was declined rather than missing.
+    # `workers_initial` is the governor's analysis-worker request. Parsing uses a small shared-memory
+    # thread pool of its own, reported separately so the ledger does not claim a process was spawned.
     parse_stats = {
         "discovered": total_files,
         "parsed": len(modules),
         "fast_path_skipped": fast_path_skipped,
         "unparseable": len(skipped_files),
-        "parse_mode": "inline",
+        "parse_mode": "threaded",
         "workers_initial": workers_initial,
-        "workers_final": 1,
+        "workers_final": parse_workers,
         "governor_events": governor_events,
     }
     return modules, file_paths, skipped_files, parse_stats

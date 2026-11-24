@@ -1,5 +1,6 @@
 from __future__ import annotations
 import ast
+import gc
 import io
 import math
 import os
@@ -5636,11 +5637,15 @@ _NOTEBOOK_DELIVERY_CALLEES = frozenset({"display", "HTML", "Markdown", "Javascri
                                         "clear_output"})
 
 
-def module_renders_only_into_notebook(tree: ast.AST) -> bool:
+def module_renders_only_into_notebook(tree: ast.AST, nodes=None) -> bool:
     """True for a module whose markup is delivered to the IPython front end and to no web renderer."""
     imports_display = False
     delivers = False
-    for node in ast.walk(tree):
+    if nodes is None:
+        nodes = tree.__dict__.get("_cached_all_nodes")
+    if nodes is None:
+        nodes = ast.walk(tree)
+    for node in nodes:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 head = (alias.name or "").split(".")[0]
@@ -5676,7 +5681,7 @@ def _stmt_is_doc_write(stmt: ast.AST) -> bool:
     return False
 
 
-def docstring_only_names(tree: ast.AST) -> frozenset:
+def docstring_only_names(tree: ast.AST, nodes=None) -> frozenset:
     """Names whose every read lands in a `__doc__` write and in nothing else.
 
     The slice is seeded by the names read by docstring writes and grown backwards through assignments.
@@ -5689,8 +5694,12 @@ def docstring_only_names(tree: ast.AST) -> frozenset:
     on real decorators. Both passes are one walk each and are only asked for a module that has already
     produced a CWE-79 construction row.
     """
+    if nodes is None:
+        nodes = tree.__dict__.get("_cached_all_nodes")
+    if nodes is None:
+        nodes = list(ast.walk(tree))
     parents = {}
-    for parent in ast.walk(tree):
+    for parent in nodes:
         for child in ast.iter_child_nodes(parent):
             parents[child] = parent
 
@@ -5703,7 +5712,7 @@ def docstring_only_names(tree: ast.AST) -> frozenset:
 
     doc_values = []
     assigned = {}
-    for stmt in ast.walk(tree):
+    for stmt in nodes:
         if not isinstance(stmt, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
             continue
         if _stmt_is_doc_write(stmt):
@@ -5738,7 +5747,7 @@ def docstring_only_names(tree: ast.AST) -> frozenset:
         return current is value
 
     escaped = set()
-    for node in ast.walk(tree):
+    for node in nodes:
         if not (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in names):
             continue
         current = node
@@ -6394,13 +6403,17 @@ def _preorder_ast_nodes(tree) -> list:
     and nothing else. The explicit stack matters: a generated module nests deeper than
     `sys.setrecursionlimit`, and numbering is exactly where that would otherwise kill the scan.
     """
-    nodes = []
-    stack = [tree]
-    while stack:
-        node = stack.pop()
-        nodes.append(node)
-        stack.extend(reversed(list(ast.iter_child_nodes(node))))
-    return nodes
+    cached = tree.__dict__.get("_cached_preorder_nodes")
+    if cached is None:
+        nodes = []
+        stack = [tree]
+        while stack:
+            node = stack.pop()
+            nodes.append(node)
+            stack.extend(reversed(list(ast.iter_child_nodes(node))))
+        tree.__dict__["_cached_preorder_nodes"] = nodes
+        return nodes
+    return cached
 
 
 def _phase2_object_members(value) -> dict:
@@ -6650,14 +6663,23 @@ def _phase2_collect_parallel(tracker, workers):
         fork_ctx = None
 
     if fork_ctx is not None:
+        for mod_name in ordered:
+            _preorder_ast_nodes(tracker.modules[mod_name])
+        gc.collect()
+        if hasattr(gc, "freeze"):
+            gc.freeze()
         _PHASE2_SHARED_TRACKER = tracker
         try:
-            with concurrent.futures.ProcessPoolExecutor(
-                    max_workers=workers, mp_context=fork_ctx) as pool:
-                collected = list(pool.map(_phase2_module_fork_batch, ordered,
-                                          chunksize=chunksize))
+            try:
+                with concurrent.futures.ProcessPoolExecutor(
+                        max_workers=workers, mp_context=fork_ctx) as pool:
+                    collected = list(pool.map(_phase2_module_fork_batch, ordered,
+                                              chunksize=chunksize))
+            finally:
+                _PHASE2_SHARED_TRACKER = None
         finally:
-            _PHASE2_SHARED_TRACKER = None
+            if hasattr(gc, "unfreeze"):
+                gc.unfreeze()
     else:
         payloads = [(tracker.file_paths[mod], mod, tracker.modules[mod], tracker.audit_all)
                     for mod in ordered]
@@ -7351,6 +7373,7 @@ class TaintTracker:
         for fpath, code in self.files.items():
             if code is not None:
                 self._source_lines_by_file[fpath] = code.splitlines()
+        self.files.clear()
         # Per-module hits of `COLLECTOR_TEXT_TRIGGER_VOCAB`, released at the collector boundary.
         self._module_text_token_cache: dict[str, frozenset] = {}
 
@@ -7378,7 +7401,7 @@ class TaintTracker:
         )
         for mod_name, tree in self.modules.items():
             file_path = self.file_paths.get(mod_name, f"{mod_name}.py")
-            source = self.files.get(file_path) or self.files.get(mod_name, "")
+            source = self._module_source_text(mod_name) or ""
             if source and not sink_word_re.search(source):
                 continue
             contracts = self.contract_extractor.extract_from_module(tree, file_path)
@@ -7460,21 +7483,23 @@ class TaintTracker:
             else:
                 lines = code.splitlines()
                 self._snippet_lines_cache = (code, lines)
-            if 1 <= start_line <= len(lines):
-                end_l = min(end_line if end_line >= start_line else start_line, len(lines))
-                if node and getattr(node, "lineno", None) == getattr(node, "end_lineno", None) == start_line:
-                    c_start = getattr(node, "col_offset", None)
-                    c_end = getattr(node, "end_col_offset", None)
-                    if c_start is not None and c_end is not None and c_start < c_end:
-                        line_text = lines[start_line - 1]
-                        if c_end <= len(line_text):
-                            col_slice = line_text[c_start:c_end].strip()
-                            if col_slice:
-                                return col_slice
-                selected = lines[start_line - 1 : end_l]
-                snippet = "\n".join(selected).strip()
-                if snippet:
-                    return snippet
+        else:
+            lines = self._source_lines_by_file.get(file_path)
+        if lines is not None and 1 <= start_line <= len(lines):
+            end_l = min(end_line if end_line >= start_line else start_line, len(lines))
+            if node and getattr(node, "lineno", None) == getattr(node, "end_lineno", None) == start_line:
+                c_start = getattr(node, "col_offset", None)
+                c_end = getattr(node, "end_col_offset", None)
+                if c_start is not None and c_end is not None and c_start < c_end:
+                    line_text = lines[start_line - 1]
+                    if c_end <= len(line_text):
+                        col_slice = line_text[c_start:c_end].strip()
+                        if col_slice:
+                            return col_slice
+            selected = lines[start_line - 1 : end_l]
+            snippet = "\n".join(selected).strip()
+            if snippet:
+                return snippet
         if node is not None:
             try:
                 return ast.unparse(node).strip()
@@ -22013,8 +22038,14 @@ class TaintTracker:
         Text gates treat None as "present", so a file the gate cannot read is walked rather than waved
         through -- the fail-closed direction, and the one that keeps the gate a cost decision only.
         """
-        return (self.files.get(self.file_paths.get(mod_name, ""))
-                or self.files.get(mod_name)) or None
+        source = (self.files.get(self.file_paths.get(mod_name, ""))
+                  or self.files.get(mod_name))
+        if source:
+            return source
+        if not self.files:
+            file_path = self.file_paths.get(mod_name, "")
+            return "\n".join(self._source_lines_by_file.get(file_path, ())) or None
+        return None
 
     def _module_text_tokens(self, mod_name: str) -> frozenset:
         """Trigger literals this module's own source spells, one lowercase pass per module.
@@ -22054,24 +22085,19 @@ class TaintTracker:
           neither. Releasing it here drops the largest per-module transient before the graph cascade
           and the SARIF render, and because `_reachable_nodes` recomputes on a miss, a later ask costs
           a walk and cannot change one answer.
-        * the two gate caches and the per-module callee buckets, same reasoning one level down.
-
-        Nothing is collected here on purpose. Every structure released below is a container that
-        references nodes owned by a tree that is still alive, so popping it drops its last reference
-        and reference counting frees its pointer array in that same statement -- no cycle is created,
-        because the only path to the list ran through the slot that was just emptied. A `gc.collect()`
-        here therefore buys no memory and costs a full generation-2 walk of a live heap: measured on
-        the eight Big-8 modules at 0.23 s out of a 9.4 s scan with peak RSS unchanged. The two
-        neighbouring release idioms, `release_sink_gate_scratch` and `release_collector_memos`, do the
-        same for the same reason, and the one collection the pipeline needs is already in `analyze`'s
-        `finally`, after the last tree is released.
+        * the gate caches, node buckets, full module walks and preorder numbering lists are rebuildable
+          pointers into trees that stay alive; releasing them before the graph cascade lowers the
+          collector phase's resident peak.
         """
         for tree in self.modules.values():
             cache = tree.__dict__
             cache.pop("_cached_reachable_nodes", None)
             cache.pop("_cached_callee_tokens", None)
             cache.pop("_cached_node_buckets", None)
+            cache.pop("_cached_all_nodes", None)
+            cache.pop("_cached_preorder_nodes", None)
         self._module_text_token_cache = {}
+        gc.collect()
 
     def _sink_node_unrecorded(self, node) -> bool:
         """True when no entry of `sink_records` holds this exact node -- O(1), was an O(sinks) scan.
@@ -23167,6 +23193,7 @@ class TaintTracker:
         # removes the module walk for the four later collectors that share the same memo.
         ranges = self._memo_function_ranges(tree, self._module_nodes(tree))
         guarded = self._c22_guarded_names(tree, self._module_nodes(tree))
+        has_web_request = None
         for node in self._module_calls(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -23225,7 +23252,11 @@ class TaintTracker:
                 if (("modeling_utils" in fn_lower) and node.lineno in (336, 3564)) or any(seg in fn_lower for seg in ("corpus_big8", "_p3_big", "corpus/", "/corpus", "runner.py")):
                     pass
                 else:
-                    has_web_request = any(child for child in ast.walk(tree) if isinstance(child, ast.Name) and child.id in ("request", "flask_request", "web_request", "raw_input", "socket"))
+                    if has_web_request is None:
+                        has_web_request = any(
+                            isinstance(child, ast.Name)
+                            and child.id in ("request", "flask_request", "web_request", "raw_input", "socket")
+                            for child in self._module_nodes(tree))
                     if not has_web_request:
                         safe_names = {
                             "vocab_file", "merges_file", "merge_file", "tokenizer_file", "spm_file",
@@ -27458,7 +27489,7 @@ class TaintTracker:
                             return
 
                 nosec_lines: set[int] = set()
-                mod_source = self.files.get(file_path) or ""
+                mod_source = self._module_source_text(mod_name) or ""
                 for _idx, _text in enumerate(mod_source.splitlines(), 1):
                     if CLUSTER3_NOSEC_RE.search(_text):
                         nosec_lines.add(_idx)
@@ -27577,6 +27608,7 @@ class TaintTracker:
                 def _module_urllib_chain(chain: list[str]) -> bool:
                     return any(seg in CLUSTER3_URLLIB_MODULE_SEGS for seg in chain[:3])
 
+                local_uuid_names = None
                 for node in reachable:
                     lineno = getattr(node, "lineno", 1)
 
@@ -27784,10 +27816,11 @@ class TaintTracker:
                     # ---- CWE-330: uuid1() ----
                     if last_seg == CLUSTER3_INSECURE_UUID_SEG and \
                             (len(raw_chain) == 1 or "uuid" in chain):
-                        defined_locally = any(
-                            isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
-                            and fn.name == CLUSTER3_INSECURE_UUID_SEG
-                            for fn in ast.walk(tree))
+                        if local_uuid_names is None:
+                            local_uuid_names = {
+                                fn.name for fn in self._module_nodes(tree)
+                                if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))}
+                        defined_locally = CLUSTER3_INSECURE_UUID_SEG in local_uuid_names
                         if not defined_locally and _assigned_node(last_seg, scope, lineno) is None:
                             _add(node, "INSECURE_UUID1", "CRYPTOGRAPHIC_FAILURES", "CWE-330")
 
@@ -33716,7 +33749,7 @@ class TaintTracker:
                 if (value is not None and _dynamic_html(value, scope_id, lineno)
                         and not (isinstance(node, ast.Return)
                                  and self._is_debug_repr_return(node, scope_id))
-                        and not module_renders_only_into_notebook(tree)
+                        and not module_renders_only_into_notebook(tree, self._module_nodes(tree))
                         and not expression_writes_docstring_only(node, tree)):
                     # The same repr guard the response sink consults, so one `__repr__` cannot be
                     # reported by the structural layer after the collector layer let it go.
@@ -35204,11 +35237,10 @@ class TaintTracker:
         # Sink records bucketed by (file, line_start, column_start): a prefix of the exact
         # CodeLocation that _remove_existing and _add_finding compare against, so every record
         # either of them could match is necessarily in the bucket being read, and the full
-        # comparison still runs there. Buckets keep list order, which is what `removed = [...]`
-        # and `next(...)` depend on. The three checks below mirror _sink_index_find: a rebind
-        # (identity -- _remove_existing rebinds the list), a shrink (length) and a refill to the
-        # same size (tail object) each rebuild it, and plain appends are absorbed.
+        # comparison still runs there. Buckets keep list order. A rebind or shrink prunes retired
+        # record identities in place; plain appends absorb only records not already indexed.
         _sink_loc_index: dict[tuple, list] = {}
+        _loc_index_ids: set[int] = set()
         _loc_index_count = 0
         _loc_index_list = None
         _loc_index_tail = None
@@ -35220,16 +35252,25 @@ class TaintTracker:
                 records = self.sink_records
                 if (records is not _loc_index_list or _loc_index_count > len(records)
                         or (_loc_index_count and records[_loc_index_count - 1] is not _loc_index_tail)):
-                    _sink_loc_index.clear()
+                    live_ids = {id(record) for record in records}
+                    for key, bucket in list(_sink_loc_index.items()):
+                        bucket[:] = [record for record in bucket if id(record) in live_ids]
+                        if not bucket:
+                            del _sink_loc_index[key]
+                    _loc_index_ids.intersection_update(live_ids)
                     _loc_index_list = records
-                    self._profile_cache_rebuild("sink_loc_index", len(records))
                     _start = 0
                 else:
                     _start = _loc_index_count
                 for _index in range(_start, len(records)):
-                    loc = records[_index].security_node.location
+                    record = records[_index]
+                    record_id = id(record)
+                    if record_id in _loc_index_ids:
+                        continue
+                    loc = record.security_node.location
                     _sink_loc_index.setdefault(
-                        (loc.file, loc.line_start, loc.column_start), []).append(records[_index])
+                        (loc.file, loc.line_start, loc.column_start), []).append(record)
+                    _loc_index_ids.add(record_id)
                 _loc_index_count = len(records)
                 _loc_index_tail = records[-1] if records else None
                 bucket_key = (node_location.file, node_location.line_start,

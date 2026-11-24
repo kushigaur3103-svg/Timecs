@@ -14,7 +14,7 @@ import os
 import pathlib
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -312,16 +312,11 @@ def parse_files_parallel(
             modules[result["mod_name"]] = result["tree"]
             file_paths[result["mod_name"]] = result["filepath"]
 
-    # `ast.parse` can overlap its C parsing work while the threads share this interpreter and its
-    # allocator: no child imports the rule bank, no source or AST is pickled, and no second copy of
-    # the process image is resident. `map` yields in submission order, so module insertion order --
-    # and every SNK-/SRC- id derived from it -- is identical to the sequential parser's.
-    parse_workers = min(4, os.cpu_count() or 1)
-    paths = [filepath for filepath, _source in file_items]
-    sources = [source for _filepath, source in file_items]
-    with ThreadPoolExecutor(max_workers=parse_workers) as pool:
-        for result in pool.map(_parse_here, paths, sources):
-            _merge(result)
+    # `ast.parse` is a single C-level operation holding the GIL for its useful work, so a thread
+    # fan-out cannot overlap it and only adds scheduling and temporary containers. Parse directly in
+    # discovery order: module insertion order, and every sink id derived from it, stays deterministic.
+    for filepath, source in file_items:
+        _merge(_parse_single_file((filepath, source)))
 
     elapsed = time.time() - start_time
 
@@ -331,16 +326,16 @@ def parse_files_parallel(
         file=sys.stderr,
     )
 
-    # `workers_initial` is the governor's analysis-worker request. Parsing uses a small shared-memory
-    # thread pool of its own, reported separately so the ledger does not claim a process was spawned.
+    # `workers_initial` is the governor's analysis-worker request. Parsing stays in the parent,
+    # reported separately so the ledger does not claim a process or thread was spawned.
     parse_stats = {
         "discovered": total_files,
         "parsed": len(modules),
         "fast_path_skipped": fast_path_skipped,
         "unparseable": len(skipped_files),
-        "parse_mode": "threaded",
+        "parse_mode": "inline",
         "workers_initial": workers_initial,
-        "workers_final": parse_workers,
+        "workers_final": 1,
         "governor_events": governor_events,
     }
     return modules, file_paths, skipped_files, parse_stats

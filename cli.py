@@ -1643,7 +1643,9 @@ def _cross_scan_reuse_trees(tracker):
         if key is None or key in excluded or tree is None:
             continue
         try:
-            source = tracker.files[key]
+            source = tracker._module_source_text(mod)
+            if source is None:
+                continue
             reuse[str((cwd / key).resolve())] = (source, tree)
         except (KeyError, OSError):
             continue

@@ -184,8 +184,9 @@ class TestCallSiteIndexRelease:
         tracker = TaintTracker(files={"snippet.py": _MULTILINE_QUERY})
         tracker.analyze()
         assert tracker.raw_calls == [], "one tuple per call site outlived the pass that needed it"
-        # The trees and the source text stay: the reporters render snippets after `analyze()`.
-        assert tracker.modules and tracker.files
+        # Trees and line-indexed source stay for reporters; duplicate raw source strings do not.
+        assert tracker.modules and tracker.files == {}
+        assert tracker._module_source_text("snippet") == "\n".join(_MULTILINE_QUERY.splitlines())
 
     def test_a_second_pass_rebuilds_the_index_and_still_reports(self):
         # Phase 2 walks the trees, so releasing at the return cannot starve a tracker asked to run
@@ -195,6 +196,74 @@ class TestCallSiteIndexRelease:
         _sources, sinks, _edges = tracker.analyze()
         assert any((sink.metadata or {}).get("cwe") == "CWE-89" for sink in sinks), \
             "the second pass found no SQL execution, so the index was not rebuilt"
+
+
+class TestV313MemoryAndIndexInvariants:
+    def test_raw_source_is_released_but_lines_remain_exact(self):
+        source = _MULTILINE_QUERY
+        tracker = TaintTracker(files={"snippet.py": source})
+        assert tracker.files == {}
+        assert tracker._module_source_text("snippet") == "\n".join(source.splitlines())
+        expected = "\n".join(source.splitlines()[7:10]).strip()
+        assert tracker.get_source_snippet("snippet.py", 8, 10) == expected
+
+    def test_cross_file_tree_reuse_survives_raw_source_release(self, monkeypatch):
+        source = '''from sqlite3 import connect
+
+
+def fetch(name):
+    return connect("app.db").execute("SELECT * FROM users WHERE name = '" + name + "'")
+'''
+        tracker = TaintTracker(files={"cross_file.py": source})
+        monkeypatch.setattr(Path, "cwd", lambda: ROOT)
+        monkeypatch.setattr(Path, "resolve", lambda self: ROOT / str(self))
+        reuse = cli._cross_scan_reuse_trees(tracker)
+        assert reuse == {str(ROOT / "cross_file.py"):
+                         ("\n".join(source.splitlines()), tracker.modules["cross_file"])}
+
+    def test_preorder_numbering_is_cached_on_the_tree(self, monkeypatch):
+        tree = ast.parse("value = 1\n")
+        nodes = ast_scanner._preorder_ast_nodes(tree)
+        assert tree.__dict__["_cached_preorder_nodes"] is nodes
+
+        def forbidden(_node):
+            raise AssertionError("cached preorder numbering walked the tree again")
+
+        monkeypatch.setattr(ast, "iter_child_nodes", forbidden)
+        assert ast_scanner._preorder_ast_nodes(tree) is nodes
+
+    def test_phase7_prunes_removed_sinks_without_rebuilding_the_location_index(self):
+        source = '''from lxml import etree
+
+
+def parse_xml(payload):
+    etree.fromstring(payload, parser=etree.XMLParser(resolve_entities=False))
+    return etree.fromstring(payload)
+'''
+        tracker = TaintTracker(files={"xml.py": source})
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            tracker.analyze()
+        phase7 = tracker._removal_profile.get("phase7", {})
+        assert phase7.get("removed", 0) > 0, "the fixture never exercised a Phase 7 removal"
+        assert "sink_loc_index" not in tracker._cache_profile, \
+            "removing a sink forced a full Phase 7 location-index rebuild"
+        cwe611 = [sink for sink in tracker.sinks
+                  if (sink.metadata or {}).get("cwe") == "CWE-611"]
+        assert len(cwe611) == 1 and cwe611[0].location.line_start == 6, \
+            "pruning the safe XML call disturbed the independent unsafe call"
+
+    def test_collector_cleanup_releases_every_module_cache_and_collects(self, monkeypatch):
+        tracker = TaintTracker(files={"snippet.py": _MULTILINE_QUERY})
+        tree = next(iter(tracker.modules.values()))
+        cache_keys = ("_cached_reachable_nodes", "_cached_all_nodes", "_cached_preorder_nodes",
+                      "_cached_node_buckets")
+        for key in cache_keys:
+            tree.__dict__[key] = []
+        collected = []
+        monkeypatch.setattr(ast_scanner.gc, "collect", lambda: collected.append(True))
+        tracker.release_collector_gate_scratch()
+        assert all(key not in tree.__dict__ for key in cache_keys)
+        assert collected == [True]
 
 
 # ─── Cluster 1: one SQL execution, one CWE-89 ────────────────────────────────
@@ -808,6 +877,35 @@ class TestPhase2TransportsAgree:
         assert opened[0]["mp_context"] is not None, \
             "a fork-capable machine fell back to the payload transport"
 
+    def test_fork_warms_preorder_caches_and_freezes_after_collection(self, monkeypatch):
+        events = []
+
+        monkeypatch.setattr(ast_scanner.gc, "collect", lambda: events.append("collect"))
+        monkeypatch.setattr(ast_scanner.gc, "freeze", lambda: events.append("freeze"))
+        monkeypatch.setattr(ast_scanner.gc, "unfreeze", lambda: events.append("unfreeze"))
+
+        class _RecordingPool(_InlinePool):
+            def __init__(self, *args, **kwargs):
+                assert events[-2:] == ["collect", "freeze"], \
+                    "the fork pool opened without collect/freeze immediately before it"
+                tracker = ast_scanner._PHASE2_SHARED_TRACKER
+                assert tracker is not None
+                assert all("_cached_preorder_nodes" in tree.__dict__
+                           for tree in tracker.modules.values()), \
+                    "a child would have to build its own preorder numbering"
+                super().__init__(*args, **kwargs)
+
+        self._analyze(monkeypatch, workers=3, fork=True, pool=_RecordingPool)
+        assert events.index("freeze") < events.index("unfreeze"), \
+            "the parent never unfroze its heap after the fork pool closed"
+
+    def test_a_failed_fork_pool_still_unfreezes_the_parent(self, monkeypatch):
+        events = []
+        monkeypatch.setattr(ast_scanner.gc, "freeze", lambda: events.append("freeze"))
+        monkeypatch.setattr(ast_scanner.gc, "unfreeze", lambda: events.append("unfreeze"))
+        self._analyze(monkeypatch, workers=3, fork=True, pool=_BrokenPool)
+        assert events == ["freeze", "unfreeze"]
+
     def test_the_fork_transport_matches_the_serial_loop(self, monkeypatch):
         assert _signature(self._analyze(monkeypatch, workers=1, fork=True)) == \
             _signature(self._analyze(monkeypatch, workers=3, fork=True))
@@ -900,7 +998,7 @@ class TestPhase2TransportsAgree:
 
 class TestParsingStaysInProcess:
     def _files(self):
-        # Past `BATCH_SIZE`, so the corpus reaches the threaded parse loop instead of the sequential
+        # Past `BATCH_SIZE`, so the corpus reaches the inline parse loop instead of the sequential
         # short-circuit that guards tiny runs.
         import tcs.parallel_scanner as scanner
 
@@ -908,17 +1006,16 @@ class TestParsingStaysInProcess:
         return {f"/repo/m{i}.py": f"import os\n\nvalue = os.environ.get('K{i}', '{i}')\n"
                 for i in range(count)}
 
-    def test_a_four_worker_request_parses_with_threads_and_reports_that_it_did(self):
-        import os
+    def test_a_four_worker_request_parses_inline_and_reports_that_it_did(self):
         import tcs.parallel_scanner as scanner
 
         files = self._files()
         modules, file_paths, skipped, stats = scanner.parse_files_parallel(files, 4)
         assert set(stats) == {"discovered", "parsed", "fast_path_skipped", "unparseable",
                               "parse_mode", "workers_initial", "workers_final", "governor_events"}
-        assert stats["parse_mode"] == "threaded"
+        assert stats["parse_mode"] == "inline"
         assert stats["workers_initial"] == 4, "the ledger must still show what was asked for"
-        assert stats["workers_final"] == min(4, os.cpu_count() or 1)
+        assert stats["workers_final"] == 1
         assert stats["governor_events"] == 0
         assert stats["discovered"] == len(modules) == len(file_paths) == len(files)
         assert not skipped
@@ -932,7 +1029,7 @@ class TestParsingStaysInProcess:
         monkeypatch.setattr(scanner, "ProcessPoolExecutor", forbidden)
         files = self._files()
         modules, _paths, _skipped, stats = scanner.parse_files_parallel(files, 8)
-        assert stats["parse_mode"] == "threaded" and len(modules) == len(files)
+        assert stats["parse_mode"] == "inline" and len(modules) == len(files)
 
     def test_the_trees_are_the_ones_the_sequential_parser_builds(self, monkeypatch):
         import tcs.parallel_scanner as scanner
@@ -952,11 +1049,11 @@ class TestParsingStaysInProcess:
 # ─── The release number the banner and the package both have to say ─────────
 
 class TestReleaseVersion:
-    def test_pyproject_and_banner_agree_on_3_1_2(self):
+    def test_pyproject_and_banner_agree_on_3_1_3(self):
         # Read as source, not imported: `banner` prefers the installed distribution's metadata when
         # one is present, so an import would test whichever wheel this machine happens to hold.
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         banner_src = (ROOT / "banner.py").read_text(encoding="utf-8")
-        assert 'version = "3.1.2"' in pyproject
-        assert 'VERSION = "3.1.2"' in banner_src, "the fallback must name the release it ships with"
-        assert 'version = "3.1.1"' not in pyproject
+        assert 'version = "3.1.3"' in pyproject
+        assert 'VERSION = "3.1.3"' in banner_src, "the fallback must name the release it ships with"
+        assert 'version = "3.1.2"' not in pyproject

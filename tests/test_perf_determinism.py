@@ -13,7 +13,6 @@ import ast
 import inspect
 import io
 import contextlib
-import os
 import tempfile
 import textwrap
 from pathlib import Path
@@ -52,11 +51,11 @@ class TestParsePolicyOrdering:
         assert with_pool[2] == without[2]
         assert with_pool[3]["parsed"] == without[3]["parsed"]
 
-    def test_threaded_parse_never_builds_a_process_pool(self):
+    def test_inline_parse_never_builds_a_process_pool(self):
         files = _make_tree(BATCH_SIZE + 5)
         stats = _quiet(parse_files_parallel, files, 1)[3]
-        assert stats["parse_mode"] == "threaded", "large parses must overlap in shared-memory threads"
-        assert stats["workers_final"] == min(4, os.cpu_count() or 1)
+        assert stats["parse_mode"] == "inline", "large parses must stay in the parent process"
+        assert stats["workers_final"] == 1
 
     def test_results_are_collected_in_submission_order_not_completion_order(self):
         """`as_completed` handed back whichever worker finished first, which made the dict order
@@ -75,10 +74,8 @@ class TestParsePolicyOrdering:
         creations = [node for node in ast.walk(run_fn)
                      if isinstance(node, ast.Call)
                      and getattr(node.func, "id", getattr(node.func, "attr", "")) == "ProcessPoolExecutor"]
-        # At v3.1.0 the law was "one pool for the run, never one per 40-file slice". At v3.1.1 the
-        # parse does not build a pool at all: `ast.parse` is under a second for a corpus the pool
-        # needed several interpreters just to start, so the parent is the cheapest worker available
-        # and the fan-out was pure overhead. A pool rebuilt here would have to be worth its spawn.
+        # Parsing is single-threaded in the parent: `ast.parse` holds the GIL, so a thread pool adds
+        # scheduling without overlapping useful parse work.
         assert len(creations) == 0, f"parsing must stay in the parent, found {len(creations)} pools"
 
 

@@ -4,9 +4,12 @@ import gc
 import io
 import math
 import os
+import pickle
 import re
 import sys
+import tempfile
 import tokenize
+from collections import OrderedDict
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Optional, List, Dict, Any, Union, Tuple, Set
@@ -16,7 +19,7 @@ from tcs.analysis.function_contracts import FunctionContractExtractor, FunctionS
 
 # TimeCodeSecurity: Safe parallel parsing with hardware governance
 try:
-    from tcs.parallel_scanner import parse_files_parallel
+    from tcs.parallel_scanner import _parse_single_file, parse_files_parallel
     PARALLEL_PARSING_AVAILABLE = True
 except ImportError:
     PARALLEL_PARSING_AVAILABLE = False
@@ -319,6 +322,422 @@ class SinkRecord:
     lineno: int
     scope_id: str
     call_context: Optional[dict[str, Any]] = None
+
+
+_ACTIVE_WAVE_STORE = None
+
+
+class _WaveSinkRecord(SinkRecord):
+    __slots__ = ("_node", "_wave_store", "_wave_module", "_wave_index", "_wave_detached")
+
+    def __init__(self, node, security_node, lineno, scope_id, call_context=None):
+        object.__setattr__(self, "_node", None)
+        object.__setattr__(self, "_wave_store", _ACTIVE_WAVE_STORE)
+        object.__setattr__(self, "_wave_module", None)
+        object.__setattr__(self, "_wave_index", None)
+        object.__setattr__(self, "_wave_detached", False)
+        super().__init__(node, security_node, lineno, scope_id, call_context)
+
+    @property
+    def node(self):
+        if self._wave_detached:
+            object.__setattr__(self, "_node", self._wave_store.load_sink_node(self))
+            object.__setattr__(self, "_wave_detached", False)
+        return self._node
+
+    @node.setter
+    def node(self, value):
+        object.__setattr__(self, "_node", value)
+        object.__setattr__(self, "_wave_detached", False)
+
+
+_NormalSinkRecord = SinkRecord
+
+
+class _WaveASTList:
+    def __init__(self, store, table):
+        self.store = store
+        self.table = table
+        self.entries = []
+
+    def append(self, item):
+        owner = self.store.current_module
+        if owner is None:
+            raise RuntimeError("wave AST append outside an active module")
+        bundle = self.store.module_paths.get(owner)
+        if bundle is None:
+            index = self.store.append_pending(self.table, item)
+        else:
+            values = self.store.load(owner).setdefault(self.table, [])
+            index = len(values)
+            values.append(item)
+            self.store.dirty.add(owner)
+        self.entries.append((owner, index))
+
+    def __len__(self):
+        return len(self.entries)
+
+    def __iter__(self):
+        for owner, index in self.entries:
+            bundle = self.store.load(owner)
+            self.store.current_module = owner
+            try:
+                yield bundle[self.table][index]
+            finally:
+                self.store.current_module = None
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self)))]
+        owner, local_index = self.entries[index]
+        return self.store.load(owner)[self.table][local_index]
+
+    def iter_wave(self, wave):
+        owners = set(wave)
+        for owner, index in self.entries:
+            if owner not in owners:
+                continue
+            bundle = self.store.load(owner)
+            self.store.current_module = owner
+            try:
+                yield bundle[self.table][index]
+            finally:
+                self.store.current_module = None
+
+
+class _WaveASTDict:
+    def __init__(self, store, table):
+        self.store = store
+        self.table = table
+        self.key_order = []
+        self.key_owner = {}
+
+    def __len__(self):
+        return len(self.key_order)
+
+    def __iter__(self):
+        return iter(self.key_order)
+
+    def __contains__(self, key):
+        return key in self.key_owner
+
+    def keys(self):
+        return self.key_order.copy()
+
+    def __getitem__(self, key):
+        owner = self.key_owner[key]
+        return self.store.load(owner)[self.table][key]
+
+    def get(self, key, default=None):
+        owner = self.key_owner.get(key)
+        if owner is None:
+            return default
+        return self.store.load(owner)[self.table][key]
+
+    def _owners(self):
+        active = self.store.active_wave
+        if active is not None:
+            return active
+        return tuple(dict.fromkeys(self.key_owner[key] for key in self.key_order))
+
+    def items(self):
+        for owner in self._owners():
+            bundle = self.store.load(owner)
+            self.store.pin(owner)
+            try:
+                table = bundle[self.table]
+                for key in self.key_order:
+                    if self.key_owner.get(key) == owner:
+                        yield key, table[key]
+            finally:
+                self.store.unpin(owner)
+
+    def values(self):
+        for _key, value in self.items():
+            yield value
+
+
+class _WaveAssignmentRecords:
+    __slots__ = ("table", "key")
+
+    def __init__(self, table, key):
+        self.table = table
+        self.key = key
+
+    def __iter__(self):
+        return iter(self.table[self.key])
+
+    def __len__(self):
+        return len(self.table[self.key])
+
+
+class _WaveAssignmentTable(_WaveASTDict):
+    def __init__(self, store):
+        super().__init__(store, "assignments_by_scope")
+        self.names_by_scope = {}
+        self.names_by_module = {}
+        self.records_by_name = {}
+
+    def _index_key(self, key) -> None:
+        split = AssignmentNameTable._split(key)
+        if split is None:
+            return
+        scope_id, name = split
+        self.names_by_scope.setdefault(scope_id, set()).add(name)
+        self.names_by_module.setdefault(scope_module(scope_id), set()).add(name)
+        self.records_by_name.setdefault(name, []).append((key, _WaveAssignmentRecords(self, key)))
+
+    def _reindex(self) -> None:
+        self.names_by_scope.clear()
+        self.names_by_module.clear()
+        self.records_by_name.clear()
+        for key in self.key_order:
+            self._index_key(key)
+
+    def names_in_scope(self, scope_id):
+        if self.names_by_scope is None:
+            self.rebuild_scope_index()
+        return self.names_by_scope.get(scope_id, set())
+
+    def rebuild_scope_index(self):
+        index = {}
+        for key in self.key_order:
+            split = AssignmentNameTable._split(key)
+            if split is not None:
+                index.setdefault(split[0], set()).add(split[1])
+        self.names_by_scope = index
+
+    def release_scratch_indexes(self):
+        self.names_by_scope = None
+
+    def setdefault(self, key, default=None):
+        owner = self.key_owner.get(key)
+        if owner is not None:
+            return self.store.load(owner)[self.table][key]
+        module = self.store.current_module
+        if module is None:
+            raise RuntimeError("wave assignment added outside an active module")
+        bundle = self.store.load(module)
+        values = bundle[self.table].setdefault(key, default if default is not None else [])
+        self.key_order.append(key)
+        self.key_owner[key] = module
+        self._index_key(key)
+        self.store.dirty.add(module)
+        return values
+
+
+class _WaveAssignmentIndex:
+    def __init__(self, store):
+        self.store = store
+        self.refs = {}
+
+    def __len__(self):
+        return len(self.refs)
+
+    def __contains__(self, key):
+        return key in self.refs
+
+    def __getitem__(self, key):
+        owner, scope_id, target_name, index = self.refs[key]
+        records = self.store.load(owner)["assignments_by_scope"][(scope_id, target_name)]
+        return records[index]
+
+    def get(self, key, default=None):
+        ref = self.refs.get(key)
+        if ref is None:
+            return default
+        return self[key]
+
+
+class _WaveCallSiteList(_WaveASTList):
+    def __init__(self, store, target):
+        super().__init__(store, "call_sites")
+        self.target = target
+
+
+class _WaveCallSiteIndex:
+    def __init__(self, store):
+        self.store = store
+        self.targets = {}
+
+    def setdefault(self, target, default):
+        if target not in self.targets:
+            self.targets[target] = _WaveCallSiteList(self.store, target)
+        return self.targets[target]
+
+    def get(self, target, default=None):
+        return self.targets.get(target, default)
+
+
+class _WaveASTStore:
+    def __init__(self, max_modules):
+        self.max_modules = max(1, int(max_modules))
+        self.tempdir = tempfile.TemporaryDirectory(prefix="tcs-wave-")
+        self.active = OrderedDict()
+        self.pins = {}
+        self.dirty = set()
+        self.pending = {}
+        self.current_module = None
+        self.active_wave = None
+        self.wave_groups = []
+        self.table_keys = {}
+        self.module_paths = {}
+        self.module_order = {}
+        self.assignment_manifest = {}
+        self.assignment_table = "assignments_by_scope"
+
+    def begin_module(self, module):
+        self.current_module = module
+        self.pending = {
+            "raw_calls": [],
+            "ssl_attr_assigns": [],
+            "containment_guards": [],
+            "call_sites": [],
+            "sink_nodes": [],
+        }
+
+    def append_pending(self, table, item):
+        values = self.pending.setdefault(table, [])
+        values.append(item)
+        return len(values) - 1
+
+    def add_module(self, module, bundle):
+        for table, values in self.pending.items():
+            bundle[table] = values
+        bundle.setdefault("sink_nodes", [])
+        module_index = len(self.module_paths)
+        path = os.path.join(self.tempdir.name, f"module-{module_index}.pickle")
+        with open(path, "wb") as handle:
+            pickle.dump(bundle, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        self.module_paths[module] = module_index
+        self.module_order[module] = module_index
+        self.table_keys.setdefault("modules", {})[module] = (module,)
+        for table in ("functions", "returns_by_scope", "assignments_by_scope",
+                      "class_field_assignments", "list_mutations", "instance_field_writes"):
+            keys = bundle.get(table, {})
+            self.table_keys.setdefault(table, {})[module] = tuple(keys)
+        manifest = []
+        for (scope_id, target_name), records in bundle.get("assignments_by_scope", {}).items():
+            for index in range(len(records)):
+                manifest.append((target_name, scope_id, target_name, index))
+        self.assignment_manifest[module] = manifest
+        self.pending = {}
+        self.current_module = None
+
+    def flush_dirty(self):
+        for module in list(self.active):
+            if module in self.dirty:
+                self._evict(module)
+        self.active.clear()
+
+    def load(self, module):
+        bundle = self.active.get(module)
+        if bundle is not None:
+            self.active.move_to_end(module)
+            return bundle
+        index = self.module_paths.get(module)
+        if index is None:
+            raise KeyError(module)
+        path = os.path.join(self.tempdir.name, f"module-{index}.pickle")
+        with open(path, "rb") as handle:
+            bundle = pickle.load(handle)
+        self.active[module] = bundle
+        while len(self.active) > self.max_modules:
+            evict = next((key for key in self.active if not self.pins.get(key)), None)
+            if evict is None:
+                break
+            self._evict(evict)
+        return bundle
+
+    def _evict(self, module):
+        bundle = self.active.pop(module)
+        if module in self.dirty:
+            index = self.module_paths[module]
+            path = os.path.join(self.tempdir.name, f"module-{index}.pickle")
+            with open(path, "wb") as handle:
+                pickle.dump(bundle, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            self.dirty.discard(module)
+        del bundle
+        gc.collect()
+
+    def pin(self, module):
+        self.pins[module] = self.pins.get(module, 0) + 1
+
+    def unpin(self, module):
+        remaining = self.pins.get(module, 0) - 1
+        if remaining > 0:
+            self.pins[module] = remaining
+        else:
+            self.pins.pop(module, None)
+
+    def capture_sink_records(self, records):
+        for record in records:
+            if record._wave_module is not None:
+                continue
+            node = record.node
+            owner = getattr(node, "_tcs_wave_module", None) or self.current_module
+            if owner is None:
+                raise RuntimeError("wave sink record has no owning module")
+            bundle = self.load(owner)
+            index = len(bundle["sink_nodes"])
+            bundle["sink_nodes"].append(node)
+            self.dirty.add(owner)
+            record._wave_module = owner
+            record._wave_index = index
+            record._wave_store = self
+            record._node = None
+            record._wave_detached = True
+
+    def load_sink_node(self, record):
+        if not record._wave_detached and record._node is not None:
+            return record._node
+        bundle = self.load(record._wave_module)
+        nodes = bundle.get("sink_nodes", [])
+        if record._wave_index >= len(nodes):
+            raise RuntimeError(
+                f"wave sink node lost: module={record._wave_module!r} "
+                f"index={record._wave_index} count={len(nodes)}"
+            )
+        return nodes[record._wave_index]
+
+    def release_sink_nodes(self, records):
+        for record in records:
+            if record._wave_store is self and record._wave_module is not None:
+                record._node = None
+                record._wave_detached = True
+
+    def lazy_dict(self, table):
+        result = _WaveASTDict(self, table)
+        for module, keys in self.table_keys.get(table, {}).items():
+            for key in keys:
+                if key not in result.key_owner:
+                    result.key_order.append(key)
+                result.key_owner[key] = module
+        return result
+
+    def lazy_assignment_table(self):
+        result = _WaveAssignmentTable(self)
+        for module, keys in self.table_keys.get(self.assignment_table, {}).items():
+            for key in keys:
+                if key not in result.key_owner:
+                    result.key_order.append(key)
+                result.key_owner[key] = module
+                result._index_key(key)
+        return result
+
+    def lazy_assignment_index(self):
+        result = _WaveAssignmentIndex(self)
+        for module in sorted(self.assignment_manifest, key=lambda m: self.module_order[m]):
+            for target_name, scope_id, local_target, index in self.assignment_manifest[module]:
+                result.refs[target_name] = (module, scope_id, local_target, index)
+                result.refs[(scope_id, target_name)] = (module, scope_id, local_target, index)
+        return result
+
+    def close(self):
+        self.active.clear()
+        self.pins.clear()
+        self.tempdir.cleanup()
+        gc.collect()
 
 SOURCE_REGISTRY = {
     # Django REST Framework / Flask Request Data
@@ -5796,14 +6215,20 @@ def expression_writes_docstring_only(expr: ast.AST, tree: ast.AST) -> bool:
     reads = _names_read_in(expr)
     if not reads:
         return False
-    cache = _docstring_proof_cache()
-    entry = cache.get(id(tree))
-    if entry is None:
-        # The value keeps the tree alive, so the id cannot be recycled by a later parse and answer for
-        # a different module. Only modules that produced a CWE-79 row are ever held.
-        entry = (docstring_only_names(tree), tree)
-        cache[id(tree)] = entry
-    names = entry[0]
+    if hasattr(tree, "_tcs_wave_identity"):
+        names = tree.__dict__.get("_tcs_docstring_names")
+        if names is None:
+            names = docstring_only_names(tree)
+            tree._tcs_docstring_names = names
+    else:
+        cache = _docstring_proof_cache()
+        entry = cache.get(id(tree))
+        if entry is None:
+            # The value keeps the tree alive, so the id cannot be recycled by a later parse and answer for
+            # a different module. Only modules that produced a CWE-79 row are ever held.
+            entry = (docstring_only_names(tree), tree)
+            cache[id(tree)] = entry
+        names = entry[0]
     return bool(names) and reads.issubset(names)
 
 
@@ -7058,7 +7483,35 @@ def parse_source_tolerant(source: str, filename: str, parser_mode: str = DEFAULT
 
 
 class TaintTracker:
-    def __init__(self, files: dict[str, str] = None, source: str = None, file_path: str = "target.py", audit_all: bool = False, max_workers: Optional[int] = None, parser_mode: str = DEFAULT_PARSER_MODE):
+    def __init__(self, files: dict[str, str] = None, source: str = None, file_path: str = "target.py", audit_all: bool = False, max_workers: Optional[int] = None, parser_mode: str = DEFAULT_PARSER_MODE, low_ram_wave_size: Optional[int] = None):
+        if low_ram_wave_size is not None:
+            wave_size = max(1, int(low_ram_wave_size))
+            original_files = files if files is not None else {file_path: source}
+            TaintTracker.__init__(
+                self, files={}, source=source, file_path=file_path, audit_all=audit_all,
+                max_workers=max_workers, parser_mode=parser_mode)
+            self.files = original_files
+            self.low_ram_wave_size = wave_size
+            self.execution_mode = "wave"
+            self._wave_store = _WaveASTStore(wave_size)
+            self._activate_wave_record_class()
+            try:
+                self._wave_identity_counter = 0
+                self._wave_new_sink_records = []
+                self.raw_calls = _WaveASTList(self._wave_store, "raw_calls")
+                self.ssl_attr_assigns = _WaveASTList(self._wave_store, "ssl_attr_assigns")
+                self.containment_guards = _WaveASTList(self._wave_store, "containment_guards")
+                self.call_sites_by_target = _WaveCallSiteIndex(self._wave_store)
+                self._source_lines_by_file = {
+                    fpath: code.splitlines() for fpath, code in self.files.items() if code is not None
+                }
+                self._init_wave_parse_plan()
+            except BaseException:
+                self._wave_store.close()
+                self._deactivate_wave_record_class()
+                raise
+            return
+        self.low_ram_wave_size = None
         self.files = files if files is not None else {file_path: source}
         self.audit_all = audit_all
         self.max_workers = max_workers
@@ -7404,6 +7857,243 @@ class TaintTracker:
             name.split(".")[-1] for name in KNOWN_SINKS
         )
 
+    def _activate_wave_record_class(self):
+        global _ACTIVE_WAVE_STORE
+        _ACTIVE_WAVE_STORE = self._wave_store
+        globals()["SinkRecord"] = _WaveSinkRecord
+
+    def _deactivate_wave_record_class(self):
+        global _ACTIVE_WAVE_STORE
+        _ACTIVE_WAVE_STORE = None
+        globals()["SinkRecord"] = _NormalSinkRecord
+
+    def _wave_module_name(self, fpath):
+        module = fpath.replace("\\\\", "/").replace(".py", "").replace("/", ".")
+        if module.endswith(".__init__"):
+            module = module[:-9]
+        return module
+
+    def _wave_parse_file(self, fpath, recover=False):
+        source = self.files.get(fpath)
+        if self.parser_mode == "treesitter":
+            tree = _treesitter_packer.clean_parse(source, fpath) if _treesitter_packer is not None else None
+            if tree is None:
+                tree = ast.parse(source, filename=fpath)
+            for parent in ast.walk(tree):
+                for child in ast.iter_child_nodes(parent):
+                    child.parent = parent
+            return tree, []
+        if PARALLEL_PARSING_AVAILABLE and len(self.files) > 10:
+            result = _parse_single_file((fpath, source))
+            if result["skipped_fast_path"]:
+                return None, []
+            if result["error"] is None:
+                return result["tree"], []
+            if recover and result["error"].startswith("SyntaxError"):
+                return parse_source_tolerant(source, fpath, parser_mode=self.parser_mode)
+            raise SyntaxError(result["error"])
+        try:
+            tree = ast.parse(source, filename=fpath)
+        except SyntaxError:
+            if not recover:
+                raise
+            return parse_source_tolerant(source, fpath, parser_mode=self.parser_mode)
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                child.parent = parent
+        return tree, []
+
+    def _init_wave_parse_plan(self):
+        modules = {}
+        skipped = {}
+        fast_path_skipped = 0
+        use_fast_path = PARALLEL_PARSING_AVAILABLE and len(self.files) > 10 and self.parser_mode != "treesitter"
+        for fpath, source in self.files.items():
+            module = self._wave_module_name(fpath)
+            try:
+                if use_fast_path:
+                    result = _parse_single_file((fpath, source))
+                    if result["skipped_fast_path"]:
+                        fast_path_skipped += 1
+                        continue
+                    if result["error"] is not None:
+                        skipped[fpath] = result["error"]
+                        continue
+                else:
+                    if self.parser_mode == "treesitter" and _treesitter_packer is not None:
+                        tree = _treesitter_packer.clean_parse(source, fpath)
+                        if tree is None:
+                            tree = ast.parse(source, filename=fpath)
+                    else:
+                        tree = ast.parse(source, filename=fpath)
+                    for parent in ast.walk(tree):
+                        for child in ast.iter_child_nodes(parent):
+                            child.parent = parent
+                modules[module] = fpath
+            except (SyntaxError, ValueError, UnicodeDecodeError) as exc:
+                skipped[fpath] = f"{type(exc).__name__}: {exc}"[:200]
+        self.recovered_files = {}
+        self.rescued_files = {}
+        for fpath, reason in list(skipped.items()):
+            if not reason.startswith("SyntaxError"):
+                continue
+            source = self.files.get(fpath)
+            if not isinstance(source, str):
+                continue
+            tree, bypassed = parse_source_tolerant(source, fpath, parser_mode=self.parser_mode)
+            if tree is None:
+                continue
+            module = self._wave_module_name(fpath)
+            if module in modules:
+                continue
+            for parent in ast.walk(tree):
+                for child in ast.iter_child_nodes(parent):
+                    child.parent = parent
+            modules[module] = fpath
+            del skipped[fpath]
+            if bypassed:
+                self.recovered_files[fpath] = bypassed
+                print(f"TimeCodeSecurity [RECOVERED] {fpath}: bypassed unparseable line "
+                      f"{bypassed[0]} ({len(bypassed)} block(s) replaced by pass: "
+                      f"{','.join(map(str, bypassed))})", file=sys.stderr)
+            else:
+                self.rescued_files[fpath] = "treesitter"
+        self._wave_plan = sorted(modules.items(), key=lambda item: (item[1], item[0]))
+        self.file_paths = {module: fpath for module, fpath in self._wave_plan}
+        self.skipped_files = skipped
+        self.imports = {module: {} for module, _fpath in self._wave_plan}
+        self.parse_stats = {
+            "discovered": len(self.files),
+            "parsed": len(self._wave_plan),
+            "fast_path_skipped": fast_path_skipped,
+            "unparseable": len(skipped),
+            "workers_used": 1,
+            "governor_events": 0,
+            "parse_mode": "wave",
+            "execution_mode": "wave",
+            "parallel_fallback_reason": None,
+            "parser_mode": self.parser_mode,
+        }
+        if self.recovered_files:
+            self.parse_stats["recovered"] = len(self.recovered_files)
+        if self.rescued_files:
+            self.parse_stats["rescued"] = len(self.rescued_files)
+        size = self.low_ram_wave_size
+        self._wave_store.wave_groups = [
+            tuple(module for module, _fpath in self._wave_plan[start:start + size])
+            for start in range(0, len(self._wave_plan), size)
+        ]
+
+    def _wave_mark_tree(self, module, tree):
+        for node in ast.walk(tree):
+            self._wave_identity_counter += 1
+            node._tcs_wave_identity = self._wave_identity_counter
+            node._tcs_wave_module = module
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            if self._is_unreachable_test(node.test):
+                unreachable = node.body
+            elif self._is_tautology_test(node.test):
+                unreachable = node.orelse
+            else:
+                continue
+            for statement in unreachable:
+                for descendant in ast.walk(statement):
+                    descendant._tcs_wave_dead = True
+                    self.dead_node_ids.add(descendant._tcs_wave_identity)
+
+    def _wave_reset_module_tables(self):
+        self.modules = {}
+        self.functions = {}
+        self.returns_by_scope = {}
+        self.assignments_by_scope = AssignmentNameTable()
+        self.class_field_assignments = {}
+        self.list_mutations = {}
+        self.instance_field_writes = {}
+        self._assignment_by_var = {}
+        self._tree_text_index = None
+        self._defuse_trackers = {}
+
+    def _wave_capture_new_records(self):
+        fresh = [record for record in self.sink_records if record._wave_module is None]
+        self._wave_store.capture_sink_records(fresh)
+        self._wave_store.release_sink_nodes(self.sink_records)
+
+    def _prepare_wave_index(self):
+        import time as _time
+        self._checkpoint_phase = "Phase 1/2 (low-RAM waves)"
+        started = _time.perf_counter()
+        for module, fpath in self._wave_plan:
+            self._wave_reset_module_tables()
+            tree, _bypassed = self._wave_parse_file(fpath, recover=True)
+            self._wave_mark_tree(module, tree)
+            self.modules[module] = tree
+            for node in self._reachable_nodes(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        self.imports[module][alias.asname or alias.name] = alias.name
+                elif isinstance(node, ast.ImportFrom):
+                    imported = node.module or ""
+                    if getattr(node, "level", 0) > 0:
+                        parts = module.split(".")
+                        base = ".".join(parts[:-node.level]) if len(parts) > node.level else ""
+                        imported = f"{base}.{imported}" if base and imported else base or imported
+                    for alias in node.names:
+                        self.imports[module][alias.asname or alias.name] = (
+                            f"{imported}.{alias.name}" if imported else alias.name)
+            self._wave_store.begin_module(module)
+            self.collect_statements(tree.body, scope_id=f"{module}:global", is_conditional=False)
+            self._extract_function_contracts()
+            bundle = {
+                "modules": self.modules,
+                "functions": self.functions,
+                "returns_by_scope": self.returns_by_scope,
+                "assignments_by_scope": self.assignments_by_scope,
+                "class_field_assignments": self.class_field_assignments,
+                "list_mutations": self.list_mutations,
+                "instance_field_writes": self.instance_field_writes,
+            }
+            self._wave_store.add_module(module, bundle)
+            self._wave_capture_new_records()
+        self.modules = self._wave_store.lazy_dict("modules")
+        self.functions = self._wave_store.lazy_dict("functions")
+        self.returns_by_scope = self._wave_store.lazy_dict("returns_by_scope")
+        self.assignments_by_scope = self._wave_store.lazy_assignment_table()
+        self.class_field_assignments = self._wave_store.lazy_dict("class_field_assignments")
+        self.list_mutations = self._wave_store.lazy_dict("list_mutations")
+        self.instance_field_writes = self._wave_store.lazy_dict("instance_field_writes")
+        self._assignment_by_var = self._wave_store.lazy_assignment_index()
+        self._wave_store.active_wave = None
+        self._wave_store.flush_dirty()
+        gc.collect()
+        print(f"TimeCodeSecurity [PROFILE] Low-RAM index waves: {_time.perf_counter() - started:.2f}s "
+              f"({len(self._wave_plan)} modules, wave_size={self.low_ram_wave_size})", file=sys.stderr)
+
+    def _run_collector_waves(self, collector):
+        if self.low_ram_wave_size is None:
+            collector()
+            return
+        for wave in self._wave_store.wave_groups:
+            self._wave_store.active_wave = wave
+            try:
+                collector()
+                self._wave_capture_new_records()
+            finally:
+                self._wave_store.active_wave = None
+                self._wave_store.release_sink_nodes(self.sink_records)
+                gc.collect()
+
+    def _wave_sink_records(self):
+        for index, record in enumerate(self.sink_records, 1):
+            try:
+                yield record
+            finally:
+                self._wave_store.release_sink_nodes((record,))
+                if index % 16 == 0:
+                    gc.collect()
+        gc.collect()
+
     def _extract_function_contracts(self) -> None:
         """
         Extract function contracts from all modules after collection phase.
@@ -7476,11 +8166,12 @@ class TaintTracker:
         # Perf: reuse the per-function tracker instead of re-analyzing on every
         # unresolved Name; the tracker is deterministic for a given FunctionDef.
         # Lazy: built only when sink resolution actually reaches this point.
-        tracker = self._defuse_trackers.get(id(func_node))
+        tracker = None if self.low_ram_wave_size is not None else self._defuse_trackers.get(id(func_node))
         if tracker is None:
             tracker = LocalDefUseTracker()
             tracker.analyze_function(func_node, self.file_paths.get(mod_name, f"{mod_name}.py"))
-            self._defuse_trackers[id(func_node)] = tracker
+            if self.low_ram_wave_size is None:
+                self._defuse_trackers[id(func_node)] = tracker
 
         # Check if the variable is tainted according to the tracker
         if tracker.is_variable_tainted(var_name):
@@ -11599,6 +12290,9 @@ class TaintTracker:
         One dict built per tracker (module id -> text), because both facts are looked up by name and
         the arm asks them by tree. Trackers are per scan, so the ids can never outlive their trees.
         """
+        if self.low_ram_wave_size is not None:
+            module = tree._tcs_wave_module
+            return self.files.get(self.file_paths.get(module, ""))
         cache = getattr(self, "_tree_text_index", None)
         if cache is None:
             files = getattr(self, "files", None)
@@ -18150,6 +18844,8 @@ class TaintTracker:
         return dead
 
     def _in_dead_code(self, node: ast.AST) -> bool:
+        if self.low_ram_wave_size is not None:
+            return node._tcs_wave_identity in self.dead_node_ids
         return id(node) in self.dead_node_ids
 
     def _reachable_nodes(self, tree: ast.AST) -> list:
@@ -21898,6 +22594,12 @@ class TaintTracker:
                 return record
         return None
 
+    def _node_identity(self, node) -> int:
+        """Process-stable node key while lazy AST waves reload module trees."""
+        if self.low_ram_wave_size is None:
+            return id(node)
+        return getattr(node, "_tcs_wave_identity", id(node))
+
     def _sink_node_records(self, node) -> list:
         """Every `sink_records` entry whose own `node` is `node`, in record order."""
         records = self.sink_records
@@ -21913,14 +22615,17 @@ class TaintTracker:
         index = self._sink_node_rec_index
         for i in range(start, len(records)):
             record = records[i]
-            key = id(record.node)
+            key = self._node_identity(record.node)
             bucket = index.get(key)
             if bucket is None:
                 bucket = index[key] = []
             bucket.append(record)
         self._sink_node_rec_len = len(records)
         self._sink_node_rec_tail = records[-1] if records else None
-        return [record for record in index.get(id(node), ()) if record.node is node]
+        return [
+            record for record in index.get(self._node_identity(node), ())
+            if self._node_identity(record.node) == self._node_identity(node)
+        ]
 
     def _sink_nodes_on_line(self, file_path: str, line_start: int) -> list:
         """Every `self.sinks` node recorded on one file line, in list order.
@@ -22194,16 +22899,18 @@ class TaintTracker:
         absorbed = self._sink_node_len
         if (records is not self._sink_node_list or absorbed > len(records)
                 or (absorbed and records[absorbed - 1] is not self._sink_node_tail)):
-            self._sink_node_seen = {record.node for record in records}
+            self._sink_node_seen = {
+                self._node_identity(record.node) for record in records
+            }
             self._sink_node_list = records
             self._profile_cache_rebuild("sink_node_seen", len(records))
         else:
             seen = self._sink_node_seen
             for i in range(absorbed, len(records)):
-                seen.add(records[i].node)
+                seen.add(self._node_identity(records[i].node))
         self._sink_node_len = len(records)
         self._sink_node_tail = records[-1] if records else None
-        return node not in self._sink_node_seen
+        return self._node_identity(node) not in self._sink_node_seen
 
     def _callback_contract(self, arg_node, fn_canon: str = ""):
         """Contract of the function this argument references, or None.
@@ -22364,6 +23071,12 @@ class TaintTracker:
         and the forked pools that do exist (Phase 2 and the sink gate) both run before this line.
         """
         global _DOTTED_NAME_MEMO, _COLLECTOR_TABLES_FROZEN
+        if self.low_ram_wave_size is not None:
+            _DOTTED_NAME_MEMO = None
+            self._collector_dotted_name_memo = None
+            self._collector_canonical_memo = None
+            _COLLECTOR_TABLES_FROZEN = True
+            return
         _DOTTED_NAME_MEMO = self._collector_dotted_name_memo = {}
         self._collector_canonical_memo = {}
         _COLLECTOR_TABLES_FROZEN = True
@@ -33254,7 +33967,7 @@ class TaintTracker:
             `benchmark/gates/ansible_rootcause_fp_probe.py` pins them apart, so they are kept.
             """
             for record in cwe89_by_location.get((file_path, getattr(call, "lineno", 1)), ()):
-                if record.node is call and \
+                if self._node_identity(record.node) == self._node_identity(call) and \
                         record.security_node.symbol != "SQL_DRIVER_QUERYBUILDER":
                     return True
             return False
@@ -37440,6 +38153,10 @@ class TaintTracker:
         try:
             return self._analyze_pipeline()
         finally:
+            if getattr(self, "low_ram_wave_size", None) is not None:
+                self.modules = {}
+                self._wave_store.close()
+                self._deactivate_wave_record_class()
             # Idempotent (setting both memos to None twice changes nothing) and it makes the
             # phase-boundary release unconditional: a collector raising halfway through the phase
             # cannot leave a repository's worth of cached name answers attached to this tracker.
@@ -37539,60 +38256,63 @@ class TaintTracker:
         _phase_start = _time.perf_counter()
         self._checkpoint_t0 = _phase_start
         
-        # Phase 1: Import resolution (per-module, parallelizable)
-        self._checkpoint_phase = "Phase 1 (Import resolution)"
-        _t0 = _time.perf_counter()
-        for mod_name, tree in self.modules.items():
-            for node in self._reachable_nodes(tree):
-                if isinstance(node, ast.Import):
-                    for alias in node.names: self.imports[mod_name][alias.asname or alias.name] = alias.name
-                elif isinstance(node, ast.ImportFrom):
-                    module = node.module or ""
-                    if getattr(node, 'level', 0) > 0:
-                        parts = mod_name.split(".")
-                        base = ".".join(parts[:-node.level]) if len(parts) > node.level else ""
-                        module = f"{base}.{module}" if base and module else base or module
-                    for alias in node.names: self.imports[mod_name][alias.asname or alias.name] = f"{module}.{alias.name}" if module else alias.name
-        _t1 = _time.perf_counter()
-        print(f"TimeCodeSecurity [PROFILE] Phase 1 (Import resolution): {_t1 - _t0:.2f}s", file=_sys.stderr)
-        
-        # Phase 2: Statement collection (per-module, parallelizable)
-        self._checkpoint_phase = "Phase 2 (Statement collection)"
-        _t0 = _time.perf_counter()
-        _p2_workers = _phase2_worker_count(len(self.modules))
-        if _p2_workers > 1:
-            try:
-                _phase2_collect_parallel(self, _p2_workers)
-            except Exception as _p2_exc:
-                # A failed fan-out must not lose the pass: fall back to the serial loop. The graft
-                # only runs after every module came back, so nothing is half-merged here.
-                _p2_workers = 1
-                print(f"TimeCodeSecurity [PROFILE] Phase 2 fan-out disabled "
-                      f"({type(_p2_exc).__name__}: {_p2_exc}); serial collection", file=_sys.stderr)
+        if self.low_ram_wave_size is not None:
+            self._prepare_wave_index()
+        else:
+            # Phase 1: Import resolution (per-module, parallelizable)
+            self._checkpoint_phase = "Phase 1 (Import resolution)"
+            _t0 = _time.perf_counter()
+            for mod_name, tree in self.modules.items():
+                for node in self._reachable_nodes(tree):
+                    if isinstance(node, ast.Import):
+                        for alias in node.names: self.imports[mod_name][alias.asname or alias.name] = alias.name
+                    elif isinstance(node, ast.ImportFrom):
+                        module = node.module or ""
+                        if getattr(node, 'level', 0) > 0:
+                            parts = mod_name.split(".")
+                            base = ".".join(parts[:-node.level]) if len(parts) > node.level else ""
+                            module = f"{base}.{module}" if base and module else base or module
+                        for alias in node.names: self.imports[mod_name][alias.asname or alias.name] = f"{module}.{alias.name}" if module else alias.name
+            _t1 = _time.perf_counter()
+            print(f"TimeCodeSecurity [PROFILE] Phase 1 (Import resolution): {_t1 - _t0:.2f}s", file=_sys.stderr)
+
+            # Phase 2: Statement collection (per-module, parallelizable)
+            self._checkpoint_phase = "Phase 2 (Statement collection)"
+            _t0 = _time.perf_counter()
+            _p2_workers = _phase2_worker_count(len(self.modules))
+            if _p2_workers > 1:
+                try:
+                    _phase2_collect_parallel(self, _p2_workers)
+                except Exception as _p2_exc:
+                    # A failed fan-out must not lose the pass: fall back to the serial loop. The graft
+                    # only runs after every module came back, so nothing is half-merged here.
+                    _p2_workers = 1
+                    print(f"TimeCodeSecurity [PROFILE] Phase 2 fan-out disabled "
+                          f"({type(_p2_exc).__name__}: {_p2_exc}); serial collection", file=_sys.stderr)
+                    for mod_name in _phase2_ordered_modules(self):
+                        self.collect_statements(self.modules[mod_name].body,
+                                                scope_id=f"{mod_name}:global", is_conditional=False)
+            else:
                 for mod_name in _phase2_ordered_modules(self):
                     self.collect_statements(self.modules[mod_name].body,
                                             scope_id=f"{mod_name}:global", is_conditional=False)
-        else:
-            for mod_name in _phase2_ordered_modules(self):
-                self.collect_statements(self.modules[mod_name].body,
-                                        scope_id=f"{mod_name}:global", is_conditional=False)
-        _t1 = _time.perf_counter()
-        print(f"TimeCodeSecurity [PROFILE] Phase 2 (Statement collection): {_t1 - _t0:.2f}s "
-              f"({_p2_workers} worker(s))", file=_sys.stderr)
+            _t1 = _time.perf_counter()
+            print(f"TimeCodeSecurity [PROFILE] Phase 2 (Statement collection): {_t1 - _t0:.2f}s "
+                  f"({_p2_workers} worker(s))", file=_sys.stderr)
 
-        # O(1) assignment index by var name and by (scope_id, var_name)
-        self._assignment_by_var = {}
-        for (sc, target_name), recs in self.assignments_by_scope.items():
-            for rec in recs:
-                self._assignment_by_var[target_name] = rec
-                self._assignment_by_var[(sc, target_name)] = rec
+            # O(1) assignment index by var name and by (scope_id, var_name)
+            self._assignment_by_var = {}
+            for (sc, target_name), recs in self.assignments_by_scope.items():
+                for rec in recs:
+                    self._assignment_by_var[target_name] = rec
+                    self._assignment_by_var[(sc, target_name)] = rec
 
-        # Phase 4.3: Extract function contracts after statement collection
-        self._checkpoint_phase = "Phase 4.3 (Function contracts)"
-        _t0 = _time.perf_counter()
-        self._extract_function_contracts()
-        _t1 = _time.perf_counter()
-        print(f"TimeCodeSecurity [PROFILE] Phase 4.3 (Function contracts): {_t1 - _t0:.2f}s", file=_sys.stderr)
+            # Phase 4.3: Extract function contracts after statement collection
+            self._checkpoint_phase = "Phase 4.3 (Function contracts)"
+            _t0 = _time.perf_counter()
+            self._extract_function_contracts()
+            _t1 = _time.perf_counter()
+            print(f"TimeCodeSecurity [PROFILE] Phase 4.3 (Function contracts): {_t1 - _t0:.2f}s", file=_sys.stderr)
 
         # Index call sites by target function scope
         self._checkpoint_phase = "Call site indexing"
@@ -37611,9 +38331,20 @@ class TaintTracker:
         self._checkpoint_phase = "Sink detection (callbacks+direct)"
         _t0 = _time.perf_counter()
         _sink_count_before = len(self.sink_records)
-        _sg_workers = _sink_gate_worker_count(len(self.raw_calls))
+        _sg_workers = 1 if self.low_ram_wave_size is not None else _sink_gate_worker_count(len(self.raw_calls))
         _gated = None
-        if _sg_workers > 1:
+        if self.low_ram_wave_size is not None:
+            for wave in self._wave_store.wave_groups:
+                self._wave_store.active_wave = wave
+                try:
+                    for call_node, caller_scope, lineno in self.raw_calls.iter_wave(wave):
+                        self._resolve_sink_candidate(call_node, caller_scope, lineno)
+                    self._wave_capture_new_records()
+                finally:
+                    self._wave_store.active_wave = None
+                    self._wave_store.release_sink_nodes(self.sink_records)
+                    gc.collect()
+        elif _sg_workers > 1:
             try:
                 _gated = _sink_gate_parallel(self, _sg_workers)
             except Exception as _sg_exc:
@@ -37621,10 +38352,10 @@ class TaintTracker:
                 _gated = None
                 print(f"TimeCodeSecurity [SINKGATE] fan-out disabled "
                       f"({type(_sg_exc).__name__}: {_sg_exc}); serial gate", file=_sys.stderr)
-        if _gated is None:
+        if _gated is None and self.low_ram_wave_size is None:
             for call_node, caller_scope, lineno in self.raw_calls:
                 self._resolve_sink_candidate(call_node, caller_scope, lineno)
-        else:
+        elif _gated is not None:
             # Only the gated candidates run the body, in ascending call-site order. Calls the gate
             # returned nothing for provably take no action in the body either, so the recorded sink
             # sequence is the serial one. See `_sink_candidate_kind`.
@@ -37711,7 +38442,7 @@ class TaintTracker:
             print(f"TimeCodeSecurity [COLLECTOR-LIVE] ({_s1_idx}/{_s1_total}) Starting {_s1_name}...",
                   file=_sys.stderr, flush=True)
             _s1_t0 = _time.perf_counter()
-            _s1_collector()
+            self._run_collector_waves(_s1_collector)
             _s1_elapsed = _time.perf_counter() - _s1_t0
             self._collector_profile[_s1_name] = self._collector_profile.get(_s1_name, 0.0) + _s1_elapsed
             self._flush_stage1_structural_edges()
@@ -37726,7 +38457,8 @@ class TaintTracker:
         self._profile_scope = "blindspot_all"
         self._checkpoint_phase = "Blindspot collectors (14 CWE passes per module)"
         _bs_t0 = _time.perf_counter()
-        for _bs_mod, _bs_tree in sorted(self.modules.items()):
+        for _bs_mod in sorted(self.modules):
+            _bs_tree = self.modules[_bs_mod]
             _bs_file = self.file_paths.get(_bs_mod, "unknown.py")
             _bs_lines = self._source_lines_by_file.get(_bs_file, [])
             self._checkpoint_collector = _bs_file
@@ -37767,6 +38499,9 @@ class TaintTracker:
                 _bs_tree.__dict__.pop("_cached_node_type_buckets", None)
                 _bs_tree.__dict__.pop("_cached_node_type_views", None)
                 _bs_tree.__dict__.pop("_cached_handle_opens", None)
+                if self.low_ram_wave_size is not None:
+                    self._wave_capture_new_records()
+                    gc.collect()
         # One flush after the loop: every blindspot sink is created with `p4_source_id`, which
         # `_emit_structural_edge` defers, so an in-loop flush could only ever re-scan the stage-1
         # sinks that the per-collector flush above already emitted.
@@ -37860,21 +38595,31 @@ class TaintTracker:
         # the whole finding. Every SSL-keyword call folds its argument here, and a hit reuses the
         # sink the taint engine already registered on that line (or appends one) with the same
         # INSECURE_CONFIGURATION source the attribute-assignment rule above uses.
-        for call_node, caller_scope, _call_lineno in self.raw_calls:
-            if not _may_disable_ssl(call_node):
-                continue
-            if not self._ssl_callsite_disabled(call_node, caller_scope):
-                continue
-            _ssl_file = self.file_paths.get(scope_module(caller_scope), "unknown.py")
-            if self._blindspot_line_suppressed(self._source_lines_by_file.get(_ssl_file, []), call_node):
-                continue
-            self._add_blindspot_sink(
-                call_node, _ssl_file, "CWE-295", "DISABLED_SSL_VERIFICATION", "INSECURE_TRANSPORT",
-                "CWE-295: TLS certificate verification disabled at this call; any certificate is accepted",
-                "INSECURE_CONFIGURATION", reuse_existing=True)
+        def _scan_ssl_calls(calls):
+            for call_node, caller_scope, _call_lineno in calls:
+                if not _may_disable_ssl(call_node):
+                    continue
+                if not self._ssl_callsite_disabled(call_node, caller_scope):
+                    continue
+                _ssl_file = self.file_paths.get(scope_module(caller_scope), "unknown.py")
+                if self._blindspot_line_suppressed(self._source_lines_by_file.get(_ssl_file, []), call_node):
+                    continue
+                self._add_blindspot_sink(
+                    call_node, _ssl_file, "CWE-295", "DISABLED_SSL_VERIFICATION", "INSECURE_TRANSPORT",
+                    "CWE-295: TLS certificate verification disabled at this call; any certificate is accepted",
+                    "INSECURE_CONFIGURATION", reuse_existing=True)
+
+        if self.low_ram_wave_size is not None:
+            for wave in self._wave_store.wave_groups:
+                _scan_ssl_calls(self.raw_calls.iter_wave(wave))
+                self._wave_capture_new_records()
+                gc.collect()
+        else:
+            _scan_ssl_calls(self.raw_calls)
 
         self._checkpoint_phase = "Graph evaluation cascade (per-sink taint resolution)"
-        for record in self.sink_records:
+        _cascade_records = self._wave_sink_records() if self.low_ram_wave_size is not None else self.sink_records
+        for record in _cascade_records:
             sink = record.security_node
             cwe = sink.metadata.get("cwe")
             if cwe in ("CWE-89", "CWE-328") and self._file_is_numbered_django_migration(
@@ -38314,9 +39059,16 @@ class TaintTracker:
         # part that would otherwise ride through dedup and reporting. Phase 2 above rebuilds the list
         # from the trees, so even a tracker asked to `analyze()` twice gets its call sites back.
         self.raw_calls = []
+        _module_count = len(self.modules)
+        self.analyzed_module_count = _module_count
+        if self.low_ram_wave_size is not None:
+            self._wave_store.release_sink_nodes(self.sink_records)
+            self.modules = {}
+            self._wave_store.close()
+            self._deactivate_wave_record_class()
         _total_elapsed = _t_end - _phase_start
         print(f"TimeCodeSecurity [PROFILE] Total analyze() elapsed: {_total_elapsed:.2f}s", file=_sys.stderr)
-        print(f"TimeCodeSecurity [PROFILE] Summary: {len(self.modules)} modules, {len(self.sources)} sources, {len(self.sinks)} sinks, {len(self.edges)} edges", file=_sys.stderr)
+        print(f"TimeCodeSecurity [PROFILE] Summary: {_module_count} modules, {len(self.sources)} sources, {len(self.sinks)} sinks, {len(self.edges)} edges", file=_sys.stderr)
         
         return self.sources, self.sinks, self.edges
 

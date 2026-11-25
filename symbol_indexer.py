@@ -206,7 +206,7 @@ class GlobalSymbolIndex:
                 mod_name = self.file_to_module[p]
                 entry = None
                 if reuse_trees:
-                    cached = reuse_trees.get(str(p))
+                    cached = reuse_trees.pop(str(p), None)
                     if cached is not None and cached[1] is not None:
                         try:
                             if Path(str(p)).read_text(

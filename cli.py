@@ -670,9 +670,19 @@ def _imported_roots(tracker):
         return roots
     paths = getattr(tracker, "file_paths", {}) or {}
     sources = getattr(tracker, "files", {}) or {}
-    for module, tree in (getattr(tracker, "modules", {}) or {}).items():
+    modules = getattr(tracker, "modules", {}) or {}
+    if modules:
+        trees = modules.items()
+    else:
+        trees = (
+            (module, sources.get(path))
+            for module, path in paths.items()
+            if sources.get(path)
+        )
+    for module, tree_or_source in trees:
+        tree = tree_or_source
         if not isinstance(tree, ast.AST):
-            source = sources.get(paths.get(module))
+            source = tree
             if not source:
                 continue
             try:
@@ -920,6 +930,14 @@ def _apply_inline_suppressions(findings, suppressions):
     else:
         resolve_line_suppressions(findings, suppressions)
     return [finding for finding in findings if not finding.get("suppressed")]
+
+
+def _low_ram_wave_size(file_count, available_ram_mb):
+    """Select bounded AST waves only below the scanner's hardware safety floor."""
+    from tcs.parallel_scanner import HARD_SAFETY_THRESHOLD_MB
+    if file_count > 350 and available_ram_mb < HARD_SAFETY_THRESHOLD_MB:
+        return 350
+    return None
 
 
 def _release_python_scan_state(tracker, files):
@@ -2109,6 +2127,9 @@ def _scan(args):
         except ImportError:
             available_ram_before_gb = 0
             rss_before_mb = 0
+
+        low_ram_wave_size = _low_ram_wave_size(
+            len(files), available_ram_before_gb * 1024)
         
         if ux:
             banner.print_phase(2, 4, "analysis", stream=sys.stderr)
@@ -2121,12 +2142,15 @@ def _scan(args):
             # Default mode keeps the progress line byte-for-byte as it was; a chosen mode names itself,
             # because "with 8 worker(s)" is not what `treesitter` is doing (it runs single-process).
             _progress(f"parsing {len(files)} python file(s) with {workers} worker(s)"
-                      + ("" if _parser_mode == DEFAULT_PARSER_MODE else f", parser={_parser_mode}"))
+                      + ("" if _parser_mode == DEFAULT_PARSER_MODE else f", parser={_parser_mode}")
+                      + (f", low_ram_wave_size={low_ram_wave_size}"
+                         if low_ram_wave_size is not None else ""))
             tracker = TaintTracker(
                 files=files,
                 max_workers=workers,
                 parser_mode=_parser_mode,
                 audit_all=getattr(args, "audit_all", False),
+                low_ram_wave_size=low_ram_wave_size,
             )
             _PARTIAL["tracker"] = tracker
             _clock.mark("Parse+Init")
@@ -2148,7 +2172,7 @@ def _scan(args):
         for aux_scope in aux_scopes.values():
             aux_file_counts[aux_scope] += 1
         file_counts = {
-            "python": len(tracker.modules) if tracker else 0,
+            "python": getattr(tracker, "analyzed_module_count", len(tracker.modules)) if tracker else 0,
             "docker": aux_file_counts["docker"],
             "iac": aux_file_counts["iac"],
             "sca": aux_file_counts["sca"],
@@ -2229,7 +2253,8 @@ def _scan(args):
         _clock.mark("Merge+Consolidate")
         _PARTIAL["findings"] = findings
         cross_reuse_trees = None
-        if has_python_scan and scope in ("all", "python"):
+        if (has_python_scan and scope in ("all", "python")
+                and getattr(tracker, "low_ram_wave_size", None) is None):
             cross_reuse_trees = _cross_scan_reuse_trees(tracker, files)
         if has_python_scan:
             _release_python_scan_state(tracker, files)

@@ -5637,14 +5637,25 @@ _NOTEBOOK_DELIVERY_CALLEES = frozenset({"display", "HTML", "Markdown", "Javascri
                                         "clear_output"})
 
 
+def _cached_module_nodes(tree: ast.AST) -> list:
+    """The module walk, shared by helpers which may run before the tracker supplies its list.
+
+    The list is keyed on the tree and released at the collector boundary with the tracker's other
+    caches. This only avoids a second traversal; it preserves `ast.walk`'s exact node sequence.
+    """
+    cached = tree.__dict__.get("_cached_all_nodes")
+    if cached is None:
+        cached = list(ast.walk(tree))
+        tree.__dict__["_cached_all_nodes"] = cached
+    return cached
+
+
 def module_renders_only_into_notebook(tree: ast.AST, nodes=None) -> bool:
     """True for a module whose markup is delivered to the IPython front end and to no web renderer."""
     imports_display = False
     delivers = False
     if nodes is None:
-        nodes = tree.__dict__.get("_cached_all_nodes")
-    if nodes is None:
-        nodes = ast.walk(tree)
+        nodes = _cached_module_nodes(tree)
     for node in nodes:
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -5695,9 +5706,7 @@ def docstring_only_names(tree: ast.AST, nodes=None) -> frozenset:
     produced a CWE-79 construction row.
     """
     if nodes is None:
-        nodes = tree.__dict__.get("_cached_all_nodes")
-    if nodes is None:
-        nodes = list(ast.walk(tree))
+        nodes = _cached_module_nodes(tree)
     parents = {}
     for parent in nodes:
         for child in ast.iter_child_nodes(parent):
@@ -6319,8 +6328,16 @@ def _phase2_ordered_modules(tracker) -> list:
                   key=lambda mod: (tracker.file_paths.get(mod, ""), mod))
 
 
+_PHASE2_PARALLEL_MIN_MODULES = 6000
+
+
 def _phase2_worker_count(module_count: int) -> int:
     """Worker count for the Phase 2 fan-out, taken from the analysis RAM governor.
+
+    Small and mid-sized trees collect statements serially. Forking four workers for roughly
+    2,700 modules copies the parent's AST heap through reference-count updates, which costs
+    more time and memory than the serial pass. The fan-out is reserved for corpora large enough
+    to amortize that page duplication.
 
     The 900 MB hard floor stays in charge: `compute_analysis_workers()` returns 1 below it and 1
     when free RAM cannot be measured, and any import or measurement failure also returns 1, which
@@ -6331,6 +6348,8 @@ def _phase2_worker_count(module_count: int) -> int:
     size, `tcs.parallel_scanner` import, RAM) need different fixes.
     """
     if module_count < 2:
+        return 1
+    if module_count < _PHASE2_PARALLEL_MIN_MODULES:
         return 1
     if not PARALLEL_PARSING_AVAILABLE:
         print("TimeCodeSecurity [PHASE2] 1 worker: tcs.parallel_scanner is not importable",
@@ -7373,7 +7392,6 @@ class TaintTracker:
         for fpath, code in self.files.items():
             if code is not None:
                 self._source_lines_by_file[fpath] = code.splitlines()
-        self.files.clear()
         # Per-module hits of `COLLECTOR_TEXT_TRIGGER_VOCAB`, released at the collector boundary.
         self._module_text_token_cache: dict[str, frozenset] = {}
 
@@ -16687,7 +16705,7 @@ class TaintTracker:
         tree = self.modules.get(mod_name)
         if tree is None:
             return False
-        cls = next((c for c in ast.walk(tree)
+        cls = next((c for c in self._module_nodes(tree)
                     if isinstance(c, ast.ClassDef) and c.name == loader_name), None)
         if cls is None:
             return False
@@ -16701,9 +16719,7 @@ class TaintTracker:
         if not bases or any(leaf not in CWE502_SAFE_LOADER_BASES for leaf in bases):
             return False
         tainted = set(bases) | {loader_name}
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
+        for node in self._module_calls(tree):
             callee = (dotted_name(node.func) or "").rsplit(".", 1)[-1]
             if callee not in CWE502_LOADER_MUTATING_CALLS:
                 continue
@@ -21568,7 +21584,7 @@ class TaintTracker:
         # so the table, the row order inside each bucket and every `_blindspot_latest_assignment`
         # answer are unchanged. Default stays the standalone walk: callers outside the blindspot loop
         # must not pin a node list on a module they are not serving.
-        for node in (nodes if nodes is not None else ast.walk(tree)):
+        for node in (nodes if nodes is not None else _cached_module_nodes(tree)):
             if isinstance(node, ast.Assign) and len(node.targets) == 1 \
                     and isinstance(node.targets[0], ast.Name):
                 table.setdefault(node.targets[0].id, []).append((node.lineno, node.value))
@@ -21966,7 +21982,6 @@ class TaintTracker:
 
     def _module_nodes(self, tree: ast.AST) -> list:
         """`list(ast.walk(tree))`, memoised on the tree.
-
         The blindspot stage ran 18 collector passes over every module and each one walked the whole
         tree again - ~36 full traversals per module by the time CWE-319 and CWE-117 were done, on
         the 10,648-file Home Assistant corpus. `ast.walk` is a deterministic BFS over
@@ -22003,6 +22018,57 @@ class TaintTracker:
             buckets = (nodes, [node for node in nodes if isinstance(node, ast.Call)])
             tree.__dict__["_cached_node_buckets"] = buckets
         return buckets[1]
+
+    _COLLECTOR_NODE_BUCKET_TYPES = (
+        ast.Call, ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Import, ast.ImportFrom,
+        ast.Raise, ast.ExceptHandler, ast.Subscript, ast.Attribute,
+        ast.FunctionDef, ast.AsyncFunctionDef,
+    )
+
+    def _module_node_buckets(self, tree: ast.AST, types=None) -> dict:
+        """Type buckets over one whole-module walk, keyed on that walk's identity.
+
+        Collectors which repeatedly test a small node vocabulary can use one filtered pass instead
+        of another traversal. The requested types default to the structural-collector vocabulary,
+        while helper callers may ask for the narrow mixed list they need so unrelated buckets are
+        never paid for. Every list keeps the original `ast.walk` order and node multiplicity.
+        """
+        nodes = self._module_nodes(tree)
+        requested = tuple(types or self._COLLECTOR_NODE_BUCKET_TYPES)
+        type_cache = tree.__dict__.get("_cached_node_type_buckets")
+        if type_cache is None:
+            type_cache = {}
+            tree.__dict__["_cached_node_type_buckets"] = type_cache
+        entry = type_cache.get(requested)
+        if entry is None or entry[0] is not nodes:
+            buckets = {node_type: [] for node_type in requested}
+            for node in nodes:
+                bucket = buckets.get(type(node))
+                if bucket is not None:
+                    bucket.append(node)
+            entry = (nodes, buckets)
+            type_cache[requested] = entry
+        return entry[1]
+
+    def _module_nodes_of_types(self, tree: ast.AST, types) -> list:
+        """One cached, order-preserving subsequence of `_module_nodes(tree)` for a node vocabulary.
+
+        Collectors may consume mixed types from their original whole-module walk. Concatenating
+        per-type buckets would change that interleaving, so this view filters the cached walk once
+        and keeps its exact order and multiplicity.
+        """
+        nodes = self._module_nodes(tree)
+        requested = tuple(types)
+        views = tree.__dict__.get("_cached_node_type_views")
+        if views is None:
+            views = {}
+            tree.__dict__["_cached_node_type_views"] = views
+        entry = views.get(requested)
+        if entry is None or entry[0] is not nodes:
+            wanted = set(requested)
+            entry = (nodes, [node for node in nodes if type(node) in wanted])
+            views[requested] = entry
+        return entry[1]
 
     def _module_callee_tokens(self, tree: ast.AST, mod_name: str) -> frozenset:
         """The callee names this module can offer a collector, cut down to the trigger vocabulary.
@@ -22072,6 +22138,15 @@ class TaintTracker:
             self._module_text_token_cache[mod_name] = cached
         return cached
 
+    def release_raw_sources(self) -> None:
+        """Release the tracker's alias to collected raw source after text caches are built.
+
+        CLI keeps the same dictionary it passed in, so the caller must build any byte-exact
+        cross-file reuse map before invoking this method. The split-lines cache remains for
+        line-based suppression and snippet rendering.
+        """
+        self.files.clear()
+
     def release_collector_gate_scratch(self) -> None:
         """Drop the per-module gate caches and the node lists the collector phase existed to serve.
 
@@ -22094,6 +22169,8 @@ class TaintTracker:
             cache.pop("_cached_reachable_nodes", None)
             cache.pop("_cached_callee_tokens", None)
             cache.pop("_cached_node_buckets", None)
+            cache.pop("_cached_node_type_buckets", None)
+            cache.pop("_cached_node_type_views", None)
             cache.pop("_cached_all_nodes", None)
             cache.pop("_cached_preorder_nodes", None)
         self._module_text_token_cache = {}
@@ -22527,8 +22604,8 @@ class TaintTracker:
     def _collect_cwe532_logging_leaks(self, tree, filename, source_lines, module=""):
         func_ranges = [
             (func.lineno, getattr(func, "end_lineno", None) or func.lineno)
-            for func in self._module_nodes(tree)
-            if isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for func in self._module_nodes_of_types(
+                tree, (ast.FunctionDef, ast.AsyncFunctionDef))
         ]
         if not module:
             module = next((mod for mod, path in self.file_paths.items() if path == filename), "")
@@ -23083,13 +23160,7 @@ class TaintTracker:
     # ── 4. CWE-93: raw client input written into a response header or body ─────────
     def _collect_cwe93_header_injection(self, tree, filename, source_lines):
         table = self._memo_assignment_map(tree)
-        for node in self._module_nodes(tree):
-            # See `_GATE_CWE93`: this is the two branch heads below, lifted above the `exprs`
-            # allocation they were each paid for. Measured on the benchmark+fixtures corpus, 31,557 of
-            # the 35,453 rows this loop walked could not reach either branch, and every one of them
-            # still built a list, ran both tests and hit `if not exprs: continue`.
-            if type(node) not in _GATE_CWE93:
-                continue
+        for node in self._module_nodes_of_types(tree, _GATE_CWE93):
             # Only the values that actually land in the header are inspected: the receiver of
             # a method call and the subscript key are the response object's own names.
             exprs = []
@@ -23125,9 +23196,7 @@ class TaintTracker:
         # client chose. The loop above only reads Subscript targets (`response['Header']`) and
         # method calls, so an Attribute target was never examined and every body write stayed
         # silent - measured: that snippet produced no finding at all before this pass.
-        for node in self._module_nodes(tree):
-            if not isinstance(node, ast.Assign):
-                continue
+        for node in self._module_nodes_of_types(tree, (ast.Assign,)):
             if not any(self._c93_is_response_body_target(t) for t in node.targets):
                 continue
             if not self._blindspot_reads_client_input(node.value, table, node.lineno):
@@ -23318,7 +23387,7 @@ class TaintTracker:
     def _c22_function_ranges(tree, nodes=None):
         """(first line, last line, parameter names) for every def in the module."""
         out = []
-        for node in (nodes if nodes is not None else ast.walk(tree)):
+        for node in (nodes if nodes is not None else _cached_module_nodes(tree)):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 declared = list(node.args.args) + list(node.args.posonlyargs) \
                     + list(node.args.kwonlyargs)
@@ -23373,7 +23442,7 @@ class TaintTracker:
     def _c22_guarded_names(tree, nodes=None):
         """Names compared with `.startswith(root)` - an explicit allowlist of a base directory."""
         out = set()
-        for node in (nodes if nodes is not None else ast.walk(tree)):
+        for node in (nodes if nodes is not None else _cached_module_nodes(tree)):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
                     and node.func.attr == "startswith":
                 root = node.func.value
@@ -23446,7 +23515,7 @@ class TaintTracker:
         if cached is not None:
             return cached
         out = {}
-        for node in (nodes if nodes is not None else ast.walk(tree)):
+        for node in (nodes if nodes is not None else _cached_module_nodes(tree)):
             for item in getattr(node, "items", []):
                 value = item.context_expr
                 if not (isinstance(value, ast.Call)
@@ -23713,11 +23782,11 @@ class TaintTracker:
         *nodes* is the module's cached node list, supplied only by the blindspot pass that already
         holds it; both loops below read the same nodes `ast.walk(tree)` would yield, in the same order.
         """
-        calls = [node for node in (nodes if nodes is not None else ast.walk(tree))
+        calls = [node for node in (nodes if nodes is not None else _cached_module_nodes(tree))
                  if isinstance(node, ast.Call) and self._c209_is_response_call(node)]
         if not calls:
             return {}
-        functions = [node for node in (nodes if nodes is not None else ast.walk(tree))
+        functions = [node for node in (nodes if nodes is not None else _cached_module_nodes(tree))
                      if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
         owned: dict[int, list] = {}
         for call in calls:
@@ -24278,7 +24347,7 @@ class TaintTracker:
         if not directories & self.CWE117_PARAM_SOURCE_PACKAGES:
             return []
         scopes = []
-        for func in ast.walk(tree):
+        for func in self._module_nodes(tree):
             if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if func.name.startswith("_"):
@@ -24301,7 +24370,7 @@ class TaintTracker:
         object into another view-level call - the shape of an undecorated view helper.
         """
         scopes = []
-        for func in (nodes if nodes is not None else ast.walk(tree)):
+        for func in (nodes if nodes is not None else _cached_module_nodes(tree)):
             if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if not TaintTracker._c209_route_decorated(func) \
@@ -24679,7 +24748,7 @@ class TaintTracker:
     def _c312_stream_scopes(tree, nodes=None):
         """(start, end, stream-annotated parameter names) for every def that takes a stream."""
         scopes = []
-        for func in [node for node in (nodes if nodes is not None else ast.walk(tree))
+        for func in [node for node in (nodes if nodes is not None else _cached_module_nodes(tree))
                      if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]:
             names = {argument.arg for argument in
                      list(func.args.posonlyargs) + list(func.args.args) + list(func.args.kwonlyargs)
@@ -24940,7 +25009,7 @@ class TaintTracker:
     def _c319_imported_verbs(tree, nodes=None):
         """Bare `get`/`post` count only when imported from `requests`/`urllib`, else `get` is a dict."""
         verbs = set()
-        for node in (nodes if nodes is not None else ast.walk(tree)):
+        for node in (nodes if nodes is not None else _cached_module_nodes(tree)):
             if isinstance(node, ast.ImportFrom) \
                     and (node.module or "").split(".")[0] in HTTP_VERB_MODULES:
                 verbs.update(alias.name for alias in node.names)
@@ -25059,7 +25128,7 @@ class TaintTracker:
     def _c319_raw_socket_tls_evidence(tree, scopes, nodes=None):
         """Per-scope: which scopes do any TLS wrapping, and which socket handles the wrapping names."""
         tls_scopes, secured = set(), {}
-        for node in (nodes if nodes is not None else ast.walk(tree)):
+        for node in (nodes if nodes is not None else _cached_module_nodes(tree)):
             if not isinstance(node, ast.Call):
                 continue
             segments = (dotted_name(node.func) or "").split(".")
@@ -25537,7 +25606,7 @@ class TaintTracker:
     def _c502_import_aliases(tree, nodes=None):
         """local name -> dotted path, so `import msgpack as mp` still reads as `msgpack.unpackb`."""
         aliases: dict[str, str] = {}
-        for node in (nodes if nodes is not None else ast.walk(tree)):
+        for node in (nodes if nodes is not None else _cached_module_nodes(tree)):
             if isinstance(node, ast.Import):
                 for item in node.names:
                     aliases[item.asname or item.name.split(".")[0]] = item.name
@@ -26275,7 +26344,7 @@ class TaintTracker:
         tree = self.modules.get(mod_name)
         if tree is None:
             return False
-        loads = [n for n in ast.walk(tree)
+        loads = [n for n in self._module_nodes(tree)
                  if isinstance(n, ast.Name) and n.id == names[0] and isinstance(n.ctx, ast.Load)]
         if not loads:
             return False
@@ -29423,7 +29492,8 @@ class TaintTracker:
         cached = tree.__dict__.get("_cached_c770_products")
         if cached is None:
             cached = {}
-            for n in self._module_nodes(tree):
+            for n in self._module_nodes_of_types(
+                    tree, (ast.Assign, ast.AnnAssign, ast.With)):
                 if isinstance(n, ast.Assign):
                     pairs = [(t, n.value) for t in n.targets]
                 elif isinstance(n, ast.AnnAssign) and n.value is not None:
@@ -29717,7 +29787,8 @@ class TaintTracker:
 
             # Pre-scan module assignments
             assigns_in_module: dict[str, list[tuple[int, ast.AST]]] = {}
-            for n in self._module_nodes(tree):
+            for n in self._module_nodes_of_types(
+                    tree, (ast.Assign, ast.AnnAssign)):
                 if isinstance(n, ast.Assign):
                     for t in n.targets:
                         if isinstance(t, ast.Name):
@@ -29726,7 +29797,7 @@ class TaintTracker:
                             for el in t.elts:
                                 if isinstance(el, ast.Name):
                                     assigns_in_module.setdefault(el.id, []).append((n.lineno, n.value))
-                elif isinstance(n, ast.AnnAssign):
+                else:
                     if isinstance(n.target, ast.Name) and n.value:
                         assigns_in_module.setdefault(n.target.id, []).append((n.lineno, n.value))
 
@@ -32122,7 +32193,7 @@ class TaintTracker:
         if tree is None or not mod_name:
             return []
         origins = []
-        for node in ast.walk(tree):
+        for node in self._module_nodes(tree):
             if isinstance(node, ast.ImportFrom):
                 bound = {(alias.asname or alias.name).split(".")[0] for alias in node.names}
                 if name not in bound or "*" in bound:
@@ -37693,6 +37764,8 @@ class TaintTracker:
                 # `except` here, so the original exception still propagates unchanged.
                 _bs_tree.__dict__.pop("_cached_all_nodes", None)
                 _bs_tree.__dict__.pop("_cached_node_buckets", None)
+                _bs_tree.__dict__.pop("_cached_node_type_buckets", None)
+                _bs_tree.__dict__.pop("_cached_node_type_views", None)
                 _bs_tree.__dict__.pop("_cached_handle_opens", None)
         # One flush after the loop: every blindspot sink is created with `p4_source_id`, which
         # `_emit_structural_edge` defers, so an in-loop flush could only ever re-scan the stage-1

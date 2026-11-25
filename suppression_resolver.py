@@ -200,20 +200,14 @@ def find_matching_directive(
     return None
 
 
-def resolve_line_suppressions(
-    findings: List[Dict[str, Any]],
+def extract_exact_line_directives(
     normalized_files: Dict[str, str]
-) -> List[Dict[str, Any]]:
-    """Mark findings silenced by an exact-line `# tcs: ignore[CWE-XXX]` directive.
+) -> Dict[str, Dict[int, List[Dict[str, Any]]]]:
+    """Pre-extract the exact-line directives from a set of sources.
 
-    Only the bracketed form is consulted here, and only on the finding's own line: a
-    `# tcs: ignore[CWE-611]` written next to a statement cannot hide a finding on the line
-    above or below it. Files without the substring `tcs` are never tokenized, so a tree
-    that uses no directives pays one case-folded scan per file and nothing else.
+    The result intentionally retains only parsed directive data, so a scanner can release its
+    raw source texts before the post-analysis suppression pass without tokenizing them again.
     """
-    if not findings:
-        return findings
-
     exact_directives: Dict[str, Dict[int, List[Dict[str, Any]]]] = {}
     for fpath, content in normalized_files.items():
         if "tcs" not in content.lower():
@@ -225,6 +219,16 @@ def resolve_line_suppressions(
                 by_line[line] = kept
         if by_line:
             exact_directives[fpath] = by_line
+    return exact_directives
+
+
+def apply_exact_line_directives(
+    findings: List[Dict[str, Any]],
+    exact_directives: Dict[str, Dict[int, List[Dict[str, Any]]]]
+) -> List[Dict[str, Any]]:
+    """Mark findings silenced by a previously extracted exact-line directive map."""
+    if not findings or not exact_directives:
+        return findings
 
     for finding in findings:
         line = finding.get("line")
@@ -240,6 +244,22 @@ def resolve_line_suppressions(
                 break
 
     return findings
+
+
+def resolve_line_suppressions(
+    findings: List[Dict[str, Any]],
+    normalized_files: Dict[str, str]
+) -> List[Dict[str, Any]]:
+    """Mark findings silenced by an exact-line `# tcs: ignore[CWE-XXX]` directive.
+
+    Only the bracketed form is consulted here, and only on the finding's own line: a
+    `# tcs: ignore[CWE-611]` written next to a statement cannot hide a finding on the line
+    above or below it. Files without the substring `tcs` are never tokenized, so a tree
+    that uses no directives pays one case-folded scan per file and nothing else.
+    """
+    return apply_exact_line_directives(
+        findings, extract_exact_line_directives(normalized_files)
+    )
 
 
 def resolve_suppressions(

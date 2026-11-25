@@ -36,6 +36,8 @@ import pickle
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -181,15 +183,18 @@ class TestSinkGateRamFloor:
 
 class TestCallSiteIndexRelease:
     def test_the_index_is_empty_once_analyze_returns(self):
-        tracker = TaintTracker(files={"snippet.py": _MULTILINE_QUERY})
+        files = {"snippet.py": _MULTILINE_QUERY}
+        tracker = TaintTracker(files=files)
         tracker.analyze()
         assert tracker.raw_calls == [], "one tuple per call site outlived the pass that needed it"
-        # Trees and line-indexed source stay for reporters; duplicate raw source strings do not.
+        # Raw text remains aliased only long enough for the CLI to freeze byte-exact reuse trees;
+        # once released, trees and line-indexed source stay for reporters and repeat analyses.
+        tracker.release_raw_sources()
         assert tracker.modules and tracker.files == {}
         assert tracker._module_source_text("snippet") == "\n".join(_MULTILINE_QUERY.splitlines())
 
     def test_a_second_pass_rebuilds_the_index_and_still_reports(self):
-        # Phase 2 walks the trees, so releasing at the return cannot starve a tracker asked to run
+        # Phase 2 walks the trees, so releasing the raw source cannot starve a tracker asked to run
         # twice -- the CWE-89 row on the same snippet proves the call sites came back.
         tracker = TaintTracker(files={"snippet.py": _MULTILINE_QUERY})
         tracker.analyze()
@@ -201,25 +206,33 @@ class TestCallSiteIndexRelease:
 class TestV313MemoryAndIndexInvariants:
     def test_raw_source_is_released_but_lines_remain_exact(self):
         source = _MULTILINE_QUERY
-        tracker = TaintTracker(files={"snippet.py": source})
+        files = {"snippet.py": source}
+        tracker = TaintTracker(files=files)
+        assert tracker.files == files
+        tracker.release_raw_sources()
         assert tracker.files == {}
+        assert files == {}
         assert tracker._module_source_text("snippet") == "\n".join(source.splitlines())
         expected = "\n".join(source.splitlines()[7:10]).strip()
         assert tracker.get_source_snippet("snippet.py", 8, 10) == expected
 
-    def test_cross_file_tree_reuse_survives_raw_source_release(self, monkeypatch):
+    def test_cross_file_tree_reuse_preserves_byte_exact_source_after_release(self, monkeypatch):
         source = '''from sqlite3 import connect
 
 
 def fetch(name):
     return connect("app.db").execute("SELECT * FROM users WHERE name = '" + name + "'")
 '''
-        tracker = TaintTracker(files={"cross_file.py": source})
+        files = {"cross_file.py": source}
+        tracker = TaintTracker(files=files)
         monkeypatch.setattr(Path, "cwd", lambda: ROOT)
         monkeypatch.setattr(Path, "resolve", lambda self: ROOT / str(self))
-        reuse = cli._cross_scan_reuse_trees(tracker)
-        assert reuse == {str(ROOT / "cross_file.py"):
-                         ("\n".join(source.splitlines()), tracker.modules["cross_file"])}
+        reuse = cli._cross_scan_reuse_trees(tracker, files)
+        key = str(ROOT / "cross_file.py")
+        assert reuse == {key: (source, tracker.modules["cross_file"])}
+        tracker.release_raw_sources()
+        assert reuse[key][0] == source
+        assert reuse[key][1] is tracker.modules["cross_file"]
 
     def test_preorder_numbering_is_cached_on_the_tree(self, monkeypatch):
         tree = ast.parse("value = 1\n")
@@ -256,7 +269,8 @@ def parse_xml(payload):
         tracker = TaintTracker(files={"snippet.py": _MULTILINE_QUERY})
         tree = next(iter(tracker.modules.values()))
         cache_keys = ("_cached_reachable_nodes", "_cached_all_nodes", "_cached_preorder_nodes",
-                      "_cached_node_buckets")
+                      "_cached_node_buckets", "_cached_node_type_buckets",
+                      "_cached_node_type_views")
         for key in cache_keys:
             tree.__dict__[key] = []
         collected = []
@@ -265,8 +279,49 @@ def parse_xml(payload):
         assert all(key not in tree.__dict__ for key in cache_keys)
         assert collected == [True]
 
+    def test_module_node_buckets_cache_one_ordered_pass_per_type_set(self):
+        tree = ast.parse("x = 1\nimport os\ncall()\ny: int = 2\n")
+        tracker = TaintTracker(files={"bucket.py": "unused"})
+        requested = (ast.Assign, ast.AnnAssign, ast.Import, ast.Call)
+        buckets = tracker._module_node_buckets(tree, requested)
+        assert buckets[ast.Assign][0] is next(
+            n for n in ast.walk(tree) if isinstance(n, ast.Assign))
+        assert [type(n) for n in buckets[ast.Call]] == [ast.Call]
+        assert tracker._module_node_buckets(tree, requested) is buckets
+        assert tracker._module_node_buckets(tree, requested) is buckets
 
-# ─── Cluster 1: one SQL execution, one CWE-89 ────────────────────────────────
+    def test_module_nodes_of_types_preserves_walk_order_and_caches_view(self):
+        source = "import os\nx = 1\ny: int = 2\ncall()\nz = 3\n"
+        tracker = TaintTracker(files={"view.py": source})
+        tree = next(iter(tracker.modules.values()))
+        requested = (ast.Assign, ast.AnnAssign, ast.Import, ast.Call)
+        expected = [node for node in ast.walk(tree) if type(node) in requested]
+        rows = tracker._module_nodes_of_types(tree, requested)
+        assert [id(node) for node in rows] == [id(node) for node in expected]
+        assert tracker._module_nodes_of_types(tree, requested) is rows
+        tracker.release_collector_gate_scratch()
+        assert "_cached_node_type_views" not in tree.__dict__
+
+    def test_release_collector_gate_scratch_releases_type_buckets(self):
+        tracker = TaintTracker(files={"bucket.py": "x = 1\ncall()\n"})
+        tree = next(iter(tracker.modules.values()))
+        tracker._module_node_buckets(tree, (ast.Assign, ast.Call))
+        assert "_cached_node_type_buckets" in tree.__dict__
+        tracker.release_collector_gate_scratch()
+        assert "_cached_node_type_buckets" not in tree.__dict__
+
+
+class TestPhase2SerialThreshold:
+    def test_small_and_mid_corpus_uses_serial_phase2(self, monkeypatch):
+        if not ast_scanner.PARALLEL_PARSING_AVAILABLE:
+            pytest.skip("Phase 2 parallel transport is unavailable")
+        parallel_analyzer = pytest.importorskip("tcs.parallel_analyzer")
+        monkeypatch.setattr(parallel_analyzer, "compute_analysis_workers", lambda: 4)
+        assert ast_scanner._phase2_worker_count(
+            ast_scanner._PHASE2_PARALLEL_MIN_MODULES - 1) == 1
+        assert ast_scanner._phase2_worker_count(
+            ast_scanner._PHASE2_PARALLEL_MIN_MODULES) > 1
+
 
 _MULTILINE_QUERY = '''import sqlite3
 
@@ -1049,11 +1104,11 @@ class TestParsingStaysInProcess:
 # ─── The release number the banner and the package both have to say ─────────
 
 class TestReleaseVersion:
-    def test_pyproject_and_banner_agree_on_3_1_3(self):
+    def test_pyproject_and_banner_agree_on_3_2_0(self):
         # Read as source, not imported: `banner` prefers the installed distribution's metadata when
         # one is present, so an import would test whichever wheel this machine happens to hold.
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         banner_src = (ROOT / "banner.py").read_text(encoding="utf-8")
-        assert 'version = "3.1.3"' in pyproject
-        assert 'VERSION = "3.1.3"' in banner_src, "the fallback must name the release it ships with"
-        assert 'version = "3.1.2"' not in pyproject
+        assert 'version = "3.2.0"' in pyproject
+        assert 'VERSION = "3.2.0"' in banner_src, "the fallback must name the release it ships with"
+        assert 'version = "3.1.3"' not in pyproject

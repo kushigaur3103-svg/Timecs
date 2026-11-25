@@ -3,6 +3,7 @@
 import argparse
 import ast
 import fnmatch
+import gc
 import json
 import os
 from pathlib import Path
@@ -36,7 +37,11 @@ from scanners import (
     tag_reachability,
 )
 from rule_engine import get_rule
-from suppression_resolver import resolve_line_suppressions
+from suppression_resolver import (
+    apply_exact_line_directives,
+    extract_exact_line_directives,
+    resolve_line_suppressions,
+)
 import tcs_config
 from tcs_config import load_config
 from remediation.patch_engine import RemediationEngine
@@ -892,17 +897,46 @@ def _scope_findings_to_lines(findings, ranges):
     return scoped
 
 
-def _apply_inline_suppressions(findings, sources):
+def _extract_inline_suppressions(*source_maps):
+    """Parse exact-line directives once, before raw sources can be released."""
+    combined = {}
+    for mapping in source_maps:
+        combined.update(mapping)
+    return extract_exact_line_directives(combined)
+
+
+def _apply_inline_suppressions(findings, suppressions):
     """Drop findings named by a `# tcs: ignore[CWE-XXX]` comment on the finding's own line.
 
-    `sources` maps every scanned path to its text (Python, templates and IaC alike).
-    A finding whose file is absent from that map is kept: an unreadable source can
-    never suppress anything.
+    `suppressions` is either the pre-extracted directive map or a source map, so callers can
+    release the raw texts before this reporting-stage pass runs. A finding whose file is absent
+    from that map is kept: an unreadable source can never suppress anything.
     """
-    if not findings or not sources:
+    if not findings or not suppressions:
         return findings
-    resolve_line_suppressions(findings, sources)
+    sample = next(iter(suppressions.values()), None)
+    if isinstance(sample, dict):
+        apply_exact_line_directives(findings, suppressions)
+    else:
+        resolve_line_suppressions(findings, suppressions)
     return [finding for finding in findings if not finding.get("suppressed")]
+
+
+def _release_python_scan_state(tracker, files):
+    """Drop the scanner's duplicate source references before the cross-file pass runs.
+
+    The caller's `files` alias and the tracker's parsed trees stay alive through AST analysis
+    so the cross-file reuse map can carry byte-exact source text. Once that map is built, no
+    reporting stage needs the raw texts: clearing both containers leaves only the trees already
+    offered to the engine and drops the scanner's separate references to them.
+    """
+    _PARTIAL["file_count"] = len(files)
+    if tracker is not None:
+        tracker.release_raw_sources()
+    files.clear()
+    _PARTIAL["files"] = None
+    _PARTIAL["tracker"] = None
+    gc.collect()
 
 
 def _scope_findings_to_diff(findings, intervals, repo_root):
@@ -1616,7 +1650,7 @@ class CrossFinding(dict):
         self.desc = message
         self.description = message
 
-def _cross_scan_reuse_trees(tracker):
+def _cross_scan_reuse_trees(tracker, files=None):
     """The scanner's already-parsed ASTs, offered to the cross-file indexer for a second use.
 
     Reuse preconditions, each one checked before this dict is handed over:
@@ -1627,6 +1661,9 @@ def _cross_scan_reuse_trees(tracker):
       and the baseline behaviour for those files is the fresh parse, not the scanner's one;
     - the indexer still re-reads every path and reuses its tree only when the on-disk source
       equals the scanner's snapshot byte-for-byte, so a file changed mid-scan falls back.
+
+    `files` carries the original collected text. Passing it preserves a final newline, which
+    `_module_source_text()` reconstructs as joined lines; the indexer compares exact bytes.
 
     Returns None when nothing qualifies; the engine then behaves exactly as before.
     """
@@ -1643,7 +1680,9 @@ def _cross_scan_reuse_trees(tracker):
         if key is None or key in excluded or tree is None:
             continue
         try:
-            source = tracker._module_source_text(mod)
+            source = (files or {}).get(key)
+            if source is None:
+                source = tracker._module_source_text(mod)
             if source is None:
                 continue
             reuse[str((cwd / key).resolve())] = (source, tree)
@@ -1774,6 +1813,7 @@ _PARTIAL = {
     "findings": [],
     "tracker": None,
     "files": None,
+    "file_count": None,
     "written": False,
     "current_file": None,
     "t0": None,
@@ -1843,14 +1883,18 @@ def _flush_partial(reason):
     # and flushed before it, or a consumer piping stdout never sees it in order.
     _print_termination_telemetry()
     findings = _partial_findings()
-    files = _PARTIAL["files"] or {}
+    files = _PARTIAL["files"]
+    if files is not None:
+        file_count = len(files)
+    else:
+        file_count = _PARTIAL.get("file_count") or 0
     if getattr(args, "format", "") == "json":
         print(json.dumps({
             "scope": getattr(args, "scope", "all"),
             "status": "partial",
             "terminated_by": reason,
-            "total_discovered_files": len(files),
-            "scanned_files": len(files),
+            "total_discovered_files": file_count,
+            "scanned_files": file_count,
             "findings": findings,
         }, indent=2), flush=True)
     if getattr(args, "sarif", None):
@@ -1869,7 +1913,8 @@ def _flush_partial(reason):
 def _install_partial_flush(args):
     """Arm SIGTERM/SIGINT for this scan run, then let the caller work normally."""
     _PARTIAL.update({"args": args, "findings": [], "tracker": None, "files": None,
-                     "written": False, "current_file": None, "t0": time.perf_counter()})
+                     "file_count": None, "written": False, "current_file": None,
+                     "t0": time.perf_counter()})
 
     def _handle(signum, _frame):
         reason = signal.Signals(signum).name
@@ -2045,6 +2090,10 @@ def _scan(args):
                 if not templates and not iac and not manifests and not secrets:
                     raise
         _clock.mark("CollectPy")
+        inline_suppressions = _extract_inline_suppressions(
+            files, templates, iac, manifests, secrets)
+        has_python_scan = bool(files)
+        autofix_source_paths = list(files) if getattr(args, "with_autofix", False) else []
         if ux:
             auxiliary = len(templates) + len(iac) + len(manifests) + len(secrets)
             banner.print_phase(1, 4, "discovery", stream=sys.stderr)
@@ -2179,9 +2228,16 @@ def _scan(args):
             finding.setdefault("confidence", "MEDIUM")
         _clock.mark("Merge+Consolidate")
         _PARTIAL["findings"] = findings
+        cross_reuse_trees = None
+        if has_python_scan and scope in ("all", "python"):
+            cross_reuse_trees = _cross_scan_reuse_trees(tracker, files)
+        if has_python_scan:
+            _release_python_scan_state(tracker, files)
+            tracker = None
         if scope in ("all", "python"):
             cross_findings, cross_engine = _run_cross_scan(
-                args.path, reuse_trees=_cross_scan_reuse_trees(tracker))
+                args.path, reuse_trees=cross_reuse_trees)
+            cross_reuse_trees = None
             _clock.mark("CrossScan")
             findings = _suppress_cross_file_sanitized(findings, cross_engine)
             _clock.mark("Suppression")
@@ -2208,8 +2264,7 @@ def _scan(args):
         # directory. Applied after every producer so cross-file and JS rows obey it too.
         findings = _apply_config_filters(findings, config, path_excludes=tree_scan,
                                          scan_root=_config_root, aux_scopes=aux_scopes)
-        findings = _apply_inline_suppressions(
-            findings, {**files, **templates, **iac, **manifests, **secrets})
+        findings = _apply_inline_suppressions(findings, inline_suppressions)
 
         # --diff narrows *reporting* to added/modified lines. The analysis above already
         # saw the whole tree, so cross-file context is never truncated.
@@ -2242,10 +2297,10 @@ def _scan(args):
         _PARTIAL["findings"] = findings
 
         # Generate autofix suggestions if requested (JSON only)
-        if args.with_autofix and args.format == "json" and files:
+        if args.with_autofix and args.format == "json" and autofix_source_paths:
             # Build source cache from scanned files
             source_cache = {}
-            for file_path in files:
+            for file_path in autofix_source_paths:
                 try:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         source_cache[file_path.replace("\\", "/")] = f.read()
@@ -2374,7 +2429,7 @@ def _scan(args):
     _clock.mark("SBOMDump")
     
     # TimeCodeSecurity: Print performance metrics to stderr
-    if files and tracker:
+    if has_python_scan:
         try:
             from tcs.parallel_scanner import HARD_SAFETY_THRESHOLD_MB
 

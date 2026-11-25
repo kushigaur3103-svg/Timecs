@@ -71,6 +71,30 @@ def test_legacy_directive_still_reaches_the_line_below():
     assert matched is not None and matched["exact_line"] is False
 
 
+def test_cli_exact_suppressions_survive_source_release():
+    python = {
+        "m.py": "run()  # tcs: ignore[CWE-89]: approved\nlegacy()  # tcs:ignore CWE-78\n",
+    }
+    templates = {"page.html": "render()  # tcs: ignore[ALL]\n"}
+    directives = cli._extract_inline_suppressions(python, templates)
+    python.clear()
+    templates.clear()
+
+    findings = [
+        {"file": "m.py", "line": 1, "cwe": "CWE-89"},
+        {"file": "m.py", "line": 1, "cwe": "CWE-78"},
+        {"file": "page.html", "line": 1, "cwe": "CWE-79"},
+    ]
+    assert cli._apply_inline_suppressions(findings, directives) == [findings[1]]
+    assert findings[0]["suppression_justification"] == "approved"
+
+
+def test_cli_suppression_accepts_source_maps_for_gate_compatibility():
+    findings = [{"file": "m.py", "line": 1, "cwe": "CWE-89"}]
+    assert cli._apply_inline_suppressions(
+        findings, {"m.py": "run()  # tcs: ignore[CWE-89]\n"}) == []
+
+
 def test_cli_suppression_drops_only_the_named_line(tmp_path):
     (tmp_path / "app.py").write_text(
         "import os\nfrom flask import request\n\n"

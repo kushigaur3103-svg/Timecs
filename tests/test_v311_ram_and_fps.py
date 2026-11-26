@@ -1109,6 +1109,6 @@ class TestReleaseVersion:
         # one is present, so an import would test whichever wheel this machine happens to hold.
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         banner_src = (ROOT / "banner.py").read_text(encoding="utf-8")
-        assert 'version = "3.3.0"' in pyproject
-        assert 'VERSION = "3.3.0"' in banner_src, "the fallback must name the release it ships with"
+        assert 'version = "3.3.1"' in pyproject
+        assert 'VERSION = "3.3.1"' in banner_src, "the fallback must name the release it ships with"
         assert 'version = "3.2.0"' not in pyproject

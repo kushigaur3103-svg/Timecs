@@ -153,8 +153,12 @@ EXTRA_NON_PRODUCTION_DIRS = frozenset({"cookbook", "docs", "doc", "demos", "demo
 VENDOR_DIRS = frozenset({"vendor", "_vendor", "third_party"})
 # Non-production filenames skipped inside an otherwise-production tree, and the auto-generated protobuf
 # suffix. A file named on the command line is never skipped -- only a directory walk applies these.
-NON_PRODUCTION_FILENAMES = ("test_*.py", "*_test.py", "*_tests.py", "conftest.py",
+NON_PRODUCTION_FILENAMES = ("test_*.py", "*_test.py", "*_tests.py", "*_testing.py", "conftest.py",
                             "demo_*.py", "*_demo.py", "*_mock.py")
+# Directory-name markers for non-production trees whose full name varies by project: LiteLLM's
+# `tests/proxy_load_test/` and `example_config_yaml/` are load drivers and sample configs, not
+# shipped surface. Substring match, applied only while the non-production prune is active.
+NON_PRODUCTION_DIR_MARKERS = ("load_test", "example_config")
 VENDOR_FILENAMES = ("*_pb2.py",)
 
 # ── Persistent policy in the existing root `.tcs.yaml` ───────────────────────────────────────────
@@ -431,7 +435,7 @@ class _StageClock:
               file=sys.stderr, flush=True)
 
 
-def _iter_tree_files(root, prune_dirs=None, count_pruned=False):
+def _iter_tree_files(root, prune_dirs=None, count_pruned=False, nonprod_markers=False):
     """Yield the real files under `root`, never following a symlink.
 
     Traversal guard (CWE-59): `Path.rglob` semantics are version dependent — Python
@@ -450,7 +454,8 @@ def _iter_tree_files(root, prune_dirs=None, count_pruned=False):
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         kept = []
         for name in sorted(dirnames):
-            if name in skip:
+            if name in skip or (nonprod_markers
+                                and any(marker in name for marker in NON_PRODUCTION_DIR_MARKERS)):
                 if count_pruned and name not in IGNORED_DIRS:
                     held = sum(
                         1 for _root, _dirs, _files in os.walk(os.path.join(dirpath, name))
@@ -502,7 +507,8 @@ def _collect_files(scan_path, exclude_patterns=None, config_excludes=None,
     elif is_tree:
         paths = sorted(
             path for path in _iter_tree_files(scan_path, prune,
-                                              skip_non_production or skip_vendor)
+                                              skip_non_production or skip_vendor,
+                                              nonprod_markers=skip_non_production)
             if path.suffix.lower() == ".py"
             and not any(part in IGNORED_DIRS for part in path.parts)
             and not _is_excluded(path, scan_path, exclude_patterns)

@@ -1,6 +1,9 @@
 name: Build Closed-Source Binary Wheels (Linux / Windows / macOS)
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       publish_to_testpypi:
@@ -208,7 +211,7 @@ jobs:
   publish-pypi:
     name: Publish verified wheels to Official PyPI (pypi.org)
     needs: build-and-verify
-    if: ${{ github.event.inputs.publish_to_pypi == 'true' }}
+    if: ${{ github.event.inputs.publish_to_pypi == 'true' || startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:

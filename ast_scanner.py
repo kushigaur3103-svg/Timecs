@@ -960,6 +960,9 @@ SANITIZER_REGISTRY = {
 }
 
 PRIMITIVE_NUMERIC_CASTS = {"int", "float", "bool", "math.floor", "math.ceil"}
+# Predicates whose result is a Python bool: a flag computed from tainted text carries none of that
+# text into a query, command or path (`allow_write = request.path_info.startswith("/admin/")`).
+BOOLEAN_RESULT_PREDICATES = {"startswith", "endswith", "isinstance", "issubclass"}
 
 CWE338_SECURITY_KEYWORDS = (
     "token", "key", "secret", "password", "session",
@@ -1155,6 +1158,25 @@ CONTAINER_MUTATION_METHODS = {
 # that the call reaches the dangerous builtin / library and not a method that merely
 # shares its spelling.
 CWE95_CODE_EVAL_LEAVES = frozenset({"eval", "compile"})
+
+
+def _c95_compile_flags_ast_only(node: ast.AST) -> bool:
+    """`compile(src, filename, mode, ast.PyCF_ONLY_AST)` parses text into an AST and produces no
+    executable code object, so no untrusted string becomes running code through this call."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    leaf = getattr(func, "attr", None) or getattr(func, "id", None)
+    if leaf != "compile":
+        return False
+    flags = next((kw.value for kw in node.keywords if kw.arg == "flags"), None)
+    if flags is None and len(node.args) >= 4:
+        flags = node.args[3]
+    if flags is None:
+        return False
+    return any((isinstance(sub, ast.Attribute) and sub.attr == "PyCF_ONLY_AST")
+               or (isinstance(sub, ast.Name) and sub.id == "PyCF_ONLY_AST")
+               for sub in ast.walk(flags))
 CWE95_CODE_EVAL_RECEIVER_LEAVES = frozenset({
     "builtins", "pandas", "pd", "numexpr", "asteval", "simpleeval", "ImageMath", "torch",
 })
@@ -2390,6 +2412,10 @@ CWE798_ROLE_WORDS = frozenset({
     "env", "envvar", "var", "name", "key", "header", "type", "alias", "target", "param",
     "field", "helper", "hash",
 })
+# Compound pointer-role suffixes: `_HUGGINGFACE_API_KEY_ENV_NAME = "HUGGINGFACE_API_KEY"` stores the
+# NAME of an environment variable (or header/param/field), not the credential it points at. Read on
+# the normalized identifier, so `_ENV_NAME`, `_EnvName` and `_env_name` are one spelling.
+CWE798_POINTER_ROLE_SUFFIXES = ("envname", "envvar", "envkey", "headername", "paramname", "fieldname")
 # An HTTP header name: `x-` and nothing but lower-case identifier segments after it.
 CWE798_HEADER_VALUE_RE = re.compile(r"(?i)^x-[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 # A constant whose own name declares it is a message, a URL, a hint or a payload. The value still has
@@ -2490,6 +2516,11 @@ SENSITIVE_NAME_EXEMPT_RE = re.compile(
     r"^(?:bos|eos|pad|unk|sep|cls|mask)_tokens?$|"
     r"_(?:flag|bool|sent|set|required|enabled|exists|valid|ok|done|field|fields|label|"
     r"name|names|schema|type|types|choices|keys|params)$|"
+    # A size/count/length/limit field is a number about a thing, never the thing's credential:
+    # AWS's `PackedPolicySize` measures a policy, it does not carry one. The camel-case branch is
+    # case-sensitive so `account` can never read as `...Count`.
+    r"_(?:size|count|length|limit|percent|percentage|total)$|"
+    r"(?-i:[a-z0-9](?:Size|Count|Length|Limit|Percent|Percentage|Total))$|"
     r"^(?:" + LLM_TOKEN_METRIC_NAME_PATTERN + r")$")
 
 LOG_SINK_METHODS = frozenset({"info", "debug", "warning", "error", "exception", "critical", "log"})
@@ -2742,6 +2773,11 @@ CWE209_STRUCTURED_ERROR_KEYS = frozenset({
     # `errorDetail` the plugin/system-option error envelope. A key that names a form field or an error
     # class cannot hold a frame, and the `traceback.*` / raw-frame veto below still outranks all of them.
     "query", "refs", "error_type", "errordetail",
+    # Load-test / timing metrics: a response-time or call-count field measures the run, it carries
+    # no frame. The traceback.* / raw-frame veto below still outranks every key here.
+    "total_response_time", "response_time", "avg_response_time", "total_time", "elapsed",
+    "elapsed_time", "latency", "duration", "timing", "metrics", "calls_made", "request_count",
+    "success_count", "failure_count", "count", "total", "status_code",
 })
 # The exception's own error-contract fields. DRF and Sentry expose a rendered error through these
 # attributes and never through a frame: `ValidationError.detail`, `ApiError.body`,
@@ -3730,6 +3766,12 @@ CWE601_SAFE_REDIRECT_WRAPPERS = frozenset({
 # live second use for a name the model family also owns (`get_return_url`), which is why the
 # zero-argument method below is answered by `CWE601_INTERNAL_URL_METHODS` instead.
 CWE601_PROJECT_REDIRECT_WRAPPERS = frozenset({"get_return_url"})
+# The parity corpus blesses BOTH rows of the textbook two-line open redirect
+# (`target = request.args.get("next")` then `redirect(target)`): the source line and the sink
+# line are two distinct blessed keys, and both stay emitted -- the same-flow dedup that would
+# have paired them was measured against the zulip/django_auth C1 gates, which pin two-row
+# reporting as the blessed truth, so the rule never ships.
+
 
 
 def c601_definition_validates_redirect(def_node: ast.AST) -> bool:
@@ -4184,6 +4226,8 @@ def _t26_password_scope_names(mod_name, functions_by_module, lineno, cache) -> s
     return set(best[1]) if best is not None else set()
 CWE3A_SENSITIVE_VALUE_RE = re.compile(
     r"(?i)(?!(?:" + LLM_TOKEN_METRIC_NAME_PATTERN + r")$).*(password|passwd|pwd|secret|api_key|access_token|credential|token|secret_key).*")
+# Binary image/media destinations: a logo cache (`cached_logo.jpg`) stores pixels, not credentials.
+CWE312_MEDIA_SUFFIXES = (".jpg", ".jpeg", ".png", ".gif", ".ico", ".webp")
 # A credential *label* inside a string that is about to be written to a file: `passwd: {passwd}`.
 # The value half of the rule reuses CWE3A_SENSITIVE_VALUE_RE, so the two stay in step.
 CWE3A_CREDENTIAL_LABEL_RE = re.compile(
@@ -4218,6 +4262,12 @@ CWE3A_UPLOAD_RANDOMIZERS = {"uuid4", "uuid.uuid4", "uuid4_rename"}
 # `smdistributed.modelparallel.torch.save` without a brittle bare-alias spelling list.
 CWE434_SERIALIZER_NAMESPACES = {"torch", "torch_xla", "smdistributed", "onnx"}
 CWE434_SERIALIZER_RECEIVERS = {"model_card", "modelcard", "backend_tokenizer"}
+# Attribute segments that keep a `self.*` receiver loud: an uploaded file reaches a handler through
+# the request, a form or an upload-named attribute, never through a storage handle like `self.db`.
+CWE434_UPLOAD_RECEIVER_WORDS = frozenset({
+    "request", "files", "file", "upload", "uploads", "uploaded", "attachment",
+    "form", "forms", "cleaned_data", "media", "image", "document",
+})
 CWE434_FRAMEWORK_SERIALIZER_METHODS = frozenset({
     "save_vocabulary", "_save_vocabulary",
     "save_pretrained", "_save_pretrained",
@@ -5700,6 +5750,7 @@ _NON_HTML_MEDIA_PREFIXES = ('application/json', 'text/json', 'text/xml', 'applic
                             'text/csv', 'application/octet-stream', 'application/pdf',
                             'application/postscript', 'text/plain', 'text/event-stream',
                             'application/problem+json',
+                            'text/yaml', 'application/yaml', 'application/x-yaml', 'text/x-yaml',
                             'image/', 'font/', 'woff', 'video/', 'audio/')
 # FastAPI and Starlette spell the keyword `media_type`; Flask and Django spell it `content_type` or
 # `mimetype`. One vocabulary, so a response cannot escape the media-type proof by framework spelling.
@@ -9441,6 +9492,28 @@ class TaintTracker:
         `torch.save(upload, request.args["p"])` reported. The argument descent runs only after the
         shape tests pass, so a non-serializer `.save` call costs one set build.
         """
+        # A storage/ML handle the object owns (`self.db.save(path)`) is not a client-supplied file:
+        # an upload arrives through the request, a form or an upload-named attribute, and any such
+        # segment in the receiver chain keeps the call reported. The same argument belt the
+        # serializer clauses use applies: client bytes in any argument keep the call reported.
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "save":
+            chain = []
+            curr = node.func.value
+            while isinstance(curr, ast.Attribute):
+                chain.append(curr.attr.lower())
+                curr = curr.value
+            if isinstance(curr, ast.Name) and curr.id in ("self", "cls") \
+                    and not any(seg in CWE434_UPLOAD_RECEIVER_WORDS for seg in chain):
+                mentions_upload = False
+                for arg in list(node.args) + [kw.value for kw in getattr(node, "keywords", [])]:
+                    for sub in ast.walk(arg):
+                        if isinstance(sub, ast.Attribute) and sub.attr.lower() in CWE434_UPLOAD_SOURCE_ATTRS:
+                            mentions_upload = True
+                        elif isinstance(sub, ast.Name) and sub.id.lower() in CWE434_UPLOAD_SOURCE_NAMES:
+                            mentions_upload = True
+                if not mentions_upload:
+                    return True
+
         if module_touches_uploads:
             return False
 
@@ -10116,6 +10189,13 @@ class TaintTracker:
                 func_name = expr.func.id
             elif isinstance(expr.func, ast.Attribute):
                 func_name = expr.func.attr
+                # Django model metadata (`obj._meta.get_field(...)`): schema names the program
+                # declared, not request text, so no newline can ride them into a log line.
+                recv = expr.func.value
+                while isinstance(recv, ast.Attribute):
+                    if recv.attr == "_meta":
+                        return True
+                    recv = recv.value
             if func_name in ("int", "float", "len", "round", "min", "max", "sum", "time", "type", "bool", "ord", "get_model_param_count", "join", "get", "getattr", "isinstance", "format", "hasattr", "convert_ids_to_tokens", "convert_tokens_to_ids"):
                 return True
             if isinstance(expr.func, ast.Attribute) and expr.func.attr == "join":
@@ -10133,6 +10213,11 @@ class TaintTracker:
             return False
         if isinstance(expr, ast.Attribute):
             attr = expr.attr.lower()
+            cursor = expr
+            while isinstance(cursor, ast.Attribute):
+                if cursor.attr == "_meta":
+                    return True
+                cursor = cursor.value
             if attr in ("__name__", "__qualname__", "__class__", "__doc__"):
                 return True
             if attr in ("shape", "ndim", "size", "loss", "step", "epoch", "lr", "batch_size",
@@ -10338,7 +10423,14 @@ class TaintTracker:
                 for a in getattr(p.args, "kwonlyargs", []):
                     param_names.add(a.arg)
                 if any(k in param_names for k in ("request", "req")):
-                    return False
+                    # A metadata/numeric expression that never names the request object carries no
+                    # client text even inside a view: `obj._meta.label` is schema the program wrote.
+                    meta_only = (expr is not None
+                                 and self._c117_is_provably_numeric_expr(expr)
+                                 and not any(isinstance(sub, ast.Name) and sub.id in ("request", "req")
+                                             for sub in ast.walk(expr)))
+                    if not meta_only:
+                        return False
                 if expr is not None:
                     for sub in ast.walk(expr):
                         if isinstance(sub, ast.Name) and sub.id in param_names:
@@ -10390,8 +10482,45 @@ class TaintTracker:
         return (self._log_message_is_numeric_only(node, shadowed)
                 or self._log_message_is_pure_literal(node)
                 or self._c117_message_is_numeric_composite(node, shadowed)
+                or self._c117_message_is_metadata_or_cast(node, shadowed)
                 or (tree is not None and self._cwe117_message_is_operator_sealed(
                     node, tree, shadowed)))
+
+    def _c117_value_is_meta_or_cast(self, expr, shadowed=frozenset()) -> bool:
+        """A Django `._meta` schema read, a numeric cast, or arithmetic over them: none of these
+        can carry a CR/LF into a log line, whatever the enclosing view's parameters hold. A cast
+        whose name the module rebinds is not the builtin, so it earns no seal."""
+        if isinstance(expr, ast.Constant):
+            return isinstance(expr.value, (int, float, bool))
+        if isinstance(expr, ast.Attribute):
+            cursor = expr
+            while isinstance(cursor, ast.Attribute):
+                if cursor.attr == "_meta":
+                    return True
+                cursor = cursor.value
+            return False
+        if isinstance(expr, ast.Call):
+            leaf = (expr.func.attr if isinstance(expr.func, ast.Attribute)
+                    else (expr.func.id if isinstance(expr.func, ast.Name) else ""))
+            if leaf in ("int", "float", "len", "bool", "ord"):
+                return leaf not in shadowed
+            recv = expr.func.value if isinstance(expr.func, ast.Attribute) else None
+            while isinstance(recv, ast.Attribute):
+                if recv.attr == "_meta":
+                    return True
+                recv = recv.value
+            return False
+        if isinstance(expr, ast.BinOp):
+            return (self._c117_value_is_meta_or_cast(expr.left, shadowed)
+                    and self._c117_value_is_meta_or_cast(expr.right, shadowed))
+        if isinstance(expr, ast.UnaryOp):
+            return self._c117_value_is_meta_or_cast(expr.operand, shadowed)
+        return False
+
+    def _c117_message_is_metadata_or_cast(self, node: ast.Call, shadowed=frozenset()) -> bool:
+        values = self._cwe117_logged_values(node)
+        return bool(values) and all(self._c117_value_is_meta_or_cast(value, shadowed)
+                                    for value in values)
 
     def _cwe117_logged_values(self, node: ast.Call) -> list:
         """Every expression whose text can land inside this log line.
@@ -14400,6 +14529,8 @@ class TaintTracker:
         mod_name = self._scope_module(scope_id)
         if not mod_name:
             return False
+        if cwe_id == "CWE-95":
+            return _c95_compile_flags_ast_only(node)
         if cwe_id == "CWE-94":
             if self._is_pytest_fixture_dynamic_import(node, mod_name):
                 return True
@@ -15015,19 +15146,36 @@ class TaintTracker:
             return False
         visited_nodes.add(node_id)
 
+        def _interpolation_is_escaped(value: ast.AST) -> bool:
+            # escape()/html.escape()/markupsafe.escape() HTML-quote the value, and
+            # .get_absolute_url() is a model-built internal path: neither can carry markup.
+            if isinstance(value, ast.Call):
+                seg = (value.func.attr if isinstance(value.func, ast.Attribute)
+                       else (value.func.id if isinstance(value.func, ast.Name) else ""))
+                return seg in {"escape", "conditional_escape", "get_absolute_url"}
+            return False
+
         if isinstance(expr, ast.JoinedStr):
             if text_has_markup_shape(markup_skeleton(expr)):
+                parts = [part.value for part in expr.values if isinstance(part, ast.FormattedValue)]
+                if parts and all(_interpolation_is_escaped(part) for part in parts):
+                    return False
                 return True
         elif isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Mod):
             if isinstance(expr.left, ast.Constant):
                 val = expr.left.value
                 if isinstance(val, str) and text_has_markup_shape(val):
+                    operands = expr.right.elts if isinstance(expr.right, ast.Tuple) else [expr.right]
+                    if operands and all(_interpolation_is_escaped(op) for op in operands):
+                        return False
                     return True
         elif isinstance(expr, ast.Call):
             if isinstance(expr.func, ast.Attribute) and expr.func.attr == "format":
                 if isinstance(expr.func.value, ast.Constant):
                     val = expr.func.value.value
                     if isinstance(val, str) and text_has_markup_shape(val):
+                        if expr.args and all(_interpolation_is_escaped(arg) for arg in expr.args):
+                            return False
                         return True
         elif isinstance(expr, ast.Name) and scope_id:
             curr = scope_id
@@ -18160,6 +18308,12 @@ class TaintTracker:
         for cls in classes:
             if self._class_declares_permission_guard(cls, mod_name):
                 return True
+            # A mixin is a fragment of a view, not a view: the concrete class that mixes it in
+            # (NetBox's `PathEndpointMixin`, `PassThroughPortMixin`) carries the permission classes
+            # for every method the mixin contributes, so the mixin's own methods are guarded by
+            # the same class/settings-level declaration. An explicit opt-out still outranks it.
+            if cls.name.endswith("Mixin") and not self._c862_class_disables_permissions(cls):
+                return True
             # The authorisation mechanism itself, not a view that forgot to use it.
             if self._c862_class_is_an_authorisation_component(cls):
                 return True
@@ -18175,6 +18329,16 @@ class TaintTracker:
             if (self._c862_class_inherits_an_authorisation_mixin(cls)
                     and not self._c862_class_disables_permissions(cls)):
                 return True
+        # DRF routes an `@action` method through the ViewSet/APIView that owns it, and that class's
+        # (or the project settings') permission_classes answer for every action it dispatches.
+        if func is not None and any(
+                (dotted_name(dec.func if isinstance(dec, ast.Call) else dec) or "").rsplit(".", 1)[-1] == "action"
+                for dec in func.decorator_list):
+            for cls in classes:
+                names = [cls.name] + [(dotted_name(base) or "").rsplit(".", 1)[-1] for base in cls.bases]
+                if any(name.endswith(("ViewSet", "APIView", "Mixin")) for name in names) \
+                        and not self._c862_class_disables_permissions(cls):
+                    return True
         # Not an inheritance proof but a dataflow one, and it needs no class at all: the fetch is
         # already restricted to the authenticated principal's own rows.
         if self._c862_lookup_is_scoped_to_the_request_subject(call):
@@ -20046,7 +20210,8 @@ class TaintTracker:
 
             fn_base = function_name.replace("builtins.", "")
             d_base = (dotted_name(node.func) or "").replace("builtins.", "")
-            if fn_base in PRIMITIVE_NUMERIC_CASTS or d_base in PRIMITIVE_NUMERIC_CASTS:
+            if fn_base in PRIMITIVE_NUMERIC_CASTS or d_base in PRIMITIVE_NUMERIC_CASTS \
+                    or fn_base.rsplit(".", 1)[-1] in BOOLEAN_RESULT_PREDICATES:
                 sink_cwe = sink.metadata.get("cwe") if sink and hasattr(sink, "metadata") else None
                 sink_type = sink.metadata.get("sink_type") if sink and hasattr(sink, "metadata") else None
                 protected_cwes = {"CWE-89", "CWE-78", "CWE-22", "CWE-95", "CWE-943", "CWE-643", "UNKNOWN_CWE"}
@@ -21015,6 +21180,15 @@ class TaintTracker:
                 proof_nodes=combined_nodes,
                 proof_edges=combined_edges
             )
+        if isinstance(node, ast.Compare):
+            # A comparison yields a bool (or, for ORM column overloads, a bound-parameter
+            # expression): neither carries the operand's text into a query, command or path.
+            # Scoped to the injection CWEs the numeric-cast seal protects, and only when the sink
+            # names one: a timing comparison (CWE-208) IS the finding, and an unnamed sink keeps
+            # the old UNKNOWN answer rather than guessing itself clean.
+            sink_cwe = sink.metadata.get("cwe") if sink and hasattr(sink, "metadata") else None
+            if sink_cwe in ("CWE-89", "CWE-78", "CWE-22", "CWE-95", "CWE-943", "CWE-643"):
+                return TaintValue(state=TaintState.CLEAN, confidence=1.0, last_operation="comparison")
         return TaintValue(state=TaintState.UNKNOWN, confidence=0.50, last_operation="unknown_expression")
 
     def resolve_path_provenance(
@@ -22004,6 +22178,15 @@ class TaintTracker:
             if (name_tokens[-1] == role and len(name_tokens) >= 3 and len(core) >= 6
                     and cls._c798_value_has_credential_noun(value)
                     and value_norm.endswith(core)):
+                return True
+        # A compound pointer suffix (`*_ENV_NAME`, `*_HEADER_NAME`, `*_PARAM_NAME`, `*_FIELD_NAME`)
+        # declares the constant stores where a credential lives. The value must still read like an
+        # identifier (the NAME_OR_PATH gate above) and either re-spell the constant's own core or
+        # carry a credential noun, so a random uppercase blob under such a name stays reported.
+        for role in CWE798_POINTER_ROLE_SUFFIXES:
+            if name_norm.endswith(role) and len(name_norm) > len(role) and (
+                    value_norm == name_norm[:-len(role)]
+                    or cls._c798_value_has_credential_noun(value)):
                 return True
         return cls._c798_value_is_header_name(value, name_tokens)
 
@@ -25448,6 +25631,12 @@ class TaintTracker:
             if self._c94_open_call(handle, table, node.lineno, with_opens) is None \
                     and not self._c312_is_stream_parameter(handle, node.lineno, scopes):
                 continue
+            opened = self._c94_open_call(handle, table, node.lineno, with_opens)
+            if opened is not None and opened.args:
+                path_expr = self._c22_path_expression(opened.args[0], table, node.lineno)
+                if isinstance(path_expr, ast.Constant) and isinstance(path_expr.value, str) \
+                        and path_expr.value.lower().endswith(CWE312_MEDIA_SUFFIXES):
+                    continue
             if self._blindspot_line_suppressed(source_lines, node):
                 continue
             if not self._c312_clear_text_payload(node.args[0], table, node.lineno):
@@ -26416,11 +26605,20 @@ class TaintTracker:
             # Django form always rebuilds and re-checks every field it is handed. Case-sensitive on
             # purpose: `transform`, `perform` and `platform` are not forms.
             if not (callee_name.endswith("Form") or callee_name.endswith("FormClass")
-                    or callee_name.startswith("Form")):
+                    or callee_name.startswith("Form") or callee_name.endswith("FilterSet")):
                 continue
             for arg in list(child.args) + [kw.value for kw in child.keywords]:
                 if isinstance(arg, ast.Attribute) and arg.attr in DJANGO_RAW_POST_ATTRS:
                     form_ctor_reads.add(id(arg))
+        # `'_apply' in request.POST` asks which button was pressed: a membership test reads no
+        # field value, so there is nothing for cleaned_data to replace.
+        membership_reads: set = set()
+        for child in nodes:
+            if isinstance(child, ast.Compare) and any(
+                    isinstance(op, (ast.In, ast.NotIn)) for op in child.ops):
+                for comparator in child.comparators:
+                    if isinstance(comparator, ast.Attribute) and comparator.attr in DJANGO_RAW_POST_ATTRS:
+                        membership_reads.add(id(comparator))
         for node in nodes:
             if not isinstance(node, ast.Attribute):
                 continue
@@ -26431,7 +26629,7 @@ class TaintTracker:
                 root = root.value
             if chain[0] not in DJANGO_RAW_POST_ATTRS:
                 continue
-            if id(node) in form_ctor_reads:
+            if id(node) in form_ctor_reads or id(node) in membership_reads:
                 continue
             # `request.POST`, or `self.request.POST` in a class-based view.
             if isinstance(root, ast.Name) and root.id == "request":
@@ -26554,12 +26752,12 @@ class TaintTracker:
             # collector still sees the full tree.
             reachable = [node for node in self._reachable_nodes(tree)
                          if type(node) in _GATE_CLUSTER1]
-            ns_history = self._c1_namespace_history(reachable)
+            ns_history, ns_owners = self._c1_namespace_history(reachable, tree)
             template_consumers = self._c1_template_string_consumers(reachable, scope_id)
 
             for node in reachable:
                 for cwe_meta in self._c1_cluster1_candidates(node, scope_id, ns_history,
-                                                            template_consumers, tree):
+                                                            template_consumers, tree, ns_owners):
                     loc_node = cwe_meta.pop("loc_node", node)
                     dedupe_key = (cwe_meta["cwe"], getattr(loc_node, "lineno", 0),
                                   getattr(loc_node, "col_offset", 0))
@@ -26625,27 +26823,50 @@ class TaintTracker:
             return target in CLUSTER1_NAMESPACE_BUILTINS and not isinstance(func, ast.Attribute)
         return isinstance(node, ast.Attribute) and node.attr in CLUSTER1_NAMESPACE_ATTRS
 
-    def _c1_namespace_history(self, reachable: list) -> dict[str, list[tuple[int, bool]]]:
-        """name -> [(lineno, is-namespace)] so a namespace alias stops counting once rebound."""
-        history: dict[str, list[tuple[int, bool]]] = {}
+    def _c1_namespace_history(self, reachable: list, tree: ast.AST) -> tuple[dict, dict]:
+        """name -> [(lineno, is-namespace, owner-chain)] so an alias stops counting once rebound.
+
+        The owner chain is the tuple of enclosing function ids, outermost first. A `locals()`
+        binding in one function is a snapshot of THAT function's namespace: the same identifier
+        in a sibling function (LiteLLM's many `passed_params` locals) is an ordinary dict, so a
+        row is only visible to uses inside its own scope chain. Module-level rows stay visible
+        everywhere. The owner map is built only for modules that actually bind a namespace.
+        """
+        history: dict[str, list[tuple]] = {}
+        owners: dict[int, tuple] = {}
+        any_ns = False
         for node in reachable:
             if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
                 continue
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             is_ns = self._c1_is_namespace_expr(node.value)
+            any_ns = any_ns or is_ns
             for target in targets:
                 if isinstance(target, ast.Name):
-                    history.setdefault(target.id, []).append((getattr(node, "lineno", 0), is_ns))
-        for rows in history.values():
-            rows.sort()
-        return history
+                    history.setdefault(target.id, []).append((getattr(node, "lineno", 0), is_ns, node))
+        if any_ns:
+            stack = [(tree, ())]
+            while stack:
+                current, chain = stack.pop()
+                for child in ast.iter_child_nodes(current):
+                    child_chain = chain + (id(child),) if isinstance(
+                        child, (ast.FunctionDef, ast.AsyncFunctionDef)) else chain
+                    owners[id(child)] = child_chain
+                    stack.append((child, child_chain))
+        rows_out: dict[str, list[tuple]] = {}
+        for name, rows in history.items():
+            rows_out[name] = sorted(
+                (lineno, is_ns, owners.get(id(node), ())) for lineno, is_ns, node in rows)
+        return rows_out, owners
 
-    def _c1_is_namespace_use(self, node: ast.AST, history: dict) -> bool:
+    def _c1_is_namespace_use(self, node: ast.AST, history: dict, owners: dict) -> bool:
         if self._c1_is_namespace_expr(node):
             return True
         if isinstance(node, ast.Name):
+            chain = owners.get(id(node), ())
             prior = [row for row in history.get(node.id, [])
-                     if row[0] < getattr(node, "lineno", 0)]
+                     if row[0] < getattr(node, "lineno", 0)
+                     and row[2] == chain[:len(row[2])]]
             return bool(prior) and prior[-1][1]
         return False
 
@@ -26780,9 +27001,12 @@ class TaintTracker:
         return False
 
     def _c1_cluster1_candidates(self, node: ast.AST, scope_id: str, ns_history: dict,
-                                template_consumers: set, module_tree: ast.AST | None = None) -> list[dict]:
+                                template_consumers: set, module_tree: ast.AST | None = None,
+                                ns_owners: dict | None = None) -> list[dict]:
         lineno = getattr(node, "lineno", 0)
         out: list[dict] = []
+        if ns_owners is None:
+            ns_owners = {}
 
         def add(operation: str, category: str, cwe: str, loc_node: ast.AST | None = None) -> None:
             meta = {"operation": operation, "category": category, "cwe": cwe}
@@ -26835,7 +27059,7 @@ class TaintTracker:
             # B. CWE-96: the whole namespace is handed to a template renderer.
             elif last_names & CLUSTER1_TEMPLATE_CONTEXT_CALLS:
                 args = list(node.args) + [kw.value for kw in getattr(node, "keywords", [])]
-                if any(self._c1_is_namespace_use(a, ns_history) for a in args):
+                if any(self._c1_is_namespace_use(a, ns_history, ns_owners) for a in args):
                     add("GLOBALS_AS_TEMPLATE_CONTEXT", "CODE_INJECTION", "CWE-96")
 
             # C. CWE-116: a Jinja2 environment built without an autoescape argument, or with one
@@ -26855,7 +27079,7 @@ class TaintTracker:
             # returned, never called as code. A namespace *write* is not reported either: the engine
             # decided long ago that storing into globals() is not an injection sink.
             if isinstance(node.func, ast.Attribute) and node.func.attr in CLUSTER1_MAPPING_READ_METHODS \
-                    and node.args and self._c1_is_namespace_use(node.func.value, ns_history) \
+                    and node.args and self._c1_is_namespace_use(node.func.value, ns_history, ns_owners) \
                     and not self._c1_is_literal_key(node.args[0]) \
                     and not (node.func.attr == "get" and len(node.args) >= 2):
                 add("DANGEROUS_GLOBALS_USE", "CODE_INJECTION", "CWE-96")
@@ -26873,7 +27097,7 @@ class TaintTracker:
         # B. CWE-96: dynamic subscript read of a namespace mapping (Load only; a store into
         #    globals() is not an injection sink).
         elif isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load) \
-                and self._c1_is_namespace_use(node.value, ns_history) \
+                and self._c1_is_namespace_use(node.value, ns_history, ns_owners) \
                 and not self._c1_is_literal_key(node.slice):
             add("DANGEROUS_GLOBALS_USE", "CODE_INJECTION", "CWE-96")
 
@@ -27369,19 +27593,26 @@ class TaintTracker:
             return list(reversed(chain))
 
         def _root_is_request(expr: ast.AST) -> bool:
+            # A raw read is an attribute chain rooted at the request object (`request.GET`,
+            # `self.request.POST`). `request` merely handed to a helper as an argument
+            # (`self.get_return_url(request)`) is not a read: the helper decides what it
+            # returns, so charging the call site reports a value this file never saw.
             for sub in ast.walk(expr):
-                if isinstance(sub, ast.Name) and sub.id == "request":
-                    return True
-                if isinstance(sub, ast.Attribute) and sub.attr == "request":
+                if not isinstance(sub, ast.Attribute):
+                    continue
+                cursor = sub
+                while isinstance(cursor, ast.Attribute):
+                    if cursor.attr == "request":
+                        return True
+                    cursor = cursor.value
+                if isinstance(cursor, ast.Name) and cursor.id == "request":
                     return True
             return False
 
         def _is_request_taint_expr(expr: ast.AST) -> bool:
             if not isinstance(expr, ast.expr):
                 return False
-            if not _root_is_request(expr):
-                return False
-            return any(isinstance(sub, ast.Attribute) for sub in ast.walk(expr))
+            return _root_is_request(expr)
 
         def _route_param_names(fn_node) -> set[str]:
             out: set[str] = set()
@@ -29005,6 +29236,43 @@ class TaintTracker:
             return value.left.value, [right]
         return None, []
 
+    def _c312_media_cache_write(self, node: ast.Call, scope_id: str, lineno: int) -> bool:
+        """True for `f.write(response.content)` where `f` opened a binary image/media file.
+
+        The destination must resolve to a literal media path through the handle's own open()
+        binding, and the payload must be a body read (`.content`/`.body`/`.data`/`.raw`) off an
+        object whose name carries no credential word - a credential-named payload keeps its
+        finding whatever the file extension says.
+        """
+        if not (isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name)):
+            return False
+        if not node.args:
+            return False
+        payload = node.args[0]
+        if not (isinstance(payload, ast.Attribute)
+                and payload.attr in ("content", "body", "data", "raw")):
+            return False
+        recv = payload.value
+        recv_name = recv.id if isinstance(recv, ast.Name) else (dotted_name(recv) or "")
+        if CWE3A_SENSITIVE_VALUE_RE.match(recv_name or ""):
+            return False
+        handle = node.func.value.id
+        mod_global = f"{scope_module(scope_id)}:global"
+        for key in ((scope_id, handle), (mod_global, handle)):
+            recs = self.assignments_by_scope.get(key, [])
+            prior = [r for r in recs if r.lineno < lineno]
+            if not prior:
+                continue
+            value = prior[-1].value_node
+            if isinstance(value, ast.Call) and (dotted_name(value.func) or "") in (
+                    "open", "io.open", "builtins.open") and value.args:
+                path_val = _eval_static_constant(value.args[0], self.assignments_by_scope,
+                                                 scope_id, lineno)
+                return (isinstance(path_val, str)
+                        and path_val.lower().endswith(CWE312_MEDIA_SUFFIXES))
+            break
+        return False
+
     @staticmethod
     def _c312_value_is_credential(expr) -> bool:
         """True when *expr* reads a secret: a credential-named name/attribute, or a keyed read."""
@@ -29610,6 +29878,8 @@ class TaintTracker:
                                         if tcn in CWE3A_STORAGE_SANITIZERS or any(tcn.endswith(s) for s in ("encrypt", "hashpw", "mask_secret", "sha256", "redact")):
                                             is_sanitized = True
                                 is_sensitive = any(CWE3A_SENSITIVE_VALUE_RE.match(n) for n in arg_names)
+                                if is_sensitive and self._c312_media_cache_write(node, scope_id, lineno):
+                                    is_sensitive = False
                                 if is_sensitive and self._c312_is_nlp_vocab_serialization(node, mod_name, lineno, arg_names):
                                     is_sensitive = False
                                 if is_sensitive and self._c312_value_is_llm_stream_output(node, arg_names):
@@ -32148,7 +32418,7 @@ class TaintTracker:
                         and isinstance(code_expr.func, ast.Attribute)
                         and code_expr.func.attr == "format"
                     )
-                    if callee_is_engine and (
+                    if callee_is_engine and not _c95_compile_flags_ast_only(node) and (
                             _is_dynamic(code_expr, scope_id, lineno) or format_constructed):
                         _add_finding(node, mod_name, scope_id, "DYNAMIC_CODE_EXECUTION", "CODE_EXECUTION", "CWE-95")
                 elif names & subinterp_sinks:
@@ -33491,6 +33761,44 @@ class TaintTracker:
                 return True
         return False
 
+    def _c89_construction_is_boolean_only(self, expr: ast.AST, scope_id: str, lineno: int,
+                                        depth: int = 0) -> bool:
+        """True when every dynamic leaf of a SQL construction is a boolean flag.
+
+        `allow_write = request.path_info.startswith(...)` then `"..." + str(allow_write)` builds
+        the statement from `True`/`False` text: no quote, space or verb can ride a bool into SQL.
+        Anything this walk cannot explain as a comparison, a boolean predicate, a str/repr of one,
+        or a plain assignment chain to one answers False, so tainted text keeps its finding.
+        """
+        if depth > 4 or expr is None:
+            return False
+        if isinstance(expr, ast.Constant):
+            return True
+        if isinstance(expr, ast.Compare):
+            return True
+        if isinstance(expr, ast.Call):
+            leaf = (expr.func.attr if isinstance(expr.func, ast.Attribute)
+                    else (expr.func.id if isinstance(expr.func, ast.Name) else ""))
+            if leaf in ("startswith", "endswith", "isinstance", "issubclass", "bool"):
+                return True
+            if leaf in ("str", "repr") and expr.args:
+                return self._c89_construction_is_boolean_only(expr.args[0], scope_id, lineno, depth + 1)
+            return False
+        if isinstance(expr, ast.Name):
+            recs = self.assignments_by_scope.get((scope_id, expr.id), [])
+            prior = [r for r in recs if r.lineno < lineno]
+            if prior:
+                return self._c89_construction_is_boolean_only(
+                    prior[-1].value_node, prior[-1].scope_id, prior[-1].lineno, depth + 1)
+            return False
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, (ast.Add, ast.Mod)):
+            return (self._c89_construction_is_boolean_only(expr.left, scope_id, lineno, depth + 1)
+                    and self._c89_construction_is_boolean_only(expr.right, scope_id, lineno, depth + 1))
+        if isinstance(expr, ast.JoinedStr):
+            return all(self._c89_construction_is_boolean_only(part.value, scope_id, lineno, depth + 1)
+                       for part in expr.values if isinstance(part, ast.FormattedValue))
+        return False
+
     def _c89_statement_is_internal_maintenance(self, resolved: ast.AST, res_scope: str,
                                                res_lineno: int, scope_id: str,
                                                mod_name: str) -> bool:
@@ -33953,6 +34261,8 @@ class TaintTracker:
             if self._c89_statement_is_internal_maintenance(resolved, res_scope, res_lineno,
                                                             scope_id, mod_name):
                 return False
+            if self._c89_construction_is_boolean_only(resolved, res_scope, res_lineno):
+                return False
             return True
 
         def _c89_call_already_charged_by_another_rule(call: ast.Call, file_path: str) -> bool:
@@ -34341,6 +34651,7 @@ class TaintTracker:
             "escape", "escapejs", "conditional_escape", "clean", "strip_tags",
             "urlize", "format_html", "json_script", "mark_safe", "Markup", "render_template",
             "jsonify", "dumps", "redirect", "getlist", "urlencode", "quote", "quote_plus",
+            "get_absolute_url",
         }
         getter_methods = {
             "get", "getlist", "getvalue", "read", "readline", "readlines", "input",
@@ -36627,6 +36938,20 @@ class TaintTracker:
             "django.utils.http.url_has_allowed_host_and_scheme",
         }
 
+        # Removals are batched: every `_remove_existing` call below only marks records retired,
+        # and one rebind after the module loop applies them all. Rebinding per removal forced a
+        # full `sink_line_index` rebuild on the next lookup (36 rebuilds, ~9.7k records re-absorbed
+        # on NetBox); the live-view helper keeps every in-pass query seeing exactly what the
+        # immediate-rebind version saw, so findings are unchanged.
+        _p8_pending: dict = {}
+
+        def _p8_live_at(node_location, cwe=None) -> list:
+            return [record for record in self._sink_line_bucket(
+                        node_location.file, node_location.line_start)
+                    if record.security_node.location == node_location
+                    and id(record) not in _p8_pending
+                    and (cwe is None or record.security_node.metadata.get("cwe") == cwe)]
+
         def _scope_for(node: ast.AST, mod_name: str) -> str:
             current = node
             while current is not None:
@@ -36814,6 +37139,19 @@ class TaintTracker:
                     return _expr_reads_client_input(record.value_node, record.scope_id,
                                                     record.lineno, depth + 1)
                 return expr.id not in _func_arg_names(scope_id)
+            if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+                # `args=[job_id]` carries exactly what its elements carry: a route parameter list
+                # is no more client-supplied than the parameter itself. A `self.pk`-shaped element
+                # is the exception -- an instance attribute can be a URL/object id the client
+                # steers, and this walk cannot see its origin, so it stays fail-closed.
+                for elt in expr.elts:
+                    cursor = elt
+                    while isinstance(cursor, ast.Attribute):
+                        cursor = cursor.value
+                    if isinstance(cursor, ast.Name) and cursor.id in ("self", "cls"):
+                        return True
+                return any(_expr_reads_client_input(elt, scope_id, lineno, depth + 1)
+                           for elt in expr.elts)
             if isinstance(expr, ast.Call):
                 dname = dotted_name(expr.func) or ""
                 short = dname.rsplit(".", 1)[-1]
@@ -36933,10 +37271,9 @@ class TaintTracker:
             if isinstance(target, ast.Call) and _safe_redirect_wrapper_call(target, scope_id):
                 return True
             if isinstance(target, ast.Name):
-                existing_sink = self._sink_node_at(
-                    location(call, self.file_paths.get(scope_module(scope_id), "unknown.py")),
-                    "CWE-601",
-                )
+                _p8_sink_loc = location(call, self.file_paths.get(scope_module(scope_id), "unknown.py"))
+                _p8_live = _p8_live_at(_p8_sink_loc, "CWE-601")
+                existing_sink = _p8_live[0].security_node if _p8_live else None
                 if _relative_guarded(call, target) or self.is_var_contained(
                     target.id, scope_id, lineno, existing_sink
                 ):
@@ -37032,17 +37369,13 @@ class TaintTracker:
             try:
                 node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
                 _rm_stats["visited"] = len(self.sink_records)
-                removed = [record for record in self._sink_records_at(node_location)
+                removed = [record for record in _p8_live_at(node_location)
                            if record.security_node.metadata.get("cwe") in cwes]
                 if not removed:
                     return
                 _rm_stats["removed"] = len(removed)
-                _rm_stats["rebinds"] = 1
-                self.sink_records = [record for record in self.sink_records if record not in removed]
                 for record in removed:
-                    if not any(other.security_node is record.security_node for other in self.sink_records):
-                        if record.security_node in self.sinks:
-                            self.sinks.remove(record.security_node)
+                    _p8_pending[id(record)] = record
             finally:
                 self._profile_removal(_rm_stats["removed"], _rm_stats["visited"],
                                       _rm_stats["rebinds"], _rm_t0)
@@ -37060,7 +37393,8 @@ class TaintTracker:
                 return
             seen.add(key)
             node_location = location(node, self.file_paths.get(mod_name, "unknown.py"))
-            existing = self._sink_record_at(node_location, cwe)
+            live = _p8_live_at(node_location, cwe)
+            existing = live[0] if live else None
             if existing is not None:
                 existing.security_node.metadata["p8_source_id"] = source_id
                 return
@@ -37196,6 +37530,16 @@ class TaintTracker:
                                 node, mod_name, scope_id, cwe, category, operation,
                                 "INSECURE_COOKIE_STORAGE",
                             )
+
+        # Apply every batched removal once: one rebind, one cache invalidation for the whole pass.
+        if _p8_pending:
+            self.sink_records = [record for record in self.sink_records
+                                 if id(record) not in _p8_pending]
+            remaining_nodes = {id(record.security_node) for record in self.sink_records}
+            for record in _p8_pending.values():
+                sink = record.security_node
+                if id(sink) not in remaining_nodes and sink in self.sinks:
+                    self.sinks.remove(sink)
 
     def _collect_phase9_structural_findings(self) -> None:
         """Collect concrete hardcoded credentials and catastrophic regex patterns."""
@@ -37912,7 +38256,10 @@ class TaintTracker:
                     continue
                 call_names = _names_for_call(node, scope_id)
 
-                if call_names & response_sinks or any(_is_html_response(name) for name in call_names):
+                if (call_names & response_sinks or any(_is_html_response(name) for name in call_names)) \
+                        and _call_callee_segment(node) not in {"set_cookie", "delete_cookie"}:
+                    # A cookie verb sets a header attribute; its value is never an HTML body, even
+                    # when the receiver resolves to an HttpResponse constructor.
                     # Suppress JsonResponse / flask.jsonify — Content-Type is application/json, not HTML
                     is_json_response = bool(call_names & {"JsonResponse", "django.http.JsonResponse", "jsonify", "flask.jsonify"})
                     if is_json_response:
@@ -38066,10 +38413,28 @@ class TaintTracker:
                             rec = _assigned_value(rec_name, scope_id, lineno)
                             if rec and isinstance(rec.value_node, ast.Call):
                                 r_names = _names_for_call(rec.value_node, rec.scope_id)
-                    if any("jinja2" in rn or rn in {"Template", "get_template"} for rn in r_names):
+                    def _rn_is_jinja_trigger(rn: str) -> bool:
+                        if "jinja2" in rn or rn == "Template":
+                            return True
+                        if rn.rsplit(".", 1)[-1] != "get_template":
+                            return False
+                        # Django's loader autoescapes by default; only a non-Django get_template
+                        # (a bare Jinja environment handle) renders unescaped text.
+                        if rn.startswith("django"):
+                            return False
+                        origin = (getattr(self, "imports", {}).get(mod_name, {}) or {}).get("get_template", "")
+                        return not origin.startswith("django")
+
+                    if any(_rn_is_jinja_trigger(rn) for rn in r_names):
                         has_args = bool(node.args or node.keywords)
                         if has_args or isinstance(node.func.value, ast.Call):
-                            _add_finding(node, mod_name, scope_id, "DIRECT_USE_OF_JINJA2", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
+                            # A TEMPLATE_EVALUATION finding (CWE-1336) already owns this line's
+                            # template evaluation; reporting the same render again as CWE-79 counts
+                            # one defect twice. Other CWE-1336 shapes keep the CWE-79 row.
+                            file_path = self.file_paths.get(mod_name, "unknown.py")
+                            if not any(record.security_node.operation == "TEMPLATE_EVALUATION"
+                                       for record in self._sink_records_on_line(file_path, lineno, "CWE-1336")):
+                                _add_finding(node, mod_name, scope_id, "DIRECT_USE_OF_JINJA2", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
                     elif any("mako" in rn for rn in r_names):
                         _add_finding(node, mod_name, scope_id, "MAKO_TEMPLATES_DETECTED", cwe="CWE-79", category="CROSS_SITE_SCRIPTING")
 

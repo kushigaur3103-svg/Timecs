@@ -36,8 +36,24 @@ KNOWN_SINKS = {
 }
 
 KNOWN_SANITIZERS = {
-    "int", "float", "bool", "len", "escape", "quote", "sha256", "md5"
+    "int", "float", "bool", "len", "escape", "quote", "sha256", "md5",
+    "startswith", "endswith", "isinstance", "issubclass",
 }
+
+BOOLEAN_RESULT_LEAVES = {"startswith", "endswith", "isinstance", "issubclass", "bool"}
+
+
+def expr_is_boolean_valued(expr: ast.AST) -> bool:
+    """A comparison or boolean predicate yields a flag, not the text it was computed from:
+    `allow_write = request.path_info.startswith(...)` carries no request bytes into a query."""
+    if isinstance(expr, ast.Compare):
+        return True
+    if isinstance(expr, ast.Call):
+        func = expr.func
+        leaf = func.attr if isinstance(func, ast.Attribute) else (
+            func.id if isinstance(func, ast.Name) else "")
+        return leaf in BOOLEAN_RESULT_LEAVES
+    return False
 
 # `KNOWN_SINKS` keys on the leaf name of the callee, and four JSON parsers share that leaf with
 # `pickle.loads`: json, orjson, ujson, simplejson. A JSON parser builds dicts, lists, strings and
@@ -208,7 +224,7 @@ class FunctionSummarizer:
                                 sanitized.discard(target.id)
 
                     val_params = self._resolve_referenced_params(sub.value, alias_map, kw_containers)
-                    if val_params:
+                    if val_params and not expr_is_boolean_valued(sub.value):
                         for target in sub.targets:
                             if isinstance(target, ast.Name):
                                 alias_map.setdefault(target.id, set()).update(val_params)
@@ -216,8 +232,9 @@ class FunctionSummarizer:
                 # 2. Track Returns: return param / return expr(param)
                 elif isinstance(sub, ast.Return) and sub.value is not None:
                     returns.append(sub)
-                    ret_params = self._resolve_referenced_params(sub.value, alias_map, kw_containers)
-                    summary.tainted_returns.update(ret_params)
+                    if not expr_is_boolean_valued(sub.value):
+                        ret_params = self._resolve_referenced_params(sub.value, alias_map, kw_containers)
+                        summary.tainted_returns.update(ret_params)
 
                 # 3. Track Sinks: sink_call(param)
                 elif isinstance(sub, ast.Call):
@@ -302,7 +319,7 @@ class FunctionSummarizer:
             return self._callee_name(expr.func) in KNOWN_SANITIZERS
         if isinstance(expr, ast.Name):
             return expr.id in sanitized_locals
-        return False
+        return isinstance(expr, ast.Compare)
 
     def _resolve_referenced_params(
         self,

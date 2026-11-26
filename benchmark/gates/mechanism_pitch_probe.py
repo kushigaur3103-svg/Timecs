@@ -425,9 +425,15 @@ def check_numeric_clause_population():
     """
     failures = []
     loud = {row for row in scan_rows(_NET + PERCENT_CAST_LOG) if row[1] == 'CWE-117'}
-    if not loud:
-        failures.append('percent_cast_log: the numeric clause is NOT shipped, so this row must still report '
-                        '-- silent here means a guard was added without re-measuring this tier')
+    if loud:
+        # v3.3.2 SHIPS the numeric clause (mandate Part A: int()/float()/len()/bool()/arithmetic seal).
+        # The fixture's holes are strictly `%d -> int(step)` and `%s -> float(loss)` -- pure numeric casts,
+        # nothing else can silence them. This tier's own docstring required the decision to be re-made on
+        # shipping; the census (numeric_only == 0) and blessed-reach (dead == 0) guards below still pin
+        # that the clause reaches zero blessed keys, which aa_parity 424/424 and big8 119/119 re-verify.
+        failures.append('percent_cast_log: the shipped numeric-cast clause must keep this pure '
+                        'int()/float() row silent -- it reports again, so the clause moved or the '
+                        'fixture grew a non-numeric hole; re-measure before shipping anything else')
 
     keys, sources, _absent = _corpus_sources('parity')
     big_keys, _big_sources, _big_absent = _corpus_sources('big8')

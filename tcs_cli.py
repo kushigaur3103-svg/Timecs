@@ -48,6 +48,7 @@ try:
     from js_scanner import (
         JsTsScanner,
         JS_TS_EXTENSIONS,
+        has_js_ts_files,
         js_ts_available,
         run_js_ts_scan_isolated,
         warn_js_ts_unavailable,
@@ -58,6 +59,9 @@ except ImportError:
     JS_TS_EXTENSIONS = frozenset()
 
     def js_ts_available() -> bool:
+        return False
+
+    def has_js_ts_files(target_path) -> bool:
         return False
 
     def run_js_ts_scan_isolated(target, base_dir=None, skipped_files=None):
@@ -1753,7 +1757,7 @@ def main(argv: Optional[List[str]] = None):
         # ---------------------------------------------------------
         # js_scanner no longer warns at import time (a Python-only scan must stay quiet), so the
         # explicit --include-js request is what makes the missing grammar worth reporting here.
-        if getattr(args, "include_js", False) and not js_ts_available():
+        if getattr(args, "include_js", False) and not js_ts_available() and has_js_ts_files(target):
             warn_js_ts_unavailable()
         if _JS_TS_SCANNER_AVAILABLE and js_ts_available() and getattr(args, "include_js", False):
             try:

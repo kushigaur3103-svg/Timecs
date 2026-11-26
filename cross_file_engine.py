@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Set
 
 from symbol_indexer import GlobalSymbolIndex
-from function_summarizer import KNOWN_SANITIZERS, FunctionSummarizer, FunctionSummary, ParamSinkEdge
+from function_summarizer import KNOWN_SANITIZERS, FunctionSummarizer, FunctionSummary, ParamSinkEdge, expr_is_boolean_valued
 
 
 # Common web entrypoint sources
@@ -1661,6 +1661,8 @@ class CrossFileTaintEngine:
         for param_idx in sorted(tainted_returns):
             arg = bound.get(param_idx)
             if arg is None:
+                continue
+            if expr_is_boolean_valued(arg):
                 continue
             arg_names = {n.id for n in ast.walk(arg) if isinstance(n, ast.Name)}
             if arg_names & tainted_vars:

@@ -636,19 +636,20 @@ def _is_quoted_bare_pem_header(line: str, start: int, end: int) -> bool:
 # JWT) is untouched. `SEMGREP`-style noise is not special-cased: the shape, not the project, wins.
 _ENV_INDIRECTION_VALUE_RE = re.compile(
     r"(?i)\b[\w.\-]+\s*[:=]\s*[\"']?"
-    r"(?:os\.environ\s*[/.(]|\bos\.getenv\s*[(/]|(?<![\w.])env:|environment:"
+    r"(?:os\.environ\s*[/.(]|\bos\.getenv\s*[(/]|(?<![\w.])env:|(?<![\w.])vault:|environment:"
     r"|!env[\s]|\$\{?[A-Za-z0-9_]{2,}\}?|\{\{[ \t]*(?:env|secrets)\.[\w.\-]+[ \t]*\}\})")
 _ENV_INDIRECTION_LITERAL_RE = re.compile(
-    r"(?i)^(?:os\.environ\s*[/.(]|\bos\.getenv\s*[(/]|env:|environment:"
+    r"(?i)^(?:os\.environ\s*[/.(]|\bos\.getenv\s*[(/]|env:|vault:|environment:"
     r"|!env[\s]|\$\{?[A-Za-z0-9_]{2,}\}?|\{\{[ \t]*(?:env|secrets)\.[\w.\-]+[ \t]*\}\})")
 # Substring gate so the regex above costs nothing on the ~all lines that cannot be indirection.
-_ENV_INDIRECTION_HINTS = ("os.environ", "os.getenv", "env:", "${", "!env", "environment:")
+_ENV_INDIRECTION_HINTS = ("os.environ", "os.getenv", "env:", "vault:", "${", "!env", "environment:")
 # A value that names itself a redaction stand-in records that a secret was removed, not a secret.
 # Consulted after the entropy override, since these strings are long and read as high-entropy ASCII.
 _REDACTION_SENTINEL_RE = re.compile(
     r"(?i)(?:scrubbed|redacted|sanitized|\bmasked\b|not_provided|removed_by)")
 _ENV_POINTER_NAME_RE = re.compile(
-    r"(?i)_(?:env|environment|variable|var|key)_?name$|_env_var$|_var_name$")
+    r"(?i)_(?:env|environment|variable|var|key)_?name$|_env_var$|_env_key$|_var_name$"
+    r"|_header_name$|_param_name$|_field_name$")
 _ENV_VAR_NAME_VALUE_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
 
 
@@ -673,10 +674,15 @@ def scan_text(text: str, filename: str = "<string>") -> List[SecretFinding]:
     # File-type scoping is resolved once per file: the HCL-shaped rules below simply are not in the
     # list when the file is Python, so the per-line loop costs no extra test.
     gitleaks_detectors = _gitleaks_detectors_for(filename)
+    # A commented-out line in a config document configures nothing; the key it shows is documentation.
+    is_config_doc = str(filename).lower().endswith(
+        (".yaml", ".yml", ".env", ".ini", ".conf", ".cfg", ".toml", ".sh", ".properties"))
 
     for line_idx, raw_line in enumerate(lines, start=1):
         clean_line = raw_line.rstrip("\r\n")
         if len(clean_line) > 10000:
+            continue
+        if is_config_doc and clean_line.lstrip().startswith("#"):
             continue
         candidates: List[_CandidateMatch] = []
 

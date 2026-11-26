@@ -279,6 +279,11 @@ def is_refused(value: str, named: bool = False) -> bool:
         return True
     if INTERPOLATION.search(text):
         return True
+    # An indirection names where the secret lives instead of carrying it: LiteLLM-style
+    # `api_key: os.environ/AZURE_KEY`, `token: env:OPENAI_TOKEN`, `password: vault:secret/db`.
+    if lowered.startswith(("os.environ/", "os.environ[", "os.getenv(", "os.getenv/",
+                           "env:", "vault:")):
+        return True
     if any(word in lowered for word in PLACEHOLDER_WORDS):
         return True
     if any(token in lowered for token in NON_SECRET_PLACEHOLDER_TOKENS):
@@ -308,6 +313,9 @@ def _iter_hits(source: str) -> Iterator[Tuple[int, str, str, str, str]]:
     """(lineno, label, severity, redacted, kind) for every credential the line proves."""
     for lineno, line in enumerate(source.splitlines(), start=1):
         if not line.strip():
+            continue
+        # A commented-out assignment configures nothing; the credential it shows is documentation.
+        if line.lstrip().startswith("#"):
             continue
         for label, pattern, severity in VENDOR_PATTERNS:
             match = pattern.search(line)

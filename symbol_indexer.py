@@ -53,6 +53,9 @@ NON_PRODUCTION_DIRS = frozenset({"tests", "test", "__tests__", "testutils",
                                  "fixtures", "examples", "example", "samples", "debug"})
 NON_PRODUCTION_SUFFIXES = ("_test.py",)
 NON_PRODUCTION_PREFIXES = ("test_",)
+# Mirrors `cli.NON_PRODUCTION_DIR_MARKERS`: load drivers and sample-config trees whose full
+# directory name varies by project (`proxy_load_test/`, `example_config_yaml/`).
+NON_PRODUCTION_DIR_MARKERS = ("load_test", "example_config")
 
 
 def is_non_production_path(path: Path, root: Path) -> bool:
@@ -73,6 +76,8 @@ def is_non_production_path(path: Path, root: Path) -> bool:
     if not parts:
         return False
     if any(part in NON_PRODUCTION_DIRS for part in parts[:-1]):
+        return True
+    if any(marker in part for part in parts[:-1] for marker in NON_PRODUCTION_DIR_MARKERS):
         return True
     name = parts[-1]
     return any(name.startswith(prefix) for prefix in NON_PRODUCTION_PREFIXES) or \

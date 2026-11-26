@@ -11,6 +11,7 @@ import ast
 import json
 import argparse
 import dataclasses
+import re
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Set
 
@@ -97,6 +98,52 @@ BINARY_PREFIX_BYTES = 8192
 
 # Test orchestration seam: invoked immediately before stale-source check
 _PRE_WRITE_HOOK: Optional[Any] = None
+
+_GENERIC_SOURCE_SYMBOLS = {
+    "User Input", "USER_INPUT", "Untrusted Input Origin", "STATIC_PATTERN",
+}
+_STRUCTURAL_RULE_TRANSFORM_RE = re.compile(
+    r"^(?:cwe-\d+(?:_[a-z0-9]+)*|.*_phase\d+)_(?:structural_)?violation$"
+)
+_KNOWN_DATAFLOW_SOURCE_RE = re.compile(
+    r"SQL|OS_COMMAND|COMMAND_INJECTION|CODE_INJECTION|INJECTION|"
+    r"SSRF|SERVER_SIDE_REQUEST|DYNAMIC_URL|URL_FETCH|PATH_TRAVERSAL|"
+    r"SEND_FILE|DESERIALIZ|PICKLE|YAML_LOAD|XML_ENTITY|TEMPLATE|XSS"
+)
+
+
+def _has_real_taint_source(edge: Any, source_node: Any) -> bool:
+    """Classify report confidence without changing what the engine emitted."""
+    source_id = str(getattr(edge, "source_id", "") or "")
+    transform = str(getattr(edge, "transform", "") or "")
+    source_symbol = str(getattr(source_node, "symbol", "") or "") if source_node else ""
+
+    if _STRUCTURAL_RULE_TRANSFORM_RE.match(transform.lower()):
+        return False
+
+    if source_node is not None:
+        if source_id.startswith("SRC-") and source_symbol not in _GENERIC_SOURCE_SYMBOLS:
+            return True
+        # A SecurityNode with a concrete, user-controlled symbol is still a flow even when
+        # a collector keyed its edge by that same source label.
+        if source_symbol not in _GENERIC_SOURCE_SYMBOLS:
+            return bool(_KNOWN_DATAFLOW_SOURCE_RE.search(
+                f"{source_id} {transform} {source_symbol}"))
+        return False
+
+    return bool(_KNOWN_DATAFLOW_SOURCE_RE.search(f"{source_id} {transform}"))
+
+
+def _nearest_source_for_display(sources_by_id: Dict[str, Any], sink_location: Any) -> Any:
+    candidates = [
+        source for source in sources_by_id.values()
+        if getattr(source.location, "file", None) == sink_location.file
+        and getattr(source, "symbol", "") not in _GENERIC_SOURCE_SYMBOLS
+        and source.location.line_start <= sink_location.line_start
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda source: source.location.line_start)
 
 
 def check_file_resilience(file_path: Path, display_path: str) -> Optional[str]:
@@ -244,7 +291,7 @@ def format_confidence(conf_val: Any = None, conf_label: Optional[str] = None) ->
             return "HIGH (PATTERN_MATCH)"
         return conf_label
 
-    return "CONFIRMED (100%)"
+    return "STATIC (PATTERN_MATCH)"
 
 
 def extract_remediation_advice(cwe: str, sink_symbol: str) -> str:
@@ -316,14 +363,19 @@ def consolidate_with_cli_profile(findings: List[Dict[str, Any]]) -> List[Dict[st
         for f in findings
     ])
     kept = {(s["file"], s["line"], s["cwe"]): s for s in survivors}
+    emitted_sites = set()
     merged = []
     for finding in findings:
         site = kept.get((finding["file"], finding["line_number"], finding["cwe"]))
         if site is None:
             continue
+        emitted_site = (finding["file"], finding["line_number"], finding["cwe"])
+        if emitted_site in emitted_sites:
+            continue
         finding["severity"] = site["severity"]
         if site.get("consolidated_from"):
             finding["consolidated_from"] = site["consolidated_from"]
+        emitted_sites.add(emitted_site)
         merged.append(finding)
     return merged
 
@@ -365,14 +417,19 @@ def execute_tcs_scan(
             continue
         category = sink.metadata.get("sink_type", "UNKNOWN_VULNERABILITY")
         confidence_val = float(edge.confidence)
-        # `cli.py scan` grades a flow CONFIRMED from the edge kind, not the numeric
-        # confidence; mirroring it here keeps severity identical across both CLIs.
-        confidence_label = "CONFIRMED" if edge.kind == "CONFIRMED_DATA_FLOW" else "POTENTIAL"
-
-        rule = GLOBAL_RULE_REGISTRY.get_rule(cwe)
-        severity = rule.get_severity(confidence_label).upper() if rule else "HIGH"
+        # Severity keeps the existing edge-kind contract. Only the displayed label is
+        # corrected when the engine emitted a structural pattern rather than a resolved flow.
+        severity_confidence = "CONFIRMED" if edge.kind == "CONFIRMED_DATA_FLOW" else "POTENTIAL"
 
         source_node = sources_by_id.get(edge.source_id)
+        real_taint_source = _has_real_taint_source(edge, source_node)
+        confidence_label = severity_confidence
+        if not real_taint_source and severity_confidence == "CONFIRMED":
+            confidence_label = "STATIC (PATTERN_MATCH)"
+
+        rule = GLOBAL_RULE_REGISTRY.get_rule(cwe)
+        severity = rule.get_severity(severity_confidence).upper() if rule else "HIGH"
+
         sink_loc = sink.location
         source_loc = source_node.location if source_node else None
 
@@ -389,93 +446,97 @@ def execute_tcs_scan(
 
         transform_raw = edge.transform or ""
 
-        # Resolve source information
-        src_sym = None
-        src_file = None
-        src_line_no = None
-
-        if source_node:
-            src_sym = source_node.symbol
-            src_file = source_loc.file if source_loc else sink_loc.file
-            src_line_no = source_loc.line_start if source_loc else sink_loc.line_start
-        elif getattr(edge, "proof_graph", None) and edge.proof_graph.nodes:
-            first_node = edge.proof_graph.nodes[0]
-            if first_node.node_type == ProofNodeType.SOURCE or getattr(first_node.node_type, "value", str(first_node.node_type)) == "source":
-                src_sym = first_node.symbol
-                src_file = first_node.file_path or sink_loc.file
-                src_line_no = first_node.start_line or sink_loc.line_start
-
-        # If source is missing or generic "User Input", standardize to user_input ({func_name})
-        if not src_sym or src_sym in ("User Input", "USER_INPUT", "Untrusted Input Origin"):
-            func_name = "handler"
-            if getattr(edge, "proof_graph", None) and edge.proof_graph.nodes:
-                sc = edge.proof_graph.nodes[0].scope_id or ""
-                if ":" in sc:
-                    sc_cand = sc.split(":")[-1]
-                    if sc_cand and sc_cand not in ("global", "module"):
-                        func_name = sc_cand
-            if func_name == "handler" and hasattr(sink, "scope_id") and sink.scope_id:
-                if ":" in sink.scope_id:
-                    sc_cand = sink.scope_id.split(":")[-1]
-                    if sc_cand and sc_cand not in ("global", "module"):
-                        func_name = sc_cand
-            src_sym = f"user_input ({func_name})"
-            if not src_file:
-                src_file = sink_loc.file
-            if src_line_no is None:
-                src_line_no = max(1, sink_loc.line_start - 1)
-
-        trace_steps = [f"Source: {src_sym} ({src_file}:{src_line_no})"]
-
-        if transform_raw:
-            parts = [p.strip() for p in transform_raw.split("->")]
-            for p in parts:
-                if p.startswith("SRC-") or p == "binary_op" or not p:
-                    continue
-                # Replace bracketed path/join operators with readable os.path.join()
-                if p in ("[join]", "[path_join]", "[join_unknown]", "[join_internal]", "[os.path.join]") or (p.startswith("[") and "join" in p.lower()):
-                    join_step = f"Variable / Flow: os.path.join() ({sink_loc.file}:{sink_loc.line_start})"
-                    if join_step not in trace_steps:
-                        trace_steps.append(join_step)
-                    continue
-                if p.startswith("[") and p.endswith("]"):
-                    op_name = p[1:-1]
-                    op_step = f"Variable / Flow: {op_name}()"
-                    if op_step not in trace_steps:
-                        trace_steps.append(op_step)
-                    continue
-
-                # Normalize return steps to avoid integer leakage (e.g. return:target.py:13 -> return (L13))
-                if p.startswith("return:"):
-                    ret_parts = p.split(":")
-                    if len(ret_parts) >= 2 and ret_parts[-1].isdigit():
-                        clean_p = f"return (L{ret_parts[-1]})"
-                    else:
-                        clean_p = "return"
-                elif p.startswith("return_from:"):
-                    clean_p = f"return_from {p.split(':')[-1]}()"
-                elif p.isdigit():
-                    clean_p = f"return (L{p})"
+        if not real_taint_source:
+            src_sym = None
+            src_file = None
+            src_line_no = None
+            source_symbol = "STATIC_PATTERN"
+            trace_steps = [
+                f"Static Pattern Match: {sink.symbol} ({sink_loc.file}:{sink_loc.line_start})"
+            ]
+            flow_summary = f"[Static Pattern] -> [{sink.symbol} (L{sink_loc.line_start})]"
+        else:
+            display_source = source_node or _nearest_source_for_display(sources_by_id, sink_loc)
+            if display_source is not None:
+                display_loc = display_source.location
+                src_sym = display_source.symbol
+                src_file = display_loc.file if display_loc else sink_loc.file
+                src_line_no = display_loc.line_start if display_loc else sink_loc.line_start
+            elif getattr(edge, "proof_graph", None) and edge.proof_graph.nodes:
+                first_node = edge.proof_graph.nodes[0]
+                if first_node.node_type == ProofNodeType.SOURCE or getattr(
+                        first_node.node_type, "value", str(first_node.node_type)) == "source":
+                    src_sym = first_node.symbol
+                    src_file = first_node.file_path or sink_loc.file
+                    src_line_no = first_node.start_line or sink_loc.line_start
                 else:
-                    clean_p = p.split(":")[-1] if ":" in p else p
-                    if clean_p.isdigit():
-                        clean_p = f"return (L{clean_p})"
+                    src_sym = edge.source_id
+                    src_file = sink_loc.file
+                    src_line_no = None
+            else:
+                src_sym = edge.source_id or "UNKNOWN_TAINT_SOURCE"
+                src_file = sink_loc.file
+                src_line_no = None
 
-                # Skip untainted string literals (quoted paths like "/var/www/uploads")
-                if clean_p.startswith('"') or clean_p.startswith("'") or clean_p.startswith("/"):
-                    continue
+            if src_sym in _GENERIC_SOURCE_SYMBOLS:
+                src_sym = edge.source_id or "UNKNOWN_TAINT_SOURCE"
+                src_line_no = None
 
-                var_step = f"Variable / Flow: {clean_p}"
-                if clean_p and var_step not in trace_steps:
-                    trace_steps.append(var_step)
+            source_symbol = src_sym
+            source_position = f"{src_file}:{src_line_no}" if src_line_no is not None else src_file
+            trace_steps = [f"Source: {src_sym} ({source_position})"]
 
-        trace_steps.append(f"Sink: {sink.symbol} ({sink_loc.file}:{sink_loc.line_start})")
+            if transform_raw:
+                parts = [p.strip() for p in transform_raw.split("->")]
+                for p in parts:
+                    if p.startswith("SRC-") or p == "binary_op" or not p:
+                        continue
+                    # Replace bracketed path/join operators with readable os.path.join()
+                    if p in ("[join]", "[path_join]", "[join_unknown]", "[join_internal]", "[os.path.join]") or (p.startswith("[") and "join" in p.lower()):
+                        join_step = f"Variable / Flow: os.path.join() ({sink_loc.file}:{sink_loc.line_start})"
+                        if join_step not in trace_steps:
+                            trace_steps.append(join_step)
+                        continue
+                    if p.startswith("[") and p.endswith("]"):
+                        op_name = p[1:-1]
+                        op_step = f"Variable / Flow: {op_name}()"
+                        if op_step not in trace_steps:
+                            trace_steps.append(op_step)
+                        continue
 
-        snk_sym = sink.symbol
-        snk_line = f"L{sink_loc.line_start}"
-        src_line_str = f"L{src_line_no}" if src_line_no is not None else "L?"
+                    # Normalize return steps to avoid integer leakage (e.g. return:target.py:13 -> return (L13))
+                    if p.startswith("return:"):
+                        ret_parts = p.split(":")
+                        if len(ret_parts) >= 2 and ret_parts[-1].isdigit():
+                            clean_p = f"return (L{ret_parts[-1]})"
+                        else:
+                            clean_p = "return"
+                    elif p.startswith("return_from:"):
+                        clean_p = f"return_from {p.split(':')[-1]}()"
+                    elif p.isdigit():
+                        clean_p = f"return (L{p})"
+                    else:
+                        clean_p = p.split(":")[-1] if ":" in p else p
+                        if clean_p.isdigit():
+                            clean_p = f"return (L{clean_p})"
 
-        flow_summary = f"[{src_sym} ({src_line_str})] -> [Tainted Dataflow] -> [{snk_sym} ({snk_line})]"
+                    # Skip untainted string literals (quoted paths like "/var/www/uploads")
+                    if clean_p.startswith('"') or clean_p.startswith("'") or clean_p.startswith("/"):
+                        continue
+
+                    var_step = f"Variable / Flow: {clean_p}"
+                    if clean_p and var_step not in trace_steps:
+                        trace_steps.append(var_step)
+
+            trace_steps.append(f"Sink: {sink.symbol} ({sink_loc.file}:{sink_loc.line_start})")
+
+            snk_line = f"L{sink_loc.line_start}"
+            src_line_str = f"L{src_line_no}" if src_line_no is not None else "L?"
+            flow_summary = (
+                f"[{src_sym} ({src_line_str})] -> [Tainted Dataflow] -> "
+                f"[{sink.symbol} ({snk_line})]"
+            )
+
         remediation = extract_remediation_advice(cwe, sink.symbol)
 
         findings.append({
@@ -488,7 +549,7 @@ def execute_tcs_scan(
             "file": sink_loc.file,
             "line_number": sink_loc.line_start,
             "sink_symbol": sink.symbol,
-            "source_symbol": src_sym if (source_node or src_sym) else "USER_INPUT",
+            "source_symbol": source_symbol,
             "source_line": src_line_no,
             "source_file": src_file,
             "code_snippet": offending_snippet,
@@ -505,6 +566,7 @@ def execute_tcs_scan(
     vuln_idx = len(findings) + 1
 
     secret_findings_list = []
+    secret_sites = set()
     if secrets:
         from secret_scanner import scan_text
         from secret_filters import filter_findings, FilterConfig
@@ -513,15 +575,32 @@ def execute_tcs_scan(
             raw_sec = scan_text(code, filename=fpath)
             passed_sec = filter_findings(raw_sec, file_path=fpath, config=filter_cfg)
             for sf in passed_sec:
+                secret_site = (sf.file, sf.line_number, "CWE-798")
+                if secret_site in secret_sites:
+                    continue
+                existing_index = next((
+                    index for index, existing in enumerate(findings)
+                    if existing.get("cwe") == "CWE-798"
+                    and existing.get("file") == sf.file
+                    and existing.get("line_number") == sf.line_number
+                ), None)
+                existing_id = findings[existing_index]["id"] if existing_index is not None else None
                 sec_dict = {
-                    "id": f"TimeCodeSecurity-SEC-{vuln_idx:03d}",
+                    "id": (
+                        f"TimeCodeSecurity-SEC-{existing_id.rsplit('-', 1)[-1]}"
+                        if existing_id else f"TimeCodeSecurity-SEC-{vuln_idx:03d}"
+                    ),
                     "category": "HARDCODED_SECRET",
                     "cwe": "CWE-798",
                     "severity": "HIGH",
                     "confidence": 1.0,
-                    "confidence_label": "CONFIRMED",
+                    "confidence_label": "STATIC (PATTERN_MATCH)",
                     "file": sf.file,
                     "line_number": sf.line_number,
+                    "source_symbol": sf.secret_type,
+                    "source_line": sf.line_number,
+                    "source_file": sf.file,
+                    "sink_symbol": "HARDCODED_SECRET",
                     "column_start": sf.column_start,
                     "column_end": sf.column_end,
                     "masked_value": sf.masked_value,
@@ -537,8 +616,12 @@ def execute_tcs_scan(
                     "discovery_mode": "STANDARD_SCAN",
                     "is_secret": True
                 }
-                findings.append(sec_dict)
-                vuln_idx += 1
+                if existing_index is None:
+                    findings.append(sec_dict)
+                    vuln_idx += 1
+                else:
+                    findings[existing_index] = sec_dict
+                secret_sites.add(secret_site)
                 secret_findings_list.append(sec_dict)
 
     suppression_enabled = True if config is None else config.suppression.enabled
@@ -585,7 +668,7 @@ def execute_tcs_scan(
 
     scan_filename = list(normalized_files.keys())[0] if len(normalized_files) == 1 else "target.py"
 
-    return {
+    ret = {
         "status": "success",
         "syntax_errors": syntax_errors,
         "enabled_rules": advertised_rule_ids(config),

@@ -142,7 +142,7 @@ def format_confidence(conf_val=None, conf_label=None) -> str:
             return "HIGH (PATTERN_MATCH)"
         return conf_label
 
-    return "CONFIRMED (100%)"
+    return "STATIC (PATTERN_MATCH)"
 
 
 def get_severity_color(severity: str) -> str:

@@ -104,3 +104,10 @@ python benchmark/gates/aa_parity.py
 # 3. Run PyGoat differential benchmark suite
 python scripts/compare_pygoat.py
 TimeCodeSecurity v3.2.0 Enterprise · MIT License · Developed by Ayush Gaur
+
+## v3.3.3 Enterprise Quality Gates, Baseline & SCA Plan
+
+- **Debt Baseline (SonarQube-style):** `timecs scan . --write-baseline .tcs-baseline.json` to freeze existing debt, then `timecs scan . --baseline .tcs-baseline.json` to fail only on NEW vulnerabilities.
+- **Custom Quality Gate:** `timecs scan . --fail-on high` or `timecs scan . --fail-on critical:0,high:5` (also via `policy.fail_on` in `.tcs.yaml`).
+- **Snyk-Style SCA Upgrade Plan & Python 3.15:** Grouped `SCA UPGRADE PLAN` in scan output; pre-built binary wheels for **Python 3.11-3.15**.
+- Full CLI & policy reference: see [INSTRUCTIONS_OF_TIMECS.md](INSTRUCTIONS_OF_TIMECS.md).

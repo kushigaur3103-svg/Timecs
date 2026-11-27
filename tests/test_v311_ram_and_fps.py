@@ -1104,11 +1104,11 @@ class TestParsingStaysInProcess:
 # ─── The release number the banner and the package both have to say ─────────
 
 class TestReleaseVersion:
-    def test_pyproject_and_banner_agree_on_3_3_2(self):
+    def test_pyproject_and_banner_agree_on_3_3_3(self):
         # Read as source, not imported: `banner` prefers the installed distribution's metadata when
         # one is present, so an import would test whichever wheel this machine happens to hold.
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         banner_src = (ROOT / "banner.py").read_text(encoding="utf-8")
-        assert 'version = "3.3.2"' in pyproject
-        assert 'VERSION = "3.3.2"' in banner_src, "the fallback must name the release it ships with"
-        assert 'version = "3.2.0"' not in pyproject
+        assert 'version = "3.3.3"' in pyproject
+        assert 'VERSION = "3.3.3"' in banner_src, "the fallback must name the release it ships with"
+        assert 'version = "3.3.2"' not in pyproject

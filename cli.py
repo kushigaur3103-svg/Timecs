@@ -4,6 +4,7 @@ import argparse
 import ast
 import fnmatch
 import gc
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -171,12 +172,12 @@ YAML_POLICY_BOOL_KEYS = ("all", "include_hygiene", "include_tests", "include_ven
                          "include_unreachable")
 YAML_POLICY_SEVERITY_VALUES = ("low", "medium", "high", "critical")
 YAML_POLICY_CONFIDENCE_VALUES = ("low", "medium", "high", "all")
-YAML_POLICY_KEYS = frozenset(YAML_POLICY_BOOL_KEYS) | {"min_severity", "min_confidence"}
+YAML_POLICY_KEYS = frozenset(YAML_POLICY_BOOL_KEYS) | {"min_severity", "min_confidence", "fail_on"}
 # argparse defaults: an attribute sitting at its default was NOT named on the command line, so a
 # `.tcs.yaml` value may fill it. A non-default value is an explicit CLI flag and always overrides.
 _POLICY_ARG_DEFAULTS = {"all": False, "include_hygiene": False, "include_tests": False,
                         "include_vendor": False, "include_unreachable": False, "audit_all": False,
-                        "min_severity": None, "min_confidence": None}
+                        "min_severity": None, "min_confidence": None, "fail_on": None}
 # tcs_config._ALLOWED_TOP_LEVEL natively allows "policy" in tcs_config.py.
 
 
@@ -228,6 +229,13 @@ def _read_yaml_policy(directory=None):
             raise ValueError(f"Invalid {tcs_config.CONFIG_FILENAME}: policy.min_confidence must be one of "
                              f"{list(YAML_POLICY_CONFIDENCE_VALUES)}")
         out["min_confidence"] = value
+    if "fail_on" in block:
+        value = block["fail_on"]
+        if not isinstance(value, str):
+            raise ValueError(f"Invalid {tcs_config.CONFIG_FILENAME}: policy.fail_on must be a spec "
+                             f"string like 'high' or 'critical:0,high:5'")
+        _parse_fail_on(value)
+        out["fail_on"] = value.strip().lower()
     return out
 
 
@@ -254,11 +262,168 @@ def _apply_yaml_policy(args):
                 setattr(args, attr, value)
         args._yaml_policy_keys = tuple(applied)
         return
-    for key in YAML_POLICY_BOOL_KEYS + ("min_severity", "min_confidence"):
+    for key in YAML_POLICY_BOOL_KEYS + ("min_severity", "min_confidence", "fail_on"):
         if key in policy and key not in explicit and policy[key]:
             setattr(args, key, policy[key])
             applied.append(key)
     args._yaml_policy_keys = tuple(applied)
+
+
+# ── SonarQube-style quality gate spec (v3.3.3) ──────────────────────────────────────────────────
+_SEVERITY_RANK_GATE = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
+
+def _parse_fail_on(spec):
+    """Validate and decode a --fail-on SPEC deterministically.
+
+    Two shapes and nothing else: a bare severity name ('high' -- exit 1 when any reported finding
+    is at or above it) or a comma-separated budget list ('critical:0,high:5' -- exit 1 when the
+    count for any named severity strictly exceeds its budget). Anything else raises ValueError
+    with a CLI-printable message; the same parser validates `policy.fail_on` in `.tcs.yaml`.
+    """
+    text = str(spec or "").strip().lower()
+    if not text:
+        raise ValueError("Invalid --fail-on spec: empty; expected a severity "
+                         "(critical|high|medium|low) or budgets like critical:0,high:5")
+    if ":" not in text:
+        if text not in _SEVERITY_RANK_GATE:
+            raise ValueError(f"Invalid --fail-on spec {str(spec)!r}: expected one of "
+                             f"critical, high, medium, low, or budgets like critical:0,high:5")
+        return ("min", text)
+    budget = {}
+    for part in text.split(","):
+        piece = part.strip()
+        name, sep, count = piece.partition(":")
+        name = name.strip().lower()
+        if not sep or name not in _SEVERITY_RANK_GATE:
+            raise ValueError(f"Invalid --fail-on spec {str(spec)!r}: {part!r} is not "
+                             f"SEVERITY:COUNT (severities: critical, high, medium, low)")
+        digits = count.strip()
+        if not digits.isdigit():
+            raise ValueError(f"Invalid --fail-on spec {str(spec)!r}: budget for {name!r} is "
+                             f"{count.strip()!r}, expected a non-negative integer")
+        if name in budget:
+            raise ValueError(f"Invalid --fail-on spec {str(spec)!r}: duplicate severity {name!r}")
+        budget[name] = int(digits)
+    return ("budget", budget)
+
+
+# ── SonarQube-style debt baseline (v3.3.3) ──────────────────────────────────────────────────────
+def _baseline_scan_root(args):
+    target = Path(args.path).resolve()
+    return str(target if target.is_dir() else target.parent)
+
+
+def _baseline_portable_path(file_value, scan_root):
+    """Portable spelling of a finding's file: never an absolute machine path.
+
+    Findings already carry cwd-relative posix keys; the rare absolute value is rebased onto the
+    scan root, and a value outside every root keeps only its name so nothing machine-specific
+    can reach the baseline file.
+    """
+    path = Path(str(file_value or ""))
+    if not path.is_absolute():
+        return path.as_posix()
+    try:
+        return os.path.relpath(str(path), scan_root).replace(os.sep, "/")
+    except ValueError:
+        return path.name
+
+
+def _baseline_fingerprints(findings, scan_root):
+    """One SHA-256 per finding over (portable path, CWE, normalized source line).
+
+    The trimmed, whitespace-collapsed source text is the identity, so a fingerprint survives
+    line-number shifts and Windows/Linux path spelling. An unreadable file or an out-of-range
+    line falls back to the line number itself -- the fingerprint stays total and deterministic.
+    """
+    texts = {}
+    out = []
+    for finding in findings:
+        source_path = str(finding.get("file", ""))
+        if source_path not in texts:
+            try:
+                with open(source_path, encoding="utf-8", errors="replace") as handle:
+                    texts[source_path] = handle.read().splitlines()
+            except OSError:
+                texts[source_path] = None
+        line_no = int(finding.get("line") or 0)
+        lines = texts[source_path]
+        material = ""
+        if lines is not None and 1 <= line_no <= len(lines):
+            material = " ".join(lines[line_no - 1].split())
+        if not material:
+            material = str(line_no)
+        rule = str(finding.get("cwe") or finding.get("rule") or "")
+        rel = _baseline_portable_path(source_path, scan_root)
+        out.append(hashlib.sha256("\x00".join((rel, rule, material)).encode("utf-8")).hexdigest())
+    return out
+
+
+def _write_baseline_file(path_text, findings, scan_root):
+    fingerprints = sorted(set(_baseline_fingerprints(findings, scan_root)))
+    atomic_write_text(Path(path_text),
+                      json.dumps({"version": 1, "fingerprints": fingerprints}, indent=2) + "\n")
+    return len(fingerprints)
+
+
+def _load_baseline_fingerprints(path_text):
+    path = Path(path_text)
+    if not path.is_file():
+        raise ValueError(f"Baseline file not found: {path_text}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Invalid baseline file {path_text}: {exc}") from exc
+    if (not isinstance(data, dict) or data.get("version") != 1
+            or not isinstance(data.get("fingerprints"), list)):
+        raise ValueError(f'Invalid baseline file {path_text}: expected '
+                         f'{{"version": 1, "fingerprints": [...]}} as written by --write-baseline')
+    return {str(item) for item in data["fingerprints"]}
+
+
+def _apply_baseline(findings, fingerprints, scan_root):
+    """Drop findings whose fingerprint is known; returns (kept, suppressed_count)."""
+    kept = []
+    suppressed = 0
+    for fingerprint, finding in zip(_baseline_fingerprints(findings, scan_root), findings):
+        if fingerprint in fingerprints:
+            suppressed += 1
+        else:
+            kept.append(finding)
+    return kept, suppressed
+
+
+# ── Snyk-style grouped SCA upgrade plan (v3.3.3) ────────────────────────────────────────────────
+def _sca_fix_plan(findings):
+    """Deterministic grouped upgrade plan: package + minimum safe version, CVE union, manifests."""
+    groups = {}
+    for finding in findings:
+        if finding.get("category") != SCA_CATEGORY:
+            continue
+        package = str(finding.get("package") or "")
+        fixed = str(finding.get("fixed_version") or "")
+        if not package or not fixed:
+            continue
+        key = (package, str(finding.get("ecosystem") or ""), fixed)
+        entry = groups.get(key)
+        if entry is None:
+            entry = groups[key] = {"cves": set(), "manifests": set()}
+        cves = finding.get("cves") or ([finding["cve"]] if finding.get("cve") else [])
+        entry["cves"].update(str(item) for item in cves)
+        entry["manifests"].add(str(finding.get("file")))
+    return [{"package": package, "ecosystem": ecosystem, "fixed_version": fixed,
+             "cves": sorted(entry["cves"]), "manifest_count": len(entry["manifests"])}
+            for (package, ecosystem, fixed), entry in sorted(groups.items())]
+
+
+def _format_sca_fix_plan(plan):
+    lines = ["SCA UPGRADE PLAN"]
+    for entry in plan:
+        cves = ", ".join(entry["cves"]) or "the pinned advisories"
+        lines.append(f"  {entry['package']} >= {entry['fixed_version']}  "
+                     f"(fixes {cves} across {entry['manifest_count']} manifest(s))")
+    return "\n".join(lines)
 
 
 def _scope_of(path, aux_scopes=None):
@@ -663,17 +828,20 @@ def _collect_auxiliary_files(scan_path, exclude_patterns=None, config_excludes=N
     return templates, iac, manifests, secrets, aux_scopes
 
 
-def _imported_roots(tracker):
-    """Top-level import roots across the Python files the engine already parsed.
+def _imported_root_index(tracker):
+    """One import walk -> (first-wins roots map, every importer per root sorted by file, line).
 
     Reuses the ``tracker.modules`` trees instead of re-reading or re-parsing anything, so the
     reachability proof never adds a second AST pass to a scan. A tree that is not a stdlib AST
     (the opt-in tree-sitter reader) is parsed from the engine's own source snapshot. The first
-    importer wins, which makes the evidence deterministic regardless of module iteration order.
+    importer wins in the roots map, which makes the evidence deterministic regardless of module
+    iteration order; the hit lists let a monorepo manifest prefer proof from inside its own
+    sub-package subtree before falling back to the repo-wide first importer.
     """
     roots = {}
+    hits = {}
     if tracker is None:
-        return roots
+        return roots, hits
     paths = getattr(tracker, "file_paths", {}) or {}
     sources = getattr(tracker, "files", {}) or {}
     modules = getattr(tracker, "modules", {}) or {}
@@ -708,9 +876,18 @@ def _imported_roots(tracker):
                 continue
             for name in names:
                 root = name.split(".", 1)[0]
-                if root and root not in roots:
-                    roots[root] = (path, node.lineno)
-    return roots
+                if root:
+                    if root not in roots:
+                        roots[root] = (path, node.lineno)
+                    hits.setdefault(root, []).append((path, node.lineno))
+    for root in hits:
+        hits[root].sort()
+    return roots, hits
+
+
+def _imported_roots(tracker):
+    """Top-level import roots across the Python files the engine already parsed (first wins)."""
+    return _imported_root_index(tracker)[0]
 
 
 def _merge_findings(*finding_groups):
@@ -2047,6 +2224,13 @@ def _maybe_warn_js_ts(args):
 
 def _scan(args):
     scope = args.scope
+    # The quality-gate spec is validated before any work happens: a malformed gate is a CLI usage
+    # error (exit 2), never a surprise discovered after a long scan.
+    try:
+        fail_on_spec = _parse_fail_on(args.fail_on) if getattr(args, "fail_on", None) else None
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
     # Phase-1 outer clock: anchored at the earliest scan entry point, i.e. BEFORE
     # `_maybe_warn_js_ts`, auxiliary collection and `_collect_files`. The pre-existing
     # `started`/`duration_ms` anchor (after file collection) is left untouched so the
@@ -2242,7 +2426,8 @@ def _scan(args):
         if sca_findings:
             # The import walk is paid for only when a vulnerable pin exists, so a Python-only tree
             # -- every latency gate's workload -- does no extra work at all.
-            tag_reachability(sca_findings, _imported_roots(tracker))
+            sca_roots, sca_root_hits = _imported_root_index(tracker)
+            tag_reachability(sca_findings, sca_roots, root_hits=sca_root_hits)
         findings = _merge_findings(
             ast_findings,
             audit_templates(templates),
@@ -2304,6 +2489,29 @@ def _scan(args):
             _diff_repo_root = resolve_repo_root()
             findings = _scope_findings_to_diff(
                 findings, changed_line_intervals(_diff_repo_root, diff_ref), _diff_repo_root)
+
+        # SonarQube-style debt baseline (v3.3.3): a report-layer step after inline suppressions
+        # and --diff. The emission set above is untouched, so with neither flag passed the scan,
+        # every gate and every output format behave byte-identically to before.
+        _baseline_root = _baseline_scan_root(args)
+        if getattr(args, "write_baseline", None):
+            try:
+                written = _write_baseline_file(args.write_baseline, findings, _baseline_root)
+            except OSError as exc:
+                print(f"Error writing baseline file: {exc}", file=sys.stderr)
+                return 2
+            print(f"[+] Baseline written: {written} fingerprint(s) -> {args.write_baseline}",
+                  file=sys.stderr)
+            return 0
+        if getattr(args, "baseline", None):
+            try:
+                known = _load_baseline_fingerprints(args.baseline)
+            except ValueError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 2
+            findings, baseline_suppressed = _apply_baseline(findings, known, _baseline_root)
+            print(f"Note: Suppressed {baseline_suppressed} baseline finding(s) from {args.baseline}.",
+                  file=sys.stderr)
 
         # Display-only output policy; the engine's emission set is already final. The explicit
         # --min-confidence floor stays the single confidence call site; the clean-default policy is a
@@ -2381,6 +2589,7 @@ def _scan(args):
             "duration_ms": round(duration_ms, 2),
             "findings_by_scope": _scope_breakdown(findings, aux_scopes),
             "findings": findings,
+            "sca_fix_plan": _sca_fix_plan(findings),
         }, indent=2))
         # A scope note belongs on stderr for a machine run: the payload and its keys stay exactly
         # as they are, so nothing that parses this output changes behaviour.
@@ -2424,6 +2633,9 @@ def _scan(args):
         vendor_note = vendor_scope_note()
         if vendor_note:
             print(vendor_note)
+        sca_plan = _sca_fix_plan(display_rows)
+        if sca_plan:
+            print(_format_sca_fix_plan(sca_plan))
         _print_summary(scanned_files, duration_ms, display_rows, file_counts,
                        discovered_files=total_discovered_files,
                        fast_path_skipped_files=fast_path_skipped_files,
@@ -2507,7 +2719,22 @@ def _scan(args):
 
     # Exit-code parity with `tcs_cli.py`: a scan that finds something exits 1, so CI can gate
     # on either entry point. 2 stays reserved for an internal error (see the crash handler).
-    # `--fail-on-critical` narrows what blocks: only Critical/High findings count.
+    # `--fail-on` (CLI flag or `.tcs.yaml` policy.fail_on) is the explicit quality gate and wins
+    # over the legacy switch; `--fail-on-critical` narrows what blocks: only Critical/High
+    # findings count. With neither named, the default behaviour below is byte-identical.
+    if fail_on_spec is not None:
+        gate_mode, gate_value = fail_on_spec
+        if gate_mode == "min":
+            floor = _SEVERITY_RANK_GATE[gate_value]
+            blocking = [item for item in findings
+                        if _SEVERITY_RANK_GATE.get(str(item.get("severity", "")).lower(), -1) >= floor]
+            return 1 if blocking else 0
+        counts = {}
+        for item in findings:
+            severity = str(item.get("severity", "")).lower()
+            if severity in gate_value:
+                counts[severity] = counts.get(severity, 0) + 1
+        return 1 if any(count > gate_value[severity] for severity, count in counts.items()) else 0
     if args.fail_on_critical:
         blocking = [item for item in findings if item["severity"] in ("CRITICAL", "HIGH")]
     else:
@@ -2722,6 +2949,25 @@ def main(argv=None):
                              help="Write the dependency inventory and its advisories as a "
                                   "CycloneDX 1.5 JSON SBOM (stdout output is unchanged)")
     scan_parser.add_argument("--fail-on-critical", action="store_true", help="Only exit 1 on a Critical or High finding (default: any finding exits 1, matching tcs_cli.py)")
+    scan_parser.add_argument(
+        "--fail-on", metavar="SPEC", default=None,
+        help="Quality gate: exit 1 on a minimum severity (--fail-on high) or when a per-severity "
+             "budget is strictly exceeded (--fail-on critical:0,high:5). Also settable via "
+             "policy.fail_on in .tcs.yaml. Takes precedence over --fail-on-critical; with "
+             "neither named, the default exit behaviour is unchanged",
+    )
+    scan_parser.add_argument(
+        "--write-baseline", metavar="PATH", default=None,
+        help="Write deterministic portable fingerprints of this scan's findings to PATH as "
+             '{"version": 1, "fingerprints": [...]} and exit 0. Fingerprints never store '
+             "absolute machine paths and survive line-number shifts",
+    )
+    scan_parser.add_argument(
+        "--baseline", metavar="PATH", default=None,
+        help="Suppress findings whose fingerprint appears in the baseline JSON written by "
+             "--write-baseline, so only NEW findings are reported (applied after inline "
+             "suppressions and --diff)",
+    )
     scan_parser.add_argument("--format", choices=("table", "json"), default="table", help="Output format (default: table)")
     scan_parser.add_argument(
         "--scope", choices=("all", "python", "docker", "iac", "sca", "secrets", "html"),

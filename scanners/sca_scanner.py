@@ -641,11 +641,39 @@ def audit_sca_files(files: Dict[str, str]) -> List[Dict[str, Any]]:
     return sorted(findings, key=lambda item: (item["file"], item["line"], item["cwe"]))
 
 
+def _subpackage_evidence(manifest_file: str,
+                         hits: Optional[List[Tuple[str, int]]]) -> Optional[Tuple[str, int]]:
+    """The first importer inside the manifest's own sub-package subtree, or None.
+
+    Monorepo polish: `partners/pinecone/poetry.lock` is proved best by an import under
+    `partners/pinecone/`. A root-level manifest (no directory part), an absent hit list, or a
+    subtree with no importer returns None so the caller keeps the repo-wide first-wins evidence
+    byte-identically.
+    """
+    if not hits:
+        return None
+    posix = str(manifest_file).replace("\\", "/")
+    subtree = posix.rsplit("/", 1)[0] if "/" in posix else ""
+    if not subtree:
+        return None
+    prefix = subtree + "/"
+    for path, lineno in hits:
+        if str(path).replace("\\", "/").startswith(prefix):
+            return (path, lineno)
+    return None
+
+
 def tag_reachability(findings: List[Dict[str, Any]],
-                     imported_roots: Dict[str, Tuple[str, int]]) -> List[Dict[str, Any]]:
+                     imported_roots: Dict[str, Tuple[str, int]],
+                     root_hits: Optional[Dict[str, List[Tuple[str, int]]]] = None
+                     ) -> List[Dict[str, Any]]:
     """Upgrade a finding to REACHABLE/HIGH when an actual import proves the dependency is loaded.
 
     ``imported_roots`` maps a top-level import root to the first (file, line) that imports it.
+    ``root_hits``, when given, maps the same root to *every* importer sorted by (file, line); a
+    manifest sitting in a nested sub-package directory then prefers evidence from inside its own
+    subtree before falling back to the repo-wide first importer. Without ``root_hits`` the
+    behaviour is exactly the historical one.
     Only an upgrade ever happens here: without proof a finding keeps its conservative LOW label,
     so the reachability pass can never manufacture confidence. An npm dependency has no Python
     import proof available and therefore stays LOW.
@@ -655,10 +683,16 @@ def tag_reachability(findings: List[Dict[str, Any]],
             continue
         evidence = None
         for root in import_roots_for(finding["package"]):
-            hit = imported_roots.get(root.split(".", 1)[0])
-            if hit is not None:
-                evidence = (root, hit[0], hit[1])
-                break
+            top = root.split(".", 1)[0]
+            hit = imported_roots.get(top)
+            if hit is None:
+                continue
+            local = _subpackage_evidence(finding["file"],
+                                         root_hits.get(top) if root_hits else None)
+            if local is not None:
+                hit = local
+            evidence = (root, hit[0], hit[1])
+            break
         if evidence is None:
             continue
         finding["reachability"] = "REACHABLE"

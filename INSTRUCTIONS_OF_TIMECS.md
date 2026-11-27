@@ -68,3 +68,9 @@ Save policy options in the repository root `.tcs.yaml` under a `policy:` block (
 - Precedence: explicit CLI flags always override `.tcs.yaml` values.
 - Visibility: when `.tcs.yaml` activates any policy option, the banner prints `(source=.tcs.yaml: ...)`.
 - Reset: remove the `policy:` block (or delete `.tcs.yaml`) to return to byte-identical clean-default mode.
+
+## 5. Debt Baseline, Quality Gates & SCA Upgrade Plan (v3.3.3)
+
+- Baseline: timecs scan . --write-baseline .tcs-baseline.json and timecs scan . --baseline .tcs-baseline.json
+- Quality Gate: timecs scan . --fail-on high or timecs scan . --fail-on critical:0,high:5 (also in .tcs.yaml policy.fail_on)
+- SCA & Wheels: Grouped SCA UPGRADE PLAN in output; binary wheels support Python 3.11-3.15

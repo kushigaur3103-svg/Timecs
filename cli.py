@@ -3069,6 +3069,8 @@ def main(argv=None):
     compare_parser.add_argument("--vs", choices=("semgrep", "bandit"), default="semgrep", help="Competitor scanner (default: semgrep)")
     compare_parser.add_argument("--tolerance", type=int, default=5, help="Maximum line distance for a match (default: 5)")
     compare_parser.add_argument("--output-json", metavar="REPORT_PATH", help="Write detailed comparison report as JSON")
+    guide_parser = commands.add_parser("guide", help="Print the TimeCodeSecurity CLI & policy guide")
+    guide_parser.add_argument("--section", default=None, help="Filter guide by section keyword (e.g. baseline, gate, policy, flags, examples)")
     args = parser.parse_args(argv)
     args._yaml_policy_keys = ()
     if getattr(args, "all", False):
@@ -3080,6 +3082,28 @@ def main(argv=None):
         args.include_unreachable = True
         args.min_severity = "low"
         args.min_confidence = "low"
+    if args.command == "guide":
+        import importlib.metadata as _im
+        _gp = Path(__file__).resolve().parent / 'INSTRUCTIONS_OF_TIMECS.md'
+        try:
+            _gt = _gp.read_text(encoding='utf-8') if _gp.is_file() else (_im.metadata('timecs').get_payload() or '')
+        except Exception:
+            _gt = ''
+        if not _gt.strip():
+            print('Guide unavailable.', file=sys.stderr)
+            return 2
+        _sec = (getattr(args, 'section', None) or '').strip().lower()
+        if _sec:
+            _parts = ('\n' + _gt).split('\n## ')[1:]
+            _hits = ['## ' + p for p in _parts if _sec in p.splitlines()[0].lower()]
+            if not _hits:
+                _avail = ', '.join(p.splitlines()[0].strip() for p in _parts)
+                print(f'Unknown guide section {args.section!r}. Available: {_avail}', file=sys.stderr)
+                return 2
+            print('\n\n'.join(_hits).strip())
+        else:
+            print(_gt.strip())
+        return 0
     if args.command == "scan":
         try:
             if not getattr(args, "all", False):

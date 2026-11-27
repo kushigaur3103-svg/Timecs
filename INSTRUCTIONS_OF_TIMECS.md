@@ -74,3 +74,4 @@ Save policy options in the repository root `.tcs.yaml` under a `policy:` block (
 - Baseline: timecs scan . --write-baseline .tcs-baseline.json and timecs scan . --baseline .tcs-baseline.json
 - Quality Gate: timecs scan . --fail-on high or timecs scan . --fail-on critical:0,high:5 (also in .tcs.yaml policy.fail_on)
 - SCA & Wheels: Grouped SCA UPGRADE PLAN in output; binary wheels support Python 3.11-3.15
+- Built-in Offline Guide: run timecs guide (or timecs guide --section baseline) anytime in your terminal.

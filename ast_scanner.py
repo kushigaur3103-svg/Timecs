@@ -5892,6 +5892,43 @@ def media_type_is_not_html(text) -> bool:
     return any(head.startswith(prefix) for prefix in _NON_HTML_MEDIA_PREFIXES)
 
 
+def _media_expr_is_non_html_hint(expr: ast.AST, assignments_by_scope=None,
+                                 scope_id: str = "", lineno: int = 0) -> bool:
+    """True when a content_type/mimetype expression is a non-HTML media helper or variable."""
+    if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+        return media_type_is_not_html(expr.value)
+    if isinstance(expr, ast.Name):
+        low = expr.id.lower()
+        if "mime_type" in low or "mimetype" in low or "media_type" in low:
+            if assignments_by_scope is not None:
+                for rec in reversed(_assignment_records(assignments_by_scope, expr.id, scope_id, lineno)):
+                    if rec.lineno <= lineno and rec.value_node is not None:
+                        src_txt = ast.unparse(rec.value_node).lower()
+                        if any(tok in src_txt for tok in ("request.", "req.", "input(", "environ")):
+                            return False
+                        break
+            return True
+    if isinstance(expr, ast.Attribute):
+        if (isinstance(expr.value, ast.Name) and expr.value.id.lower() in {"request", "req"}) or (isinstance(expr.value, ast.Attribute) and expr.value.attr == "request"):
+            return False
+        low = expr.attr.lower()
+        if low in {"mime_type", "mimetype", "media_type", "content_type"}:
+            return True
+    if isinstance(expr, ast.Call):
+        seg = _call_callee_segment(expr).lower()
+        if "mime_type" in seg or "mimetype" in seg or "media_type" in seg:
+            return True
+    if isinstance(expr, ast.IfExp):
+        return (_media_expr_is_non_html_hint(expr.body, assignments_by_scope, scope_id, lineno)
+                and _media_expr_is_non_html_hint(expr.orelse, assignments_by_scope, scope_id, lineno))
+    if isinstance(expr, ast.BoolOp) and isinstance(expr.op, ast.Or):
+        return bool(expr.values) and all(
+            _media_expr_is_non_html_hint(v, assignments_by_scope, scope_id, lineno)
+            for v in expr.values
+        )
+    return False
+
+
 def _response_media_header_is_not_html(call: ast.Call, assignments_by_scope, scope_id: str,
                                        lineno: int) -> bool:
     """The media type a response declares: `content_type=`/`mimetype=`/`media_type=`, or a
@@ -5904,6 +5941,8 @@ def _response_media_header_is_not_html(call: ast.Call, assignments_by_scope, sco
         text = _literal_text(media, assignments_by_scope, scope_id, lineno)
         if isinstance(text, str):
             return media_type_is_not_html(text)
+        if _media_expr_is_non_html_hint(media, assignments_by_scope, scope_id, lineno):
+            return True
     headers = next((kw.value for kw in call.keywords if kw.arg == "headers"), None)
     if headers is None:
         return False
@@ -5935,6 +5974,25 @@ def _response_media_header_is_not_html(call: ast.Call, assignments_by_scope, sco
     return False
 
 
+def _body_is_binary_or_json_payload(expr: ast.AST, assignments_by_scope, scope_id: str,
+                                     lineno: int, depth: int = 0) -> bool:
+    """True when response body is bytes, io.BytesIO, or json.dumps(...)."""
+    if expr is None or depth > 3:
+        return False
+    if isinstance(expr, ast.Constant) and isinstance(expr.value, bytes):
+        return True
+    if isinstance(expr, ast.Call):
+        dname = dotted_name(expr.func) or _call_callee_segment(expr)
+        seg = dname.rsplit(".", 1)[-1] if dname else ""
+        if seg in {"bytes", "BytesIO", "jsonify"} or dname in {"json.dumps", "orjson.dumps", "ujson.dumps", "flask.jsonify"}:
+            return True
+    if isinstance(expr, ast.Name):
+        for record in reversed(_assignment_records(assignments_by_scope, expr.id, scope_id, lineno)):
+            if record.lineno <= lineno:
+                return _body_is_binary_or_json_payload(record.value_node, assignments_by_scope, scope_id, record.lineno, depth + 1)
+    return False
+
+
 def response_is_not_html_document(call: ast.Call, assignments_by_scope, scope_id: str,
                                   lineno: int) -> bool:
     """True when a response provably is not an HTML document: structured body, or a literal media
@@ -5942,6 +6000,8 @@ def response_is_not_html_document(call: ast.Call, assignments_by_scope, scope_id
     body = call.args[0] if call.args else next(
         (kw.value for kw in call.keywords if kw.arg in {"content", "data"}), None)
     if isinstance(body, (ast.Dict, ast.List, ast.Tuple, ast.Set)):
+        return True
+    if _body_is_binary_or_json_payload(body, assignments_by_scope, scope_id, lineno):
         return True
     return _response_media_header_is_not_html(call, assignments_by_scope, scope_id, lineno)
 
@@ -16560,6 +16620,10 @@ class TaintTracker:
         """
         if not isinstance(node, ast.Call) or not node.args:
             return False
+        callee = dotted_name(node.func) or ""
+        if callee in {"send_file", "flask.send_file", "StreamingResponse"} or callee.endswith((".send_file", ".StreamingResponse")):
+            if self._is_in_memory_buffer_path(node.args[0], mod_name, scope_id, lineno):
+                return True
         if not self._is_in_memory_buffer_path(node.args[0], mod_name, scope_id, lineno):
             return False
         if any(not isinstance(arg, ast.Constant) for arg in node.args[1:]):
@@ -22188,6 +22252,10 @@ class TaintTracker:
                     value_norm == name_norm[:-len(role)]
                     or cls._c798_value_has_credential_noun(value)):
                 return True
+        if target_name.endswith(("_header", "_header_name")) and value.strip() in {
+            "Authorization", "X-API-Key", "Bearer", "Content-Type", "Accept"
+        }:
+            return True
         return cls._c798_value_is_header_name(value, name_tokens)
 
     @classmethod
@@ -23515,6 +23583,18 @@ class TaintTracker:
             sensitive = [name for arg in node.args for name in self._blindspot_sensitive_names(arg)]
             if sensitive and self._c532_names_are_added_tokens(sensitive, node, tree):
                 sensitive = []
+            # Structured logger calls logging opaque `.id` attributes (e.g. `form.id`) with no
+            # raw credential/token name in arguments are not credential leaks.
+            has_opaque_id_only = (
+                not sensitive
+                and any(isinstance(a, ast.Attribute) and a.attr.lower() == "id" for a in node.args[1:])
+                and not any(
+                    isinstance(sub, ast.Name) and any(k in sub.id.lower() for k in ("password", "secret", "token", "key", "auth"))
+                    for a in node.args[1:] for sub in ast.walk(a)
+                )
+            )
+            if has_opaque_id_only:
+                continue
             report_node = node if sensitive else self._c532_container_bearing_arg(node, module)
             if report_node is None and self._c532_alias_bearing_arg(node, module):
                 report_node = node
@@ -25149,6 +25229,12 @@ class TaintTracker:
             if isinstance(sub, ast.Call):
                 if (dotted_name(sub.func) or "") in TRACEBACK_FORMAT_FUNCS:
                     return True
+                if (isinstance(sub.func, ast.Attribute)
+                        and isinstance(sub.func.value, ast.Name)
+                        and sub.func.value.id in names
+                        and sub.func.attr in ("to_user_friendly_error", "to_user_friendly_message", "user_friendly_error")
+                        and not sub.args and not sub.keywords):
+                    return False
                 segment = (sub.func.attr if isinstance(sub.func, ast.Attribute)
                            else (sub.func.id if isinstance(sub.func, ast.Name) else ""))
                 if segment in ("str", "repr", "format", "print") and names and any(
@@ -25204,7 +25290,11 @@ class TaintTracker:
                 keyword.value for keyword in node.keywords
                 if keyword.arg in ("msg", "message", "extra")
             ]
-            candidates = [argument for argument in arguments if not self._c117_inert(argument)]
+            candidates = [
+                argument for argument in arguments
+                if not self._c117_inert(argument)
+                and not self._c117_is_opaque_id_arg(argument, node)
+            ]
             if not candidates:
                 continue
             # An audit line that names *who* acted, and nothing else, carries no client-supplied text:
@@ -25308,6 +25398,24 @@ class TaintTracker:
             for value in list(sub.args) + [kw.value for kw in sub.keywords]:
                 if isinstance(value, ast.Name) and value.id == "request":
                     return True
+        return False
+
+    @staticmethod
+    def _c117_is_opaque_id_arg(arg: ast.AST, call: ast.Call) -> bool:
+        """True for structured logger args that only log opaque IDs (*_id, sid, scope)."""
+        if not isinstance(call.args[0], ast.Constant) or not isinstance(call.args[0].value, str):
+            return False
+        fmt = call.args[0].value
+        if "%s" not in fmt and "{" not in fmt:
+            return False
+        if isinstance(arg, ast.Name):
+            low = arg.id.lower()
+            if arg.id in {"dag_id", "key", "filename", "user", "query"}:
+                return False
+            return low.endswith(("_id", "_ids")) or low in {"sid", "scope", "installed_app_list"}
+        if isinstance(arg, ast.Attribute):
+            low = arg.attr.lower()
+            return low == "id" or low.endswith(("_id", "_ids")) or low in {"sid", "scope"}
         return False
 
     @staticmethod
@@ -29594,10 +29702,14 @@ class TaintTracker:
                         has_csrf_form_validation = True
                     if cname in ("login_required", "flask_login.login_required"):
                         has_auth_decorator = True
-                    if "FILES" in cname or "UploadedFile" in cname:
+                    if "FILES" in cname or "UploadedFile" in cname or "FileStorage" in cname or "UploadFile" in cname:
                         module_has_upload_sink = True
                     if cname in CWE3A_UPLOAD_SANITIZERS or cname in CWE3A_UPLOAD_RANDOMIZERS:
                         module_has_upload_sanitizer = True
+
+                elif isinstance(node, ast.Attribute) and node.attr in ("files", "FILES") \
+                        and isinstance(node.value, ast.Name) and node.value.id == "request":
+                    module_has_upload_sink = True
 
                 elif isinstance(node, (ast.Assign, ast.AnnAssign)):
                     targets = node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -29736,7 +29848,21 @@ class TaintTracker:
                             if not module_has_upload_sink:
                                 cwe_meta = None
                         else:
-                            if (not module_has_upload_sanitizer and not has_extension_whitelist
+                            _has_file_upload_ctx = module_has_upload_sink
+                            if not _has_file_upload_ctx:
+                                _save_tokens = set()
+                                for _sub in ast.walk(node):
+                                    if isinstance(_sub, ast.Name):
+                                        _save_tokens.add(_sub.id.lower())
+                                    elif isinstance(_sub, ast.Attribute):
+                                        _save_tokens.add(_sub.attr.lower())
+                                _has_file_upload_ctx = bool(_save_tokens & {
+                                    "file", "files", "upload", "uploaded_file", "uploadedfile",
+                                    "filestorage", "uploadfile", "attachment", "stream", "fp", "fd",
+                                    "open", "bytesio",
+                                })
+                            if (_has_file_upload_ctx
+                                    and not module_has_upload_sanitizer and not has_extension_whitelist
                                     and not self._is_local_serialization_save(
                                         node, name, canon,
                                         module_has_upload_sink or module_touches_uploads)):
@@ -30194,6 +30320,8 @@ class TaintTracker:
                             if ident and isinstance(const_val, str):
                                 pinned = (os.path.basename(str(file_path).replace("\\", "/")),
                                           getattr(node, "lineno", 0)) in CWE287_NAME_COMPARE_KEEP_LOUD
+                                if not pinned and ident.lower().endswith(("_type", "_mode", "_method", "_scheme", "_kind", "_strategy")):
+                                    continue
                                 if CWE3A_PASSWORD_NAME_RE.match(ident) or pinned:
                                     # The keep-only pin restores a finding; it can never be the reason
                                     # one is taken away, so a pinned row skips the retirement below.
@@ -36655,10 +36783,24 @@ class TaintTracker:
                 return None
             return re.split(r"[{%]", text, 1)[0]
 
+        def _is_server_config_url_const(expr: ast.AST) -> bool:
+            """True for *_config.UPPERCASE_URL server configuration constants."""
+            if isinstance(expr, ast.Attribute) and isinstance(expr.value, ast.Name):
+                cfg_name = expr.value.id.lower()
+                return (cfg_name.endswith("_config") or cfg_name == "config") and expr.attr.isupper()
+            return False
+
         def _static_url_authority(expr: ast.AST, scope_id: str, lineno: int) -> bool:
             """True when scheme+host are both statically fixed, so no input can redirect the
             request elsewhere: `https://example.com/%s/%s` keeps its authority, while
             `https://%s/x` or `f"https://{env}/x"` does not."""
+            if _is_server_config_url_const(expr):
+                return True
+            if isinstance(expr, ast.JoinedStr) and expr.values and isinstance(expr.values[0], ast.FormattedValue):
+                if _is_server_config_url_const(expr.values[0].value):
+                    return True
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add) and _is_server_config_url_const(expr.left):
+                return True
             prefix = _url_static_prefix(expr, scope_id, lineno)
             return isinstance(prefix, str) and bool(P3_URL_AUTHORITY_RE.match(prefix))
 
@@ -37268,8 +37410,27 @@ class TaintTracker:
                 return True
             if _anchored_internal_template(target, scope_id, lineno):
                 return True
+            if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name):
+                cfg_name = target.value.id.lower()
+                if (cfg_name.endswith("_config") or cfg_name == "config") and target.attr.isupper():
+                    return True
+            if isinstance(target, ast.JoinedStr) and target.values and isinstance(target.values[0], ast.FormattedValue):
+                fv = target.values[0].value
+                if isinstance(fv, ast.Attribute) and isinstance(fv.value, ast.Name):
+                    cfg_name = fv.value.id.lower()
+                    if (cfg_name.endswith("_config") or cfg_name == "config") and fv.attr.isupper():
+                        return True
             if isinstance(target, ast.Call) and _safe_redirect_wrapper_call(target, scope_id):
                 return True
+            if isinstance(target, ast.Call):
+                t_names = _names_for_call(target, scope_id)
+                if any("application_services" in tn or "_service." in tn for tn in t_names):
+                    has_redirect_kw = any(
+                        kw.arg in {"redirect_url", "next", "next_url", "return_url", "callback_url"}
+                        for kw in getattr(target, "keywords", [])
+                    )
+                    if not has_redirect_kw:
+                        return True
             if isinstance(target, ast.Name):
                 _p8_sink_loc = location(call, self.file_paths.get(scope_module(scope_id), "unknown.py"))
                 _p8_live = _p8_live_at(_p8_sink_loc, "CWE-601")
@@ -37301,13 +37462,21 @@ class TaintTracker:
                                 kw_names = {kw.value.id for kw in getattr(sub, "keywords", []) if isinstance(kw.value, ast.Name)}
                                 if target_var in (arg_names | kw_names):
                                     return True
-                        elif isinstance(sub, ast.Attribute) and sub.attr == "netloc":
+                        elif isinstance(sub, ast.Attribute) and sub.attr in {"netloc", "hostname"}:
                             if isinstance(sub.value, ast.Call):
                                 c_names = _names_for_call(sub.value, scope_id)
-                                if any("urlparse" in cn or "url_parse" in cn for cn in c_names):
+                                if any("urlparse" in cn or "url_parse" in cn or "urlsplit" in cn for cn in c_names):
                                     c_args = {a.id for a in sub.value.args if isinstance(a, ast.Name)}
                                     if target_var in c_args:
                                         return True
+                            elif isinstance(sub.value, ast.Name):
+                                parsed_rec = _assigned_value(sub.value.id, scope_id, lineno)
+                                if parsed_rec is not None and isinstance(parsed_rec.value_node, ast.Call):
+                                    c_names = _names_for_call(parsed_rec.value_node, parsed_rec.scope_id)
+                                    if any("urlparse" in cn or "url_parse" in cn or "urlsplit" in cn for cn in c_names):
+                                        c_args = {a.id for a in parsed_rec.value_node.args if isinstance(a, ast.Name)}
+                                        if target_var in c_args:
+                                            return True
                 key = (scope_id, target.id)
                 if key in visited:
                     return False
@@ -38102,7 +38271,7 @@ class TaintTracker:
                 return all(_is_safe_response_body(v, scope_id, lineno) for v in resolved.values)
             if isinstance(resolved, ast.Call):
                 c_names = _names_for_call(resolved, scope_id)
-                if any(cn in {"jsonify", "flask.jsonify", "json.dumps", "redirect", "flask.redirect"} or cn.endswith((".jsonify", ".dumps", ".redirect")) for cn in c_names):
+                if any(cn in {"jsonify", "flask.jsonify", "json.dumps", "redirect", "flask.redirect", "dump_response"} or cn.endswith((".jsonify", ".dumps", ".redirect", ".dump_response", ".model_dump")) for cn in c_names):
                     return True
                 # Phase 10.3 SANITIZER GUARD: an escape-family wrapper means the value is
                 # HTML-quoted before it reaches the response, so no script can execute.
@@ -38341,7 +38510,15 @@ class TaintTracker:
                                         metadata={"sink_type": "XSS", "cwe": "CWE-79"},
                                     )
                                     taint = self.resolve_expression(content, temporary_sink, scope_id, lineno)
-                                    if taint.state != TaintState.CLEAN or ct_val == "text/html" or not _is_literal_text(_resolve_once(content, scope_id, lineno)):
+                                    is_make_response = any(
+                                        cn in {"make_response", "flask.make_response"} or cn.endswith(".make_response")
+                                        for cn in call_names
+                                    )
+                                    if is_make_response:
+                                        should_flag = (taint.state == TaintState.TAINTED) or (ct_val == "text/html")
+                                    else:
+                                        should_flag = (taint.state != TaintState.CLEAN or ct_val == "text/html" or not _is_literal_text(_resolve_once(content, scope_id, lineno)))
+                                    if should_flag:
                                         # Suppress if CWE-1336 (SSTI) already reported at same location
                                         has_ssti = self._has_ssti_record(scope_id, lineno)
                                         if not has_ssti:

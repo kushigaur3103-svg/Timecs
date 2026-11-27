@@ -111,3 +111,4 @@ TimeCodeSecurity v3.2.0 Enterprise · MIT License · Developed by Ayush Gaur
 - **Custom Quality Gate:** `timecs scan . --fail-on high` or `timecs scan . --fail-on critical:0,high:5` (also via `policy.fail_on` in `.tcs.yaml`).
 - **Snyk-Style SCA Upgrade Plan & Python 3.15:** Grouped `SCA UPGRADE PLAN` in scan output; pre-built binary wheels for **Python 3.11-3.15**.
 - Full CLI & policy reference: see [INSTRUCTIONS_OF_TIMECS.md](INSTRUCTIONS_OF_TIMECS.md).
+- **Offline Terminal Guide:** Run `timecs guide` (or `timecs guide --section baseline`) anytime without opening GitHub.

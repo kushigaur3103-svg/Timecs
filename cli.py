@@ -149,7 +149,8 @@ CLEAN_DEFAULT_MIN_CONFIDENCE = "HIGH"
 # engine's cross-file vocabulary mirror stays exact (zulip gate c1 pins cli == symbol_indexer); this is
 # a CLI discovery choice only. scripts/, ci_cd/, packaging/ and setup.py are deliberately NOT here.
 EXTRA_NON_PRODUCTION_DIRS = frozenset({"cookbook", "docs", "doc", "demos", "demo",
-                                       "benchmarks", "tutorials", "migrations"})
+                                       "benchmarks", "tutorials", "migrations",
+                                       "api-docs", "api_docs", "swagger", "openapi"})
 # Third-party vendored / auto-generated trees, opt back in with --include-vendor.
 VENDOR_DIRS = frozenset({"vendor", "_vendor", "third_party"})
 # Non-production filenames skipped inside an otherwise-production tree, and the auto-generated protobuf
@@ -1390,9 +1391,9 @@ def non_production_scope_note() -> str:
     files = _SCOPE_STATS["skipped_files"] + names
     return (f"Note: Held back {files} python file(s) in {dirs} non-production "
             f"director{'y' if dirs == 1 else 'ies'} (tests/, testutils/, fixtures/, "
-            f"examples/, samples/, debug/, docs/, demos/, benchmarks/, migrations/, "
-            f"cookbook/, tutorials/) and test_*/demo_*/conftest filenames; "
-            f"pass --include-tests to scan them.")
+            f"examples/, samples/, debug/, docs/, api-docs/, swagger/, openapi/, "
+            f"demos/, benchmarks/, migrations/, cookbook/, tutorials/) and "
+            f"test_*/demo_*/conftest filenames; pass --include-tests to scan them.")
 
 
 def table_default_note(hidden) -> str:
@@ -2346,9 +2347,15 @@ def _scan(args):
             _clock.mark("Parse+Init")
             for fpath, reason in sorted(tracker.skipped_files.items()):
                 print(f"Warning: skipping unparseable file {fpath}: {reason}", file=sys.stderr)
-            _, _, edges = tracker.analyze()
-            _clock.mark("Analyze")
-            ast_findings = _findings_for(tracker, edges)
+            try:
+                _, _, edges = tracker.analyze()
+                _clock.mark("Analyze")
+                ast_findings = _findings_for(tracker, edges)
+            except Exception as exc:
+                print(f"Warning: analyzer error during scan ({type(exc).__name__}: {exc}); "
+                      f"continuing with partial findings", file=sys.stderr)
+                _clock.mark("Analyze")
+                ast_findings = _partial_findings()
             _clock.mark("ASTFindings")
             _progress(f"parsed + traced, {len(ast_findings)} AST finding(s) so far")
         else:

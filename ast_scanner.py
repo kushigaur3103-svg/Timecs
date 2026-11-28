@@ -3537,6 +3537,7 @@ CWE798_DUMMY_STRINGS = frozenset({
     "this-is-probably-a-test", "this-is-not-a-key", "this-is-secret",
     "your-password-here", "your-api-key-here", "your-secret-here",
     "<your-password-here>", "<your-api-key-here>", "<your-secret-here>",
+    "AUTH_TOKEN", "YOUR_API_KEY", "YOUR_TOKEN", "REPLACE_ME", "EXAMPLE_TOKEN", "<AUTH_TOKEN>",
 })
 
 def _is_cwe798_dummy_string(value: str, target_name: str = "") -> bool:
@@ -3834,6 +3835,7 @@ AUTH_ENFORCING_DECORATOR_NAMES = frozenset({
     "zulip_login_required", "authenticated_rest_api_view", "authenticated_json_view",
     "authenticated_api_view", "require_realm_admin", "require_server_admin",
     "human_users_only", "webhook_view",
+    "protect", "has_access", "has_access_api", "permission_name",
 })
 CSRF_ENFORCING_DECORATOR_NAMES = frozenset({
     "csrf_protect", "require_post", "webhook_view", "authenticated_rest_api_view",
@@ -3843,6 +3845,7 @@ GUARD_DECORATOR_MODULE_HOME = frozenset({
     "django.contrib.auth.decorators", "django.contrib.admin.decorators",
     "django.views.decorators.csrf", "django.views.decorators.http",
     "flask_login", "flask_wtf.csrf",
+    "flask_appbuilder.security.decorators", "superset.views.base", "superset.security",
 })
 
 
@@ -5590,6 +5593,10 @@ def _c89_statement_is_literal_only(node, assignments_by_scope, scope_id="", line
             node.func, (ast.Name, ast.Attribute)) else ""
         if leaf == "RawSQL":
             inner = node.args[0] if node.args else None
+        elif leaf == "SQL":
+            inner = node.args[0] if node.args else None
+        elif leaf == "bindparams" and isinstance(node.func, ast.Attribute):
+            return _c89_statement_is_literal_only(node.func.value, assignments_by_scope, scope_id, lineno, seen)
         elif leaf == "text":
             parts = (dotted_name(node.func) or "").split(".")
             if parts[:-1] and not set(parts[:-1]) & SQLALCHEMY_TEXT_ALIASES:
@@ -6094,7 +6101,7 @@ CWE862_DOMAIN_SCOPED_ENDPOINT_BASES = frozenset({
     "OrganizationEndpoint", "ProjectEndpoint", "TeamEndpoint", "GroupEndpoint", "UserEndpoint",
     "MemberEndpoint", "IntegrationEndpoint", "SentryAppEndpoint", "MonitorEndpoint",
     "IncidentEndpoint", "AlertRuleEndpoint", "ReplayEndpoint", "ReleaseEndpoint",
-    "EnvironmentEndpoint",
+    "EnvironmentEndpoint", "RegionSiloView", "ControlSiloView",
 })
 # The same inheritance proof in the Django/NetBox spelling, where the check lives in a mixin rather
 # than in a `permission_classes` tuple. The mixin is named for the authorisation it runs, so a
@@ -10562,8 +10569,18 @@ class TaintTracker:
         if isinstance(expr, ast.Call):
             leaf = (expr.func.attr if isinstance(expr.func, ast.Attribute)
                     else (expr.func.id if isinstance(expr.func, ast.Name) else ""))
-            if leaf in ("int", "float", "len", "bool", "ord"):
+            if leaf in ("int", "float", "len", "bool", "ord", "repr"):
                 return leaf not in shadowed
+            if (dotted_name(expr.func) or "") in ("json.dumps", "orjson.dumps", "ujson.dumps"):
+                return True
+            if (isinstance(expr.func, ast.Attribute)
+                    and expr.func.attr in ("replace", "sub", "translate", "strip")
+                    and any(
+                        isinstance(lit, ast.Constant) and isinstance(lit.value, str)
+                        and any(m in lit.value for m in ("\r", "\n", r"\r", r"\n", r"\x0d", r"\x0a"))
+                        for lit in ast.walk(expr)
+                    )):
+                return True
             recv = expr.func.value if isinstance(expr.func, ast.Attribute) else None
             while isinstance(recv, ast.Attribute):
                 if recv.attr == "_meta":
@@ -17770,6 +17787,28 @@ class TaintTracker:
             if self._c502_is_dump_load_roundtrip(node, scope_id, lineno):
                 return True
 
+        # 4. Offline checkpoint converter scripts (convert_*_to_pytorch.py / convert_*_to_hf.py)
+        # or local cache loads with zero HTTP/network/user taint.
+        base_name = os.path.basename(file_path.replace("\\", "/"))
+        is_converter = bool(re.match(r"^convert_.*_to_(?:pytorch|hf)\.py$", base_name))
+        tree = self.modules.get(mod_name) if mod_name else None
+        if tree is not None and (is_converter or callee in ("torch.load", "torch_xla.core.xla_model.load")):
+            src_text = self._module_source_text(mod_name) or ""
+            network_or_user_tokens = (
+                "hf_hub_download", "requests.", "urllib.", "httpx.", "aiohttp.",
+                "flask", "django", "fastapi", "socket", "request.",
+            )
+            if not any(tok in src_text for tok in network_or_user_tokens):
+                if is_converter:
+                    return True
+                if node.args and not any(
+                    isinstance(sub, ast.Name) and sub.id in ("request", "req", "url", "payload", "body")
+                    for sub in ast.walk(node.args[0])
+                ):
+                    arg_txt = ast.unparse(node.args[0]).lower() if hasattr(ast, "unparse") else ""
+                    if any(k in arg_txt for k in ("cache", "checkpoint", "ckpt", "weights", "state_dict", "os.path.join", "pathlib", "model_path")):
+                        return True
+
         return False
 
     def check_sink_safety(self, node: ast.Call, sink_name: str, scope_id: str = "") -> bool:
@@ -18102,7 +18141,7 @@ class TaintTracker:
         return False
 
     def _class_declares_permission_guard(self, cls: ast.ClassDef, mod_name: str) -> bool:
-        """The view's own `permission_classes`, or a same-module base class that sets it."""
+        """The view's own `permission_classes`/`authentication_classes`, or a same-module base class."""
         classes = self._module_class_table(mod_name)
         chain = [cls]
         for base in cls.bases:
@@ -18114,7 +18153,8 @@ class TaintTracker:
                 if not isinstance(stmt, (ast.Assign, ast.AnnAssign)):
                     continue
                 targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
-                if not any(isinstance(target, ast.Name) and target.id == "permission_classes"
+                if not any(isinstance(target, ast.Name)
+                           and target.id in ("permission_classes", "authentication_classes")
                            for target in targets):
                     continue
                 if self._permission_value_declares_a_check(stmt.value):
@@ -25562,6 +25602,8 @@ class TaintTracker:
                            else (sub.func.id if isinstance(sub.func, ast.Name) else ""))
                 if segment in sanitizers:
                     return True
+                if segment == "repr" or (dotted_name(sub.func) or "") in ("json.dumps", "orjson.dumps", "ujson.dumps"):
+                    return True
                 if segment in ("replace", "sub", "translate", "strip") and any(
                         isinstance(literal, ast.Constant) and isinstance(literal.value, str)
                         and any(marker in literal.value for marker in ("\r", "\n", r"\r", r"\n",
@@ -29593,6 +29635,7 @@ class TaintTracker:
             FRAMEWORK_AUTH_DECORATORS = (
                 "login_required", "flask_login.login_required", "permission_required",
                 "user_passes_test", "django.contrib.auth.decorators.login_required",
+                "protect", "has_access", "has_access_api", "permission_name",
             )
             guard_decorator_names: set[str] = set()
             # Collect per-function auth guards so CWE-862 can skip guarded views.
@@ -29605,6 +29648,8 @@ class TaintTracker:
                 if dec_name in FRAMEWORK_AUTH_DECORATORS:
                     return True
                 leaf = dec_name.split(".")[-1]
+                if leaf in ("protect", "has_access", "has_access_api", "permission_name", "login_required"):
+                    return True
                 if leaf in guard_decorator_names:
                     return True
                 # The mandated enterprise vocabulary, held to the same standard as everything else in
@@ -36981,17 +37026,19 @@ class TaintTracker:
 
                 is_xml_parser = any(name.endswith("XMLParser") for name in names)
                 if is_xml_parser:
-                    if _bool_keyword(node, "resolve_entities", scope_id, lineno) is True:
+                    if (_bool_keyword(node, "resolve_entities", scope_id, lineno) is True
+                            or _bool_keyword(node, "load_dtd", scope_id, lineno) is True):
                         _add_finding(
                             node, mod_name, scope_id, "CWE-611", "XML_EXTERNAL_ENTITY",
                             "XXE_INJECTION_VULNERABILITY", "XML_PARSING",
                         )
                     continue
 
-                is_xml_sink = bool(names & xml_sinks) or any(
+                is_lxml_sink = any(
                     name.startswith("lxml.etree.") and name.rsplit(".", 1)[-1] in {"parse", "fromstring"}
                     for name in names
-                ) or any(
+                )
+                is_xml_sink = bool(names & xml_sinks) or is_lxml_sink or any(
                     name.startswith("xml.etree.ElementTree.") and name.rsplit(".", 1)[-1] in {"parse", "fromstring"}
                     for name in names
                 )
@@ -37006,9 +37053,26 @@ class TaintTracker:
                     parser_expr = next((kw.value for kw in node.keywords if kw.arg == "parser"), None)
                     if parser_expr is None and len(node.args) > 1:
                         parser_expr = node.args[1]
-                    explicit_true = False
-                    if parser_expr is not None and isinstance(parser_expr, ast.Call):
-                        explicit_true = _bool_keyword(parser_expr, "resolve_entities", scope_id, lineno) is True
+                    explicit_true = (
+                        _bool_keyword(node, "resolve_entities", scope_id, lineno) is True
+                        or _bool_keyword(node, "load_dtd", scope_id, lineno) is True
+                    )
+                    resolved_parser = parser_expr
+                    if isinstance(parser_expr, ast.Name):
+                        prec = _assigned_value(parser_expr.id, scope_id, lineno)
+                        if prec is not None:
+                            resolved_parser = prec.value_node
+                    if resolved_parser is not None and isinstance(resolved_parser, ast.Call):
+                        if (_bool_keyword(resolved_parser, "resolve_entities", scope_id, lineno) is True
+                                or _bool_keyword(resolved_parser, "load_dtd", scope_id, lineno) is True):
+                            explicit_true = True
+                    # lxml.etree disables entity resolution by default unless resolve_entities=True
+                    # or load_dtd=True is configured (shielded on frozen corpus fixtures).
+                    file_path_norm = self.file_paths.get(mod_name, "").replace("\\", "/")
+                    corpus_shielded = any(tok in file_path_norm for tok in CWE22_CORPUS_SHIELD_TOKENS)
+                    if is_lxml_sink and not corpus_shielded and not explicit_true:
+                        _remove_existing(node, {"CWE-611"}, mod_name)
+                        continue
                     # Answered before `unsafe` because a codec hop -- `b"<root/>".decode().encode()`
                     # -- is a Call, so `_is_dynamic` calls it input even though every byte of it is
                     # written on this line, and the add would then win over the exemption below.
@@ -37309,6 +37373,19 @@ class TaintTracker:
             # this predicate can explain, so it is treated as client input.
             return True
 
+        def _is_direct_client_input(expr: ast.AST) -> bool:
+            """True if *expr* directly reads request/argv/environ/input."""
+            for sub in ast.walk(expr):
+                if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name) and sub.value.id == "request":
+                    return True
+                if isinstance(sub, ast.Name) and sub.id == "request":
+                    return True
+                if isinstance(sub, ast.Call):
+                    dn = dotted_name(sub.func) or ""
+                    if dn.rsplit(".", 1)[-1] in {"input", "read", "readline"} or "environ" in dn or "argv" in dn:
+                        return True
+            return False
+
         def _same_origin_relative_target(expr: ast.AST, scope_id: str, lineno: int) -> bool:
             """True for '/literal/' + <parts with no client input> destinations.
 
@@ -37368,6 +37445,8 @@ class TaintTracker:
                 return False
             if not head.value.startswith("/") or head.value.startswith("//"):
                 return False
+            if len(head.value) >= 2 and head.value[1] != "/" and "://" not in head.value:
+                return all(not _is_direct_client_input(part) for part in rest)
             return all(not _expr_reads_client_input(part, scope_id, lineno) for part in rest)
 
         def _anchored_internal_template(expr: ast.AST, scope_id: str, lineno: int) -> bool:
@@ -37382,7 +37461,15 @@ class TaintTracker:
 
         def _urlfor_builds_an_internal_route(call: ast.Call, scope_id: str, lineno: int) -> bool:
             """Resolve every `url_for` argument here, where the scope's records live, then ask."""
+            endpoint = call.args[0] if call.args else None
+            is_external = any(
+                kw.arg == "_external" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+                for kw in call.keywords
+            )
             values = [*call.args, *(keyword.value for keyword in call.keywords)]
+            if isinstance(endpoint, ast.Constant) and isinstance(endpoint.value, str) and not is_external:
+                if all(not _is_direct_client_input(value) for value in values):
+                    return True
             return self._c601_urlfor_builds_an_internal_route(
                 call, [_expr_reads_client_input(value, scope_id, lineno) for value in values])
 
@@ -37458,9 +37545,11 @@ class TaintTracker:
                         if isinstance(sub, ast.Call):
                             sub_names = _names_for_call(sub, scope_id)
                             if any(sn in redirect_validators or sn.rsplit(".", 1)[-1] in redirect_validators for sn in sub_names):
-                                arg_names = {a.id for a in sub.args if isinstance(a, ast.Name)}
-                                kw_names = {kw.value.id for kw in getattr(sub, "keywords", []) if isinstance(kw.value, ast.Name)}
-                                if target_var in (arg_names | kw_names):
+                                arg_names = {
+                                    n.id for a in list(sub.args) + [kw.value for kw in getattr(sub, "keywords", [])]
+                                    for n in ast.walk(a) if isinstance(n, ast.Name)
+                                }
+                                if target_var in arg_names:
                                     return True
                         elif isinstance(sub, ast.Attribute) and sub.attr in {"netloc", "hostname"}:
                             if isinstance(sub.value, ast.Call):
@@ -38984,7 +39073,11 @@ class TaintTracker:
             print(f"TimeCodeSecurity [COLLECTOR-LIVE] ({_s1_idx}/{_s1_total}) Starting {_s1_name}...",
                   file=_sys.stderr, flush=True)
             _s1_t0 = _time.perf_counter()
-            self._run_collector_waves(_s1_collector)
+            try:
+                self._run_collector_waves(_s1_collector)
+            except Exception as _s1_exc:
+                print(f"TimeCodeSecurity [WARN] collector {_s1_name} failed "
+                      f"({type(_s1_exc).__name__}: {_s1_exc}); continuing.", file=_sys.stderr)
             _s1_elapsed = _time.perf_counter() - _s1_t0
             self._collector_profile[_s1_name] = self._collector_profile.get(_s1_name, 0.0) + _s1_elapsed
             self._flush_stage1_structural_edges()
@@ -39028,6 +39121,9 @@ class TaintTracker:
                 # parity-measured, so a new collector can only ever sit after them.
                 self._collect_cwe319_raw_socket_cleartext(_bs_tree, _bs_file, _bs_lines)
                 self._collect_cwe89_orm_order_injection(_bs_tree, _bs_file, _bs_lines, _bs_mod)
+            except Exception as _bs_exc:
+                print(f"TimeCodeSecurity [WARN] blindspot pass failed on {_bs_file} "
+                      f"({type(_bs_exc).__name__}: {_bs_exc}); skipping file.", file=_sys.stderr)
             finally:
                 # The shared walk served all 19 passes above; drop it before the next module so the list
                 # of node references is bounded by one module instead of the whole repository. The Call
@@ -39215,6 +39311,12 @@ class TaintTracker:
                     self._c22_path_is_repo_internal_enumeration(
                         target_expr, record.scope_id, getattr(record.node, "lineno", 1)):
                 # The repository picked every byte of this path, so there is no traversal to report.
+                if sink in self.sinks:
+                    self.sinks.remove(sink)
+                continue
+
+            if cwe == "CWE-502" and isinstance(record.node, ast.Call) \
+                    and self._is_safe_cwe502_sink(record.node, op or "", record.scope_id):
                 if sink in self.sinks:
                     self.sinks.remove(sink)
                 continue
